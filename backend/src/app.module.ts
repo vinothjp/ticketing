@@ -11,6 +11,10 @@ import { PermissionsModule } from './permissions/permissions.module';
 import { ClientsModule } from './clients/clients.module';
 import { SmtpModule } from './smtp/smtp.module';
 import { MyClientModule } from './my-client/my-client.module';
+import { RequestTypesModule } from './request-types/request-types.module';
+import { TemplatesModule } from './templates/templates.module';
+import { PicklistsModule } from './picklists/picklists.module';
+import { TicketsModule } from './tickets/tickets.module';
 
 @Module({
   imports: [
@@ -24,6 +28,10 @@ import { MyClientModule } from './my-client/my-client.module';
     ClientsModule,
     SmtpModule,
     MyClientModule,
+    RequestTypesModule,
+    TemplatesModule,
+    PicklistsModule,
+    TicketsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

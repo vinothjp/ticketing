@@ -16,6 +16,12 @@ import ClientsPage from './pages/super-admin/ClientsPage';
 import ClientFormPage from './pages/super-admin/ClientFormPage';
 import FormsPage from './pages/super-admin/FormsPage';
 import SmtpConfigPage from './pages/super-admin/SmtpConfigPage';
+import RequestTypesPage from './pages/RequestTypesPage';
+import TemplateBuilderPage from './pages/TemplateBuilderPage';
+import PicklistOptionsPage from './pages/PicklistOptionsPage';
+import CreateTicketPage from './pages/tickets/CreateTicketPage';
+import TicketListPage from './pages/tickets/TicketListPage';
+import TicketDetailPage from './pages/tickets/TicketDetailPage';
 
 const queryClient = new QueryClient();
 const isSuperAdmin = (roles: string[]) => roles.includes('SuperAdmin');
@@ -62,6 +68,12 @@ export default function App() {
                         <Route path="/users" element={<UsersPage />} />
                         <Route path="/roles" element={<RolesPage />} />
                         <Route path="/organization" element={<OrganizationPage />} />
+                        <Route path="/tickets/new" element={<CreateTicketPage />} />
+                        <Route path="/tickets/:id" element={<TicketDetailPage />} />
+                        <Route path="/tickets" element={<TicketListPage />} />
+                        <Route path="/admin/request-types" element={<RequestTypesPage />} />
+                        <Route path="/admin/templates/:requestTypeId" element={<TemplateBuilderPage />} />
+                        <Route path="/admin/picklists" element={<PicklistOptionsPage />} />
                         <Route path="*" element={<Navigate to="/dashboard" replace />} />
                       </Routes>
                     </Layout>

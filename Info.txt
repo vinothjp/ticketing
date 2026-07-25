@@ -1,0 +1,44 @@
+
+
+Recommended Full Stack
+Layer				Technology					Reason
+Backend				Node.js + Express / NestJS	JSON REST or GraphQL API works identically for web and mobile
+Database			PostgreSQL					Robust, relational, scales well
+ORM					Prisma						Type-safe, easy migrations
+Auth				JWT + Refresh Tokens		Works on web browsers AND mobile apps natively
+Web Frontend		React + TypeScript			Component-based, large ecosystem
+Mobile App			React Native				Same language as web (TypeScript), share business logic
+Shared Code			Monorepo (Turborepo / Nx)	Share types, API clients, and hooks between web and mobile
+API Docs			Swagger / OpenAPI			Other apps can integrate easily
+File/Image Storage	AWS S3 / Cloudflare R2		Works for both web and mobile uploads
+Push Notifications	Firebase FCM				Required for mobile, easy to add later
+
+
+Architecture Overview
+┌─────────────────────────────────────────────┐
+│              Shared Backend API              │
+│         Node.js + Express/NestJS             │
+│         JWT Auth  |  REST/GraphQL            │
+└──────┬──────────────────────┬───────────────┘
+       │                      │
+┌──────▼──────┐        ┌──────▼──────────┐
+│  React Web  │        │  React Native   │
+│  (Browser)  │        │  (iOS/Android)  │
+└─────────────┘        └─────────────────┘
+       │                      │
+       └──────────────────────┘
+              Shared:
+         - API client code
+         - TypeScript types
+         - Permission hooks
+         - Validation logic
+		 
+rbac-app/
+├── apps/
+│   ├── web/          ← React (browser)
+│   ├── mobile/       ← React Native (iOS + Android)
+│   └── api/          ← Node.js backend
+├── packages/
+│   ├── types/        ← Shared TypeScript interfaces (User, Role, Permission)
+│   ├── api-client/   ← Shared Axios/fetch wrapper (used by web + mobile)
+│   └── hooks/        ← Shared permission hooks (usePermission, useAuth)

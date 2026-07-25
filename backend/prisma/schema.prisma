@@ -1,0 +1,142 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ClientStatus {
+  ACTIVE
+  SUSPENDED
+  TRIAL
+}
+
+enum LicenseStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+model Client {
+  id           String       @id @default(uuid())
+  name         String
+  code         String       @unique
+  contactEmail String?
+  contactPhone String?
+  logoUrl      String?
+  status       ClientStatus @default(ACTIVE)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  createdBy    String?
+  updatedBy    String?
+  users        User[]
+  roles        Role[]
+  license      License?
+}
+
+model License {
+  id         String        @id @default(uuid())
+  clientId   String        @unique
+  client     Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  plan       String
+  maxUsers   Int
+  startDate  DateTime
+  expiryDate DateTime
+  status     LicenseStatus @default(ACTIVE)
+  notes      String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  createdBy  String?
+  updatedBy  String?
+}
+
+model User {
+  id             String      @id @default(uuid())
+  username       String      @unique
+  email          String      @unique
+  passwordHash   String
+  isActive       Boolean     @default(true)
+  resetToken     String?
+  resetTokenExp  DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  createdBy      String?
+  updatedBy      String?
+  clientId       String?
+  client         Client?     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userRoles      UserRole[]
+}
+
+model Role {
+  id               String            @id @default(uuid())
+  name             String
+  description      String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  createdBy        String?
+  updatedBy        String?
+  clientId         String?
+  client           Client?           @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userRoles        UserRole[]
+  formPermissions  FormPermission[]
+
+  @@unique([clientId, name])
+}
+
+model AppForm {
+  id               String            @id @default(uuid())
+  name             String            @unique
+  displayName      String
+  description      String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  createdBy        String?
+  updatedBy        String?
+  formPermissions  FormPermission[]
+}
+
+model UserRole {
+  id        String   @id @default(uuid())
+  userId    String
+  roleId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  createdBy String?
+
+  @@unique([userId, roleId])
+}
+
+model SmtpConfig {
+  id                String   @id @default("global")
+  host              String?
+  port              Int      @default(587)
+  useTls            Boolean  @default(true)
+  username          String?
+  passwordEncrypted String?
+  fromAddress       String?
+  enabled           Boolean  @default(false)
+  updatedAt         DateTime @updatedAt
+  updatedBy         String?
+}
+
+model FormPermission {
+  id        String   @id @default(uuid())
+  roleId    String
+  formId    String
+  canCreate Boolean  @default(false)
+  canUpdate Boolean  @default(false)
+  canView   Boolean  @default(false)
+  canDelete Boolean  @default(false)
+  canExport Boolean  @default(false)
+  canImport Boolean  @default(false)
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  form      AppForm  @relation(fields: [formId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?
+  updatedBy String?
+
+  @@unique([roleId, formId])
+}

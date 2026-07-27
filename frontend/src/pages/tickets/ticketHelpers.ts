@@ -13,12 +13,12 @@ export interface TicketSummary {
   dueDate?: string | null;
   closedDate?: string | null;
   createdAt: string;
-  requestType: { name: string };
+  template: { id: string; name: string; category?: string | null };
   technicians: TicketTechnicianRow[];
 }
 
 const PRIORITY_META: Record<string, { label: string; code: string; barClass: string; textClass: string }> = {
-  urgent: { label: 'Urgent', code: 'P1', barClass: 'bg-destructive', textClass: 'text-destructive' },
+  critical: { label: 'Critical', code: 'P1', barClass: 'bg-destructive', textClass: 'text-destructive' },
   high: { label: 'High', code: 'P2', barClass: 'bg-amber-500', textClass: 'text-amber-500' },
   medium: { label: 'Medium', code: 'P3', barClass: 'bg-sky-500', textClass: 'text-sky-500' },
   low: { label: 'Low', code: 'P4', barClass: 'bg-slate-400', textClass: 'text-slate-400' },

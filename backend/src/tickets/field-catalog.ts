@@ -3,14 +3,41 @@ export type FieldGroup = 'ticket_info' | 'ticket_detail' | 'root_cause';
 export type FieldDataType =
   | 'TEXT'
   | 'TEXTAREA'
+  | 'NUMBER'
   | 'SELECT'
+  | 'MULTI_SELECT'
+  | 'RADIO'
   | 'MULTI_SELECT_USER'
   | 'DATE'
   | 'DATETIME'
   | 'BOOLEAN'
   | 'EMAIL_LIST'
+  | 'PHONE'
   | 'FILE'
   | 'SYSTEM';
+
+/** Data types an admin can pick when designing a custom field (excludes system-only + user picker). */
+export const CUSTOM_FIELD_DATA_TYPES: FieldDataType[] = [
+  'TEXT',
+  'TEXTAREA',
+  'NUMBER',
+  'SELECT',
+  'MULTI_SELECT',
+  'RADIO',
+  'DATE',
+  'DATETIME',
+  'BOOLEAN',
+  'EMAIL_LIST',
+  'PHONE',
+  'FILE',
+];
+
+/** Custom-field data types whose choices come from the field's own inline `options`. */
+export const OPTION_BACKED_DATA_TYPES: FieldDataType[] = [
+  'SELECT',
+  'MULTI_SELECT',
+  'RADIO',
+];
 
 export interface FieldCatalogEntry {
   key: string;
@@ -20,6 +47,12 @@ export interface FieldCatalogEntry {
   picklistKey?: string;
   /** Not directly editable by the ticket creator — template config can only toggle visible/hidden. */
   systemManaged?: boolean;
+  /**
+   * Where the ticket value is persisted: `'column'` = a dedicated Ticket column
+   * (default), `'json'` = the Ticket.customFields JSONB bag (keeps the table lean
+   * for less-core fields like request type, customer confirmation, root cause).
+   */
+  storage?: 'column' | 'json';
   defaultHelperText: string;
 }
 
@@ -72,10 +105,10 @@ export const FIELD_CATALOG: FieldCatalogEntry[] = [
     key: 'requestType',
     label: 'Request Type',
     group: 'ticket_info',
-    dataType: 'SYSTEM',
-    systemManaged: true,
-    defaultHelperText:
-      'Classification of this request, set by the template chosen.',
+    dataType: 'SELECT',
+    picklistKey: 'requestType',
+    storage: 'json',
+    defaultHelperText: 'The kind of request (e.g. Incident, Service Request).',
   },
   {
     key: 'priority',
@@ -133,6 +166,14 @@ export const FIELD_CATALOG: FieldCatalogEntry[] = [
     defaultHelperText: 'Set automatically when the ticket is submitted.',
   },
   {
+    key: 'sla',
+    label: 'SLA',
+    group: 'ticket_info',
+    dataType: 'SYSTEM',
+    systemManaged: true,
+    defaultHelperText: 'Resolution target, auto-filled from the SLA policy for the chosen priority.',
+  },
+  {
     key: 'dueDate',
     label: 'Due Date',
     group: 'ticket_info',
@@ -151,6 +192,7 @@ export const FIELD_CATALOG: FieldCatalogEntry[] = [
     label: 'Customer Confirmation',
     group: 'ticket_info',
     dataType: 'BOOLEAN',
+    storage: 'json',
     defaultHelperText: 'Whether the customer has confirmed this request.',
   },
   {
@@ -185,12 +227,13 @@ export const FIELD_CATALOG: FieldCatalogEntry[] = [
     defaultHelperText: 'Any supporting files, screenshots, or documents.',
   },
 
-  // Root Cause Analysis
+  // Root Cause Analysis (values stored in customFields JSONB)
   {
     key: 'rootCauseCategory',
     label: 'Root Cause Category',
     group: 'root_cause',
     dataType: 'TEXT',
+    storage: 'json',
     defaultHelperText: 'Category of the underlying cause.',
   },
   {
@@ -198,6 +241,7 @@ export const FIELD_CATALOG: FieldCatalogEntry[] = [
     label: 'Root Cause Description',
     group: 'root_cause',
     dataType: 'TEXTAREA',
+    storage: 'json',
     defaultHelperText: 'Describe what caused the issue.',
   },
   {
@@ -205,6 +249,7 @@ export const FIELD_CATALOG: FieldCatalogEntry[] = [
     label: 'Correction Action',
     group: 'root_cause',
     dataType: 'TEXTAREA',
+    storage: 'json',
     defaultHelperText: 'What was done to fix the issue.',
   },
   {
@@ -212,6 +257,7 @@ export const FIELD_CATALOG: FieldCatalogEntry[] = [
     label: 'Prevention Action',
     group: 'root_cause',
     dataType: 'TEXTAREA',
+    storage: 'json',
     defaultHelperText: 'What will prevent this from recurring.',
   },
   {
@@ -219,11 +265,17 @@ export const FIELD_CATALOG: FieldCatalogEntry[] = [
     label: 'Lessons Learned',
     group: 'root_cause',
     dataType: 'TEXTAREA',
+    storage: 'json',
     defaultHelperText: 'Key takeaways from this incident.',
   },
 ];
 
 export const FIELD_CATALOG_MAP = new Map(FIELD_CATALOG.map((f) => [f.key, f]));
+
+/** A catalog field whose value lives in Ticket.customFields (JSONB) rather than a column. */
+export function isJsonBackedCatalogKey(key: string): boolean {
+  return FIELD_CATALOG_MAP.get(key)?.storage === 'json';
+}
 
 /** Fields that get sane visible+mandatory defaults when a new Template is auto-created. */
 export const DEFAULT_VISIBLE_MANDATORY_FIELDS = [

@@ -1,9 +1,9 @@
 import {
   IsArray,
-  IsBoolean,
   IsDateString,
   IsEmail,
   IsNotEmpty,
+  IsObject,
   IsOptional,
   IsString,
 } from 'class-validator';
@@ -11,7 +11,7 @@ import {
 export class CreateTicketDto {
   @IsString()
   @IsNotEmpty()
-  requestTypeId: string;
+  templateId: string;
 
   @IsOptional() @IsString() requestorName?: string;
   @IsOptional() @IsString() customerName?: string;
@@ -33,14 +33,12 @@ export class CreateTicketDto {
 
   @IsOptional() @IsDateString() dueDate?: string;
   @IsOptional() @IsDateString() expectedResolutionDate?: string;
-  @IsOptional() @IsBoolean() customerConfirmation?: boolean;
 
   @IsOptional() @IsString() subject?: string;
   @IsOptional() @IsString() description?: string;
 
-  @IsOptional() @IsString() rootCauseCategory?: string;
-  @IsOptional() @IsString() rootCauseDescription?: string;
-  @IsOptional() @IsString() correctionAction?: string;
-  @IsOptional() @IsString() preventionAction?: string;
-  @IsOptional() @IsString() lessonsLearned?: string;
+  /** Admin-designed custom field values, keyed by TemplateField.fieldKey. */
+  @IsOptional()
+  @IsObject()
+  customFields?: Record<string, unknown>;
 }

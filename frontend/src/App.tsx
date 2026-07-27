@@ -16,9 +16,10 @@ import ClientsPage from './pages/super-admin/ClientsPage';
 import ClientFormPage from './pages/super-admin/ClientFormPage';
 import FormsPage from './pages/super-admin/FormsPage';
 import SmtpConfigPage from './pages/super-admin/SmtpConfigPage';
-import RequestTypesPage from './pages/RequestTypesPage';
-import TemplateBuilderPage from './pages/TemplateBuilderPage';
+import TemplatesListPage from './pages/templates/TemplatesListPage';
+import TemplateDesignerPage from './pages/templates/TemplateDesignerPage';
 import PicklistOptionsPage from './pages/PicklistOptionsPage';
+import SlaPolicyPage from './pages/SlaPolicyPage';
 import CreateTicketPage from './pages/tickets/CreateTicketPage';
 import TicketListPage from './pages/tickets/TicketListPage';
 import TicketDetailPage from './pages/tickets/TicketDetailPage';
@@ -71,9 +72,11 @@ export default function App() {
                         <Route path="/tickets/new" element={<CreateTicketPage />} />
                         <Route path="/tickets/:id" element={<TicketDetailPage />} />
                         <Route path="/tickets" element={<TicketListPage />} />
-                        <Route path="/admin/request-types" element={<RequestTypesPage />} />
-                        <Route path="/admin/templates/:requestTypeId" element={<TemplateBuilderPage />} />
+                        <Route path="/admin/templates" element={<TemplatesListPage />} />
+                        <Route path="/admin/templates/new" element={<TemplateDesignerPage />} />
+                        <Route path="/admin/templates/:id" element={<TemplateDesignerPage />} />
                         <Route path="/admin/picklists" element={<PicklistOptionsPage />} />
+                        <Route path="/admin/sla" element={<SlaPolicyPage />} />
                         <Route path="*" element={<Navigate to="/dashboard" replace />} />
                       </Routes>
                     </Layout>

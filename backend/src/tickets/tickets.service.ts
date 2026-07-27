@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TemplatesService } from '../templates/templates.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
@@ -20,14 +21,8 @@ const FIELD_KEY_TO_DTO_PROP: Record<string, keyof CreateTicketDto> = {
   notifyEmails: 'notifyEmails',
   dueDate: 'dueDate',
   expectedResolutionDate: 'expectedResolutionDate',
-  customerConfirmation: 'customerConfirmation',
   subject: 'subject',
   description: 'description',
-  rootCauseCategory: 'rootCauseCategory',
-  rootCauseDescription: 'rootCauseDescription',
-  correctionAction: 'correctionAction',
-  preventionAction: 'preventionAction',
-  lessonsLearned: 'lessonsLearned',
 };
 
 function isEmpty(value: unknown) {
@@ -47,21 +42,39 @@ export class TicketsService {
   ) {}
 
   async create(dto: CreateTicketDto, clientId: string, actorId: string) {
-    const template = await this.templatesService.getByRequestType(
-      dto.requestTypeId,
+    const template = await this.templatesService.getById(
+      dto.templateId,
       clientId,
     );
 
     // Server-side is the source of truth for "required" — it's tenant-configured
-    // data, so the client's zod validation alone can't be trusted.
+    // data, so the client's zod validation alone can't be trusted. We also
+    // collect custom-field values into the JSONB bag here.
     const missing: string[] = [];
+    const customFields: Record<string, unknown> = {};
     for (const field of template.fields) {
-      if (
-        field.systemManaged ||
-        field.visibility !== 'VISIBLE' ||
-        field.requirement !== 'MANDATORY'
-      )
+      if (field.visibility !== 'VISIBLE') continue;
+
+      // Custom fields and JSON-backed catalog fields (request type, customer
+      // confirmation, root cause) persist into the customFields JSONB bag.
+      const jsonBacked = field.isCustom || field.storage === 'json';
+      if (jsonBacked) {
+        const value = dto.customFields?.[field.fieldKey];
+        if (
+          field.requirement === 'MANDATORY' &&
+          !field.systemManaged &&
+          isEmpty(value)
+        ) {
+          missing.push(field.label);
+        }
+        // FILE fields aren't persisted in JSONB (no per-field upload yet).
+        if (!isEmpty(value) && field.dataType !== 'FILE') {
+          customFields[field.fieldKey] = value;
+        }
         continue;
+      }
+
+      if (field.systemManaged || field.requirement !== 'MANDATORY') continue;
       const dtoProp = FIELD_KEY_TO_DTO_PROP[field.fieldKey];
       if (!dtoProp) continue; // e.g. attachments — enforced client-side only for now
       if (isEmpty(dto[dtoProp])) missing.push(field.label);
@@ -78,6 +91,19 @@ export class TicketsService {
     });
     const ticketStatus = defaultStatusOption?.value ?? 'New';
 
+    // SLA: auto-fill resolution target + Due Date from the SLA policy for this priority.
+    let slaHours: number | undefined;
+    let slaDue: Date | undefined;
+    if (dto.priority) {
+      const sla = await this.prisma.slaPolicy.findFirst({
+        where: { clientId, priority: dto.priority, isActive: true },
+      });
+      if (sla) {
+        slaHours = sla.resolutionHours;
+        slaDue = new Date(Date.now() + sla.resolutionHours * 3600 * 1000);
+      }
+    }
+
     const ticket = await this.prisma.$transaction(async (tx) => {
       const client = await tx.client.update({
         where: { id: clientId },
@@ -89,7 +115,6 @@ export class TicketsService {
         data: {
           clientId,
           ticketNumber,
-          requestTypeId: dto.requestTypeId,
           templateId: template.id,
           ticketStatus,
           requestorName: dto.requestorName,
@@ -100,25 +125,21 @@ export class TicketsService {
           ticketCategory: dto.ticketCategory,
           subCategory: dto.subCategory,
           notifyEmails: dto.notifyEmails ?? [],
-          dueDate: dto.dueDate ? new Date(dto.dueDate) : undefined,
+          dueDate: dto.dueDate ? new Date(dto.dueDate) : slaDue,
           expectedResolutionDate: dto.expectedResolutionDate
             ? new Date(dto.expectedResolutionDate)
-            : undefined,
-          customerConfirmation: dto.customerConfirmation,
+            : slaDue,
+          slaHours,
           subject: dto.subject ?? '',
           description: dto.description ?? '',
-          rootCauseCategory: dto.rootCauseCategory,
-          rootCauseDescription: dto.rootCauseDescription,
-          correctionAction: dto.correctionAction,
-          preventionAction: dto.preventionAction,
-          lessonsLearned: dto.lessonsLearned,
+          customFields: customFields as Prisma.InputJsonValue,
           createdBy: actorId,
           updatedBy: actorId,
           technicians: dto.technicianUserIds?.length
             ? { create: dto.technicianUserIds.map((userId) => ({ userId })) }
             : undefined,
         },
-        include: { technicians: true, requestType: true },
+        include: { technicians: true, template: true },
       });
     });
 
@@ -130,7 +151,7 @@ export class TicketsService {
       where: { clientId },
       orderBy: { createdAt: 'desc' },
       include: {
-        requestType: { select: { name: true } },
+        template: { select: { id: true, name: true, category: true } },
         technicians: {
           include: { user: { select: { id: true, username: true } } },
         },
@@ -142,8 +163,7 @@ export class TicketsService {
     const ticket = await this.prisma.ticket.findFirst({
       where: { id, clientId },
       include: {
-        requestType: true,
-        template: true,
+        template: { include: { fields: { orderBy: { sortOrder: 'asc' } } } },
         technicians: {
           include: { user: { select: { id: true, username: true } } },
         },
@@ -175,6 +195,14 @@ export class TicketsService {
       if (label === 'closed') closedDate = new Date();
     }
 
+    const mergedCustomFields =
+      dto.customFields !== undefined
+        ? {
+            ...((ticket.customFields as Record<string, unknown>) ?? {}),
+            ...dto.customFields,
+          }
+        : undefined;
+
     return this.prisma.ticket.update({
       where: { id },
       data: {
@@ -186,17 +214,14 @@ export class TicketsService {
         expectedResolutionDate: dto.expectedResolutionDate
           ? new Date(dto.expectedResolutionDate)
           : undefined,
-        customerConfirmation: dto.customerConfirmation,
         closedDate,
-        rootCauseCategory: dto.rootCauseCategory,
-        rootCauseDescription: dto.rootCauseDescription,
-        correctionAction: dto.correctionAction,
-        preventionAction: dto.preventionAction,
-        lessonsLearned: dto.lessonsLearned,
+        ...(mergedCustomFields !== undefined && {
+          customFields: mergedCustomFields as Prisma.InputJsonValue,
+        }),
         updatedBy: actorId,
       },
       include: {
-        requestType: true,
+        template: { select: { id: true, name: true, category: true } },
         technicians: {
           include: { user: { select: { id: true, username: true } } },
         },

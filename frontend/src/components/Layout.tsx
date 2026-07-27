@@ -16,9 +16,9 @@ import {
   ShieldCheck,
   Lock,
   Ticket,
-  Tags,
   ListTree,
   LayoutTemplate,
+  Timer,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api from '../lib/api';
@@ -54,7 +54,6 @@ const tenantNavGroups: NavGroup[] = [
     items: [
       { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
       { to: '/tickets', label: 'Tickets', icon: Ticket },
-      { to: '/admin/request-types', label: 'Form Builder', icon: LayoutTemplate },
     ],
   },
   {
@@ -63,8 +62,9 @@ const tenantNavGroups: NavGroup[] = [
     items: [
       { to: '/users', label: 'Users', icon: Users },
       { to: '/roles', label: 'Roles', icon: KeyRound },
-      { to: '/admin/request-types', label: 'Request Types', icon: Tags },
+      { to: '/admin/templates', label: 'Templates', icon: LayoutTemplate },
       { to: '/admin/picklists', label: 'Picklist Options', icon: ListTree },
+      { to: '/admin/sla', label: 'SLA Policies', icon: Timer },
     ],
   },
 ];

@@ -10,12 +10,12 @@ import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { getPriorityMeta, isTerminalStatus, type TicketSummary } from './ticketHelpers';
 
-interface RequestType { id: string; name: string; }
+interface TemplateSummary { id: string; name: string; }
 
 type ViewKey = 'all' | 'mine' | 'overdue' | 'unassigned';
 type SortKey = 'newest' | 'oldest' | 'priority' | 'due';
 
-const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+const PRIORITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
 export default function TicketListPage() {
   const { user } = useAuth();
@@ -31,9 +31,9 @@ export default function TicketListPage() {
     queryKey: ['tickets'],
     queryFn: async () => (await api.get('/api/tickets')).data,
   });
-  const { data: requestTypes = [] } = useQuery<RequestType[]>({
-    queryKey: ['request-types'],
-    queryFn: async () => (await api.get('/api/request-types')).data,
+  const { data: templates = [] } = useQuery<TemplateSummary[]>({
+    queryKey: ['templates'],
+    queryFn: async () => (await api.get('/api/templates')).data,
   });
 
   const categories = useMemo(
@@ -42,7 +42,7 @@ export default function TicketListPage() {
   );
 
   const byType = useMemo(
-    () => (typeFilter ? tickets.filter((t) => t.requestType.name === typeFilter) : tickets),
+    () => (typeFilter ? tickets.filter((t) => t.template?.name === typeFilter) : tickets),
     [tickets, typeFilter],
   );
 
@@ -91,85 +91,78 @@ export default function TicketListPage() {
   ];
 
   return (
-    <div className="grid grid-cols-[220px_1fr] gap-6">
-      <aside className="space-y-6">
+    <div>
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <div className="mb-2 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">Views</div>
-          <div className="flex flex-col gap-1">
-            {views.map((v) => (
-              <button
-                key={v.key}
-                type="button"
-                onClick={() => setView(v.key)}
-                className={cn(
-                  'flex items-center justify-between rounded-lg px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent',
-                  view === v.key && 'bg-primary/10 font-medium text-primary',
-                )}
-              >
-                {v.label}
-                <span className="text-xs text-muted-foreground">{v.count}</span>
-              </button>
-            ))}
-          </div>
+          <h1 className="text-2xl font-bold text-foreground">{typeFilter || 'All requests'}</h1>
+          <p className="text-sm text-muted-foreground">{sorted.length} of {tickets.length}</p>
         </div>
+        <Button asChild>
+          <Link to="/tickets/new"><Plus className="size-4" /> New request</Link>
+        </Button>
+      </div>
 
-        <div>
-          <div className="mb-2 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">Filter</div>
-          <div className="space-y-2">
-            <Select value={priorityFilter} onValueChange={setPriorityFilter}>
-              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All priorities</SelectItem>
-                <SelectItem value="urgent">Urgent</SelectItem>
-                <SelectItem value="high">High</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="low">Low</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All categories</SelectItem>
-                {categories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Select value={typeFilter || 'all'} onValueChange={(v) => setSearchParams(v === 'all' ? {} : { type: v })}>
-              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All request types</SelectItem>
-                {requestTypes.map((rt) => <SelectItem key={rt.id} value={rt.name}>{rt.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
+      {/* Views (segmented) */}
+      <div className="flex flex-wrap gap-1 border-b pb-3">
+        {views.map((v) => (
+          <button
+            key={v.key}
+            type="button"
+            onClick={() => setView(v.key)}
+            className={cn(
+              'flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors hover:bg-accent',
+              view === v.key ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground',
+            )}
+          >
+            {v.label}
+            <span className={cn('rounded-full px-1.5 text-xs', view === v.key ? 'bg-primary/15' : 'bg-muted text-muted-foreground')}>{v.count}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Filters + sort */}
+      <div className="mb-5 flex flex-wrap items-center gap-2 py-3">
+        <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+          <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All priorities</SelectItem>
+            <SelectItem value="critical">Critical</SelectItem>
+            <SelectItem value="high">High</SelectItem>
+            <SelectItem value="medium">Medium</SelectItem>
+            <SelectItem value="low">Low</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+          <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All categories</SelectItem>
+            {categories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={typeFilter || 'all'} onValueChange={(v) => setSearchParams(v === 'all' ? {} : { type: v })}>
+          <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All templates</SelectItem>
+            {templates.map((t) => <SelectItem key={t.id} value={t.name}>{t.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <div className="ml-auto">
+          <Select value={sort} onValueChange={(v) => setSort(v as SortKey)}>
+            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="newest">Newest first</SelectItem>
+              <SelectItem value="oldest">Oldest first</SelectItem>
+              <SelectItem value="priority">Priority</SelectItem>
+              <SelectItem value="due">Due date</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
-      </aside>
+      </div>
 
-      <div>
-        <div className="mb-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-bold text-foreground">{typeFilter || 'All requests'}</h1>
-            <p className="text-sm text-muted-foreground">{sorted.length} of {tickets.length}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Select value={sort} onValueChange={(v) => setSort(v as SortKey)}>
-              <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="newest">Newest first</SelectItem>
-                <SelectItem value="oldest">Oldest first</SelectItem>
-                <SelectItem value="priority">Priority</SelectItem>
-                <SelectItem value="due">Due date</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button asChild>
-              <Link to="/tickets/new"><Plus className="size-4" /> New request</Link>
-            </Button>
-          </div>
-        </div>
-
-        {isLoading ? (
-          <p className="text-muted-foreground">Loading...</p>
-        ) : (
-          <div className="divide-y rounded-xl border bg-card">
+      {isLoading ? (
+        <p className="text-muted-foreground">Loading...</p>
+      ) : (
+        <div className="divide-y border-y">
             {sorted.length === 0 && <p className="p-6 text-center text-muted-foreground">No tickets match this view.</p>}
             {sorted.map((t) => {
               const priority = getPriorityMeta(t.priority);
@@ -203,7 +196,6 @@ export default function TicketListPage() {
             })}
           </div>
         )}
-      </div>
     </div>
   );
 }

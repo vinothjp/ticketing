@@ -375,7 +375,7 @@ export default function UsersPage() {
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
       ) : (
-        <div className="rounded-xl border bg-card">
+        <div className="border-t">
           <Table>
             <TableHeader>
               <TableRow>

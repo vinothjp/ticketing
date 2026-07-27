@@ -5,20 +5,18 @@ import { z } from 'zod';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import DynamicTicketField, { type MergedTemplateField } from './DynamicTicketField';
 
-interface RequestType {
+interface TemplateSummary {
   id: string;
   name: string;
-  description?: string | null;
+  category?: string | null;
   isActive: boolean;
 }
 
 interface TemplateData {
   id: string;
-  requestTypeId: string;
   name: string;
   descriptionGuidance?: string | null;
   fields: MergedTemplateField[];
@@ -26,6 +24,7 @@ interface TemplateData {
 
 interface PicklistOption { value: string; label: string; parentValue?: string | null; }
 interface UserOption { id: string; username: string; }
+interface SlaPolicy { id: string; priority: string; resolutionHours: number; responseHours?: number | null; isActive: boolean; }
 
 const GROUP_LABELS: Record<MergedTemplateField['group'], string> = {
   ticket_info: 'Ticket Info',
@@ -44,10 +43,17 @@ function fieldSchema(f: MergedTemplateField) {
   switch (f.dataType) {
     case 'TEXT':
     case 'TEXTAREA':
+    case 'PHONE':
     case 'DATE':
     case 'DATETIME':
     case 'SELECT':
+    case 'RADIO':
       return required ? z.string().min(1, `${f.label} is required`) : z.string().optional();
+    case 'NUMBER':
+      return required
+        ? z.string().min(1, `${f.label} is required`).refine((v) => !isNaN(Number(v)), 'Enter a number')
+        : z.string().optional().refine((v) => !v || !isNaN(Number(v)), 'Enter a number');
+    case 'MULTI_SELECT':
     case 'MULTI_SELECT_USER':
       return required
         ? z.array(z.string()).min(1, `${f.label} is required`)
@@ -67,6 +73,7 @@ function defaultValueFor(f: MergedTemplateField, descriptionGuidance?: string | 
   if (f.fieldKey === 'description' && descriptionGuidance) return descriptionGuidance;
   switch (f.dataType) {
     case 'BOOLEAN': return false;
+    case 'MULTI_SELECT':
     case 'MULTI_SELECT_USER': return [] as string[];
     default: return '';
   }
@@ -74,27 +81,27 @@ function defaultValueFor(f: MergedTemplateField, descriptionGuidance?: string | 
 
 export default function CreateTicketPage() {
   const navigate = useNavigate();
-  const [selectedRequestTypeId, setSelectedRequestTypeId] = useState<string | null>(null);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, any>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [attachmentFiles, setAttachmentFiles] = useState<File[]>([]);
 
-  const { data: requestTypes = [] } = useQuery<RequestType[]>({
-    queryKey: ['request-types'],
-    queryFn: async () => (await api.get('/api/request-types')).data,
+  const { data: templates = [] } = useQuery<TemplateSummary[]>({
+    queryKey: ['templates'],
+    queryFn: async () => (await api.get('/api/templates')).data,
   });
-  const activeRequestTypes = requestTypes.filter((rt) => rt.isActive);
+  const activeTemplates = templates.filter((t) => t.isActive);
 
   useEffect(() => {
-    if (selectedRequestTypeId || activeRequestTypes.length === 0) return;
-    setSelectedRequestTypeId(activeRequestTypes[0].id);
+    if (selectedTemplateId || activeTemplates.length === 0) return;
+    setSelectedTemplateId(activeTemplates[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRequestTypes.length]);
+  }, [activeTemplates.length]);
 
   const { data: template } = useQuery<TemplateData>({
-    queryKey: ['templates', 'by-request-type', selectedRequestTypeId],
-    queryFn: async () => (await api.get(`/api/templates/by-request-type/${selectedRequestTypeId}`)).data,
-    enabled: !!selectedRequestTypeId,
+    queryKey: ['templates', selectedTemplateId],
+    queryFn: async () => (await api.get(`/api/templates/${selectedTemplateId}`)).data,
+    enabled: !!selectedTemplateId,
   });
 
   const visibleFields = useMemo(
@@ -128,6 +135,21 @@ export default function CreateTicketPage() {
     enabled: needsUsers,
   });
 
+  const { data: slaPolicies = [] } = useQuery<SlaPolicy[]>({
+    queryKey: ['sla-policies'],
+    queryFn: async () => (await api.get('/api/sla-policies')).data,
+  });
+
+  const resetForm = () => {
+    const initial: Record<string, any> = {};
+    for (const f of visibleFields) {
+      initial[f.fieldKey] = defaultValueFor(f, template?.descriptionGuidance);
+    }
+    setValues(initial);
+    setErrors({});
+    setAttachmentFiles([]);
+  };
+
   useEffect(() => {
     if (!template) return;
     const initial: Record<string, any> = {};
@@ -148,11 +170,20 @@ export default function CreateTicketPage() {
   );
 
   const createMutation = useMutation({
-    mutationFn: async () => {
-      const payload: Record<string, any> = { requestTypeId: selectedRequestTypeId };
+    mutationFn: async (_mode: 'submit' | 'saveAndNew') => {
+      const payload: Record<string, any> = { templateId: selectedTemplateId };
+      const customFields: Record<string, any> = {};
       for (const f of visibleFields) {
         if (f.dataType === 'SYSTEM' || f.dataType === 'FILE') continue;
         const v = values[f.fieldKey];
+
+        // Custom fields and JSON-backed catalog fields go into customFields.
+        if (f.isCustom || f.storage === 'json') {
+          if (v === '' || v === undefined || v === null || (Array.isArray(v) && v.length === 0)) continue;
+          customFields[f.fieldKey] = f.dataType === 'NUMBER' ? Number(v) : v;
+          continue;
+        }
+
         if (f.fieldKey === 'technicians') {
           payload.technicianUserIds = v;
         } else if (f.fieldKey === 'notifyEmails') {
@@ -161,6 +192,7 @@ export default function CreateTicketPage() {
           payload[f.fieldKey] = v === '' ? undefined : v;
         }
       }
+      if (Object.keys(customFields).length) payload.customFields = customFields;
 
       const res = await api.post('/api/tickets', payload);
       const ticket = res.data;
@@ -175,14 +207,15 @@ export default function CreateTicketPage() {
 
       return ticket;
     },
-    onSuccess: (ticket) => {
+    onSuccess: (ticket, mode) => {
       toast.success(`Ticket ${ticket.ticketNumber} created`);
-      navigate('/dashboard');
+      if (mode === 'saveAndNew') resetForm();
+      else navigate('/dashboard');
     },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error creating ticket'),
   });
 
-  const handleSubmit = () => {
+  const handleSubmit = (mode: 'submit' | 'saveAndNew') => {
     const result = schema.safeParse(values);
     if (!result.success) {
       const fieldErrors: Record<string, string> = {};
@@ -195,14 +228,22 @@ export default function CreateTicketPage() {
       return;
     }
     setErrors({});
-    createMutation.mutate();
+    createMutation.mutate(mode);
+  };
+
+  const slaText = (): string => {
+    if (!values.priority) return 'Select a priority to see the SLA target.';
+    const p = slaPolicies.find((s) => s.priority === values.priority && s.isActive !== false);
+    if (!p) return 'No SLA policy set for this priority.';
+    const due = new Date(Date.now() + p.resolutionHours * 3600 * 1000);
+    return `Resolve within ${p.resolutionHours}h — due ${due.toLocaleString()}`;
   };
 
   const systemDisplayValue = (f: MergedTemplateField): string => {
     switch (f.fieldKey) {
       case 'templateName': return template?.name ?? '';
-      case 'requestType': return activeRequestTypes.find((rt) => rt.id === selectedRequestTypeId)?.name ?? '';
-      case 'ticketStatus': return picklistData.ticketStatus?.[0]?.label ?? 'New';
+      case 'ticketStatus': return picklistData.ticketStatus?.[0]?.label ?? 'Open';
+      case 'sla': return slaText();
       case 'createdDate': return 'Set automatically on submission';
       case 'closedDate': return '—';
       default: return '';
@@ -216,22 +257,22 @@ export default function CreateTicketPage() {
         <div className="flex items-center gap-2">
           <label className="text-sm font-medium text-muted-foreground">Template</label>
           <Select
-            value={selectedRequestTypeId ?? undefined}
-            onValueChange={setSelectedRequestTypeId}
-            disabled={activeRequestTypes.length === 0}
+            value={selectedTemplateId ?? undefined}
+            onValueChange={setSelectedTemplateId}
+            disabled={activeTemplates.length === 0}
           >
             <SelectTrigger className="w-56"><SelectValue placeholder="Select a template..." /></SelectTrigger>
             <SelectContent>
-              {activeRequestTypes.map((rt) => (
-                <SelectItem key={rt.id} value={rt.id}>{rt.name}</SelectItem>
+              {activeTemplates.map((t) => (
+                <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
       </div>
 
-      {activeRequestTypes.length === 0 ? (
-        <p className="text-muted-foreground">No request types configured yet.</p>
+      {activeTemplates.length === 0 ? (
+        <p className="text-muted-foreground">No templates configured yet.</p>
       ) : !template ? (
         <p className="text-muted-foreground">Loading template...</p>
       ) : (
@@ -240,12 +281,12 @@ export default function CreateTicketPage() {
             const groupFields = visibleFields.filter((f) => f.group === group);
             if (groupFields.length === 0) return null;
             return (
-              <Card key={group} className="mb-6">
-                <CardHeader>
-                  <CardTitle>{GROUP_LABELS[group]}</CardTitle>
-                  {group === 'ticket_detail' && <CardDescription>{template.descriptionGuidance}</CardDescription>}
-                </CardHeader>
-                <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <section key={group} className="mb-8">
+                <h2 className="text-base font-semibold text-foreground">{GROUP_LABELS[group]}</h2>
+                {group === 'ticket_detail' && template.descriptionGuidance && (
+                  <p className="mt-0.5 text-sm text-muted-foreground">{template.descriptionGuidance}</p>
+                )}
+                <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
                   {groupFields.map((f) => (
                     <div key={f.fieldKey} className={f.dataType === 'TEXTAREA' ? 'sm:col-span-2' : undefined}>
                       <DynamicTicketField
@@ -263,14 +304,17 @@ export default function CreateTicketPage() {
                       />
                     </div>
                   ))}
-                </CardContent>
-              </Card>
+                </div>
+              </section>
             );
           })}
 
-          <div className="flex justify-end gap-2">
+          <div className="flex justify-end gap-2 border-t pt-5">
             <Button variant="outline" onClick={() => navigate('/tickets')}>Cancel</Button>
-            <Button onClick={handleSubmit} disabled={createMutation.isPending}>
+            <Button variant="outline" onClick={() => handleSubmit('saveAndNew')} disabled={createMutation.isPending}>
+              Save &amp; New
+            </Button>
+            <Button onClick={() => handleSubmit('submit')} disabled={createMutation.isPending}>
               {createMutation.isPending ? 'Submitting...' : 'Submit Ticket'}
             </Button>
           </div>

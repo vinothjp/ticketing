@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Paperclip } from 'lucide-react';
@@ -8,8 +7,6 @@ import { assetUrl } from '@/lib/assetUrl';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Textarea } from '@/components/ui/textarea';
-import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -32,15 +29,11 @@ interface TicketDetail {
   notifyEmails: string[];
   dueDate?: string | null;
   expectedResolutionDate?: string | null;
+  slaHours?: number | null;
   closedDate?: string | null;
-  customerConfirmation?: boolean | null;
   createdAt: string;
-  rootCauseCategory?: string | null;
-  rootCauseDescription?: string | null;
-  correctionAction?: string | null;
-  preventionAction?: string | null;
-  lessonsLearned?: string | null;
-  requestType: { id: string; name: string };
+  customFields: Record<string, unknown>;
+  template: { id: string; name: string; category?: string | null };
   technicians: TicketTechnicianRow[];
   attachments: { id: string; fileName: string; filePath: string }[];
 }
@@ -50,26 +43,33 @@ interface PicklistOption { value: string; label: string; }
 interface UserOption { id: string; username: string; }
 
 const OMIT_FROM_TEMPLATE_FIELDS = new Set([
-  'subject', 'description', 'attachments', 'templateName', 'requestType', 'createdDate', 'closedDate', 'ticketStatus',
+  'subject', 'description', 'attachments', 'templateName', 'createdDate', 'closedDate', 'ticketStatus', 'sla',
 ]);
 
+function optionLabel(f: MergedTemplateField, value: string): string {
+  return f.options?.find((o) => o.value === value)?.label ?? value;
+}
+
 function fieldDisplayValue(f: MergedTemplateField, ticket: TicketDetail): string | null {
-  const raw = (ticket as unknown as Record<string, unknown>)[f.fieldKey];
   if (f.fieldKey === 'technicians') {
     return ticket.technicians.length ? ticket.technicians.map((t) => t.user.username).join(', ') : null;
   }
-  if (Array.isArray(raw)) return raw.length ? raw.join(', ') : null;
-  if (typeof raw === 'boolean') return raw ? 'Yes' : 'No';
+  const raw = f.isCustom || f.storage === 'json'
+    ? ticket.customFields?.[f.fieldKey]
+    : (ticket as unknown as Record<string, unknown>)[f.fieldKey];
+
   if (raw === null || raw === undefined || raw === '') return null;
+  if (Array.isArray(raw)) {
+    return raw.length ? raw.map((v) => optionLabel(f, String(v))).join(', ') : null;
+  }
+  if (typeof raw === 'boolean') return raw ? 'Yes' : 'No';
+  if (f.dataType === 'SELECT' || f.dataType === 'RADIO') return optionLabel(f, String(raw));
   return String(raw);
 }
 
 export default function TicketDetailPage() {
   const { id } = useParams<{ id: string }>();
   const qc = useQueryClient();
-  const [rootCause, setRootCause] = useState({
-    rootCauseCategory: '', rootCauseDescription: '', correctionAction: '', preventionAction: '', lessonsLearned: '',
-  });
 
   const { data: ticket, isLoading } = useQuery<TicketDetail>({
     queryKey: ['tickets', id],
@@ -78,8 +78,8 @@ export default function TicketDetailPage() {
   });
 
   const { data: template } = useQuery<TemplateData>({
-    queryKey: ['templates', 'by-request-type', ticket?.requestType.id],
-    queryFn: async () => (await api.get(`/api/templates/by-request-type/${ticket!.requestType.id}`)).data,
+    queryKey: ['templates', ticket?.template.id],
+    queryFn: async () => (await api.get(`/api/templates/${ticket!.template.id}`)).data,
     enabled: !!ticket,
   });
 
@@ -95,17 +95,6 @@ export default function TicketDetailPage() {
     queryKey: ['users'],
     queryFn: async () => (await api.get('/api/users')).data,
   });
-
-  useEffect(() => {
-    if (!ticket) return;
-    setRootCause({
-      rootCauseCategory: ticket.rootCauseCategory ?? '',
-      rootCauseDescription: ticket.rootCauseDescription ?? '',
-      correctionAction: ticket.correctionAction ?? '',
-      preventionAction: ticket.preventionAction ?? '',
-      lessonsLearned: ticket.lessonsLearned ?? '',
-    });
-  }, [ticket]);
 
   const updateMutation = useMutation({
     mutationFn: (data: Record<string, unknown>) => api.put(`/api/tickets/${id}`, data),
@@ -162,7 +151,6 @@ export default function TicketDetailPage() {
             <TabsTrigger value="resolution">Resolution</TabsTrigger>
             <TabsTrigger value="tasks">Tasks</TabsTrigger>
             <TabsTrigger value="approvals">Approvals</TabsTrigger>
-            <TabsTrigger value="rootcause">Root Cause</TabsTrigger>
             <TabsTrigger value="history">History</TabsTrigger>
           </TabsList>
 
@@ -227,61 +215,6 @@ export default function TicketDetailPage() {
           <TabsContent value="approvals" className="pt-4">
             <p className="text-sm text-muted-foreground">Approvals are coming soon.</p>
           </TabsContent>
-
-          <TabsContent value="rootcause" className="pt-4">
-            <Card>
-              <CardContent className="space-y-4 py-4">
-                <div>
-                  <label className="text-sm font-medium text-foreground">Root Cause Category</label>
-                  <Input
-                    className="mt-1"
-                    value={rootCause.rootCauseCategory}
-                    onChange={(e) => setRootCause((p) => ({ ...p, rootCauseCategory: e.target.value }))}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-foreground">Root Cause Description</label>
-                  <Textarea
-                    className="mt-1"
-                    rows={3}
-                    value={rootCause.rootCauseDescription}
-                    onChange={(e) => setRootCause((p) => ({ ...p, rootCauseDescription: e.target.value }))}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-foreground">Correction Action</label>
-                  <Textarea
-                    className="mt-1"
-                    rows={3}
-                    value={rootCause.correctionAction}
-                    onChange={(e) => setRootCause((p) => ({ ...p, correctionAction: e.target.value }))}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-foreground">Prevention Action</label>
-                  <Textarea
-                    className="mt-1"
-                    rows={3}
-                    value={rootCause.preventionAction}
-                    onChange={(e) => setRootCause((p) => ({ ...p, preventionAction: e.target.value }))}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-foreground">Lessons Learned</label>
-                  <Textarea
-                    className="mt-1"
-                    rows={3}
-                    value={rootCause.lessonsLearned}
-                    onChange={(e) => setRootCause((p) => ({ ...p, lessonsLearned: e.target.value }))}
-                  />
-                </div>
-                <Button onClick={() => updateMutation.mutate(rootCause)} disabled={updateMutation.isPending}>
-                  {updateMutation.isPending ? 'Saving...' : 'Save Root Cause'}
-                </Button>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
           <TabsContent value="history" className="pt-4">
             <p className="text-sm text-muted-foreground">Lifecycle history is coming soon.</p>
           </TabsContent>
@@ -330,13 +263,19 @@ export default function TicketDetailPage() {
                 </Select>
               </div>
               <div className="flex justify-between">
-                <span className="text-muted-foreground">Type</span>
-                <span className="text-foreground">{ticket.requestType.name}</span>
+                <span className="text-muted-foreground">Template</span>
+                <span className="text-foreground">{ticket.template.name}</span>
               </div>
               {ticket.ticketCategory && (
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Category</span>
                   <span className="text-foreground">{ticket.ticketCategory}</span>
+                </div>
+              )}
+              {ticket.slaHours != null && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">SLA</span>
+                  <span className="text-foreground">Resolve in {ticket.slaHours}h</span>
                 </div>
               )}
               {ticket.dueDate && (

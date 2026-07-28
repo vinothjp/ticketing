@@ -215,6 +215,13 @@ async function main() {
     { value: 'Preventive Maintenance', label: 'Preventive Maintenance' },
     { value: 'Doubt Clarification', label: 'Doubt Clarification' },
   ];
+  const resolutionCodeOptions = [
+    { value: 'Fixed', label: 'Fixed' },
+    { value: 'Workaround', label: 'Workaround Provided' },
+    { value: 'Not Reproducible', label: 'Not Reproducible' },
+    { value: 'Duplicate', label: 'Duplicate' },
+    { value: 'No Action Needed', label: 'No Action Needed' },
+  ];
 
   const picklists: {
     listKey: string;
@@ -228,6 +235,7 @@ async function main() {
     ...categoryOptions.map((o) => ({ listKey: 'ticketCategory', ...o })),
     ...subCategoryOptions.map((o) => ({ listKey: 'subCategory', ...o })),
     ...requestTypeOptions.map((o) => ({ listKey: 'requestType', ...o })),
+    ...resolutionCodeOptions.map((o) => ({ listKey: 'resolutionCode', ...o })),
   ];
 
   // Replace the picklist master so values match the spec exactly (dev data).

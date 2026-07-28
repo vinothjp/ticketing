@@ -15,6 +15,9 @@ import { TemplatesModule } from './templates/templates.module';
 import { PicklistsModule } from './picklists/picklists.module';
 import { SlaModule } from './sla/sla.module';
 import { TicketsModule } from './tickets/tickets.module';
+import { TasksModule } from './tasks/tasks.module';
+import { ApprovalsModule } from './approvals/approvals.module';
+import { MessagingModule } from './messaging/messaging.module';
 
 @Module({
   imports: [
@@ -32,6 +35,9 @@ import { TicketsModule } from './tickets/tickets.module';
     PicklistsModule,
     SlaModule,
     TicketsModule,
+    TasksModule,
+    ApprovalsModule,
+    MessagingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

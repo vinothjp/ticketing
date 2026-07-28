@@ -5,10 +5,12 @@ import {
   FieldCatalogController,
 } from './tickets.controller';
 import { TemplatesModule } from '../templates/templates.module';
+import { ActivityModule } from '../activity/activity.module';
 
 @Module({
-  imports: [TemplatesModule],
+  imports: [TemplatesModule, ActivityModule],
   providers: [TicketsService],
   controllers: [TicketsController, FieldCatalogController],
+  exports: [TicketsService],
 })
 export class TicketsModule {}

@@ -19,6 +19,9 @@ import {
   ListTree,
   LayoutTemplate,
   Timer,
+  BookOpen,
+  FolderKanban,
+  Inbox,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api from '../lib/api';
@@ -54,6 +57,8 @@ const tenantNavGroups: NavGroup[] = [
     items: [
       { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
       { to: '/tickets', label: 'Tickets', icon: Ticket },
+      { to: '/knowledge-base', label: 'Knowledge Base', icon: BookOpen },
+      { to: '/projects', label: 'Projects', icon: FolderKanban },
     ],
   },
   {
@@ -65,6 +70,7 @@ const tenantNavGroups: NavGroup[] = [
       { to: '/admin/templates', label: 'Templates', icon: LayoutTemplate },
       { to: '/admin/picklists', label: 'Picklist Options', icon: ListTree },
       { to: '/admin/sla', label: 'SLA Policies', icon: Timer },
+      { to: '/admin/channels', label: 'Inbound Email', icon: Inbox },
     ],
   },
 ];
@@ -95,11 +101,14 @@ export default function Layout({ children }: { children: ReactNode }) {
   const isAdmin = !!user?.roles.includes('Admin');
   const navGroups = isSuperAdmin
     ? superAdminNavGroups
-    : tenantNavGroups.map((group) =>
-        group.label === 'Administration' && isAdmin
-          ? { ...group, items: [...group.items, { to: '/organization', label: 'Organization', icon: Building2 }] }
-          : group,
-      );
+    : tenantNavGroups
+        // Administration is admin-only; regular users just get the Workspace group.
+        .filter((group) => group.label !== 'Administration' || isAdmin)
+        .map((group) =>
+          group.label === 'Administration'
+            ? { ...group, items: [...group.items, { to: '/organization', label: 'Organization', icon: Building2 }] }
+            : group,
+        );
 
   const { data: myClient } = useQuery<MyClient | null>({
     queryKey: ['my-client'],

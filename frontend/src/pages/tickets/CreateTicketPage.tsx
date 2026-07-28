@@ -290,7 +290,7 @@ export default function CreateTicketPage() {
                   {groupFields.map((f) => (
                     <div key={f.fieldKey} className={f.dataType === 'TEXTAREA' ? 'sm:col-span-2' : undefined}>
                       <DynamicTicketField
-                        field={f}
+                        field={f.fieldKey === 'sla' ? { ...f, label: 'Expected Resolution Time' } : f}
                         value={values[f.fieldKey]}
                         onChange={(v) => setValues((prev) => ({ ...prev, [f.fieldKey]: v }))}
                         error={errors[f.fieldKey]}

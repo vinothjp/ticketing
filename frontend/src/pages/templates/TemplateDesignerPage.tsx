@@ -17,7 +17,7 @@ import { cn } from '@/lib/utils';
 import DynamicTicketField, { type MergedTemplateField, type FieldDataType, type FieldOption } from '../tickets/DynamicTicketField';
 import {
   TEMPLATE_CATEGORIES, TEMPLATE_COLORS, TEMPLATE_ICONS, CUSTOM_FIELD_TYPES,
-  OPTION_BACKED_TYPES, FIELD_GROUPS, typeLabel, iconFor,
+  OPTION_BACKED_TYPES, FIELD_GROUPS, FILE_TYPE_OPTIONS, MAX_FILE_SIZE_MB, typeLabel, iconFor,
 } from './templateMeta';
 
 type Group = 'ticket_info' | 'ticket_detail' | 'root_cause';
@@ -226,24 +226,28 @@ export default function TemplateDesignerPage() {
   });
 
   const buildFieldsPayload = () =>
-    fields.map((f, i) => ({
-      ...(f.fieldKey ? { fieldKey: f.fieldKey } : {}),
-      isCustom: f.isCustom,
-      ...(f.isCustom
-        ? {
-            label: f.label.trim(),
-            dataType: f.dataType,
-            group: f.group,
-            placeholder: f.placeholder || undefined,
-            options: OPTION_BACKED_TYPES.includes(f.dataType) ? f.options : undefined,
-          }
-        : {}),
-      visibility: f.visibility,
-      requirement: f.requirement,
-      readOnly: f.readOnly,
-      sortOrder: i,
-      helperTextOverride: f.helperTextOverride || undefined,
-    }));
+    fields.map((f, i) => {
+      // Options carry select choices AND Attachment allowed-file-types (system or custom).
+      const carriesOptions = OPTION_BACKED_TYPES.includes(f.dataType) || f.dataType === 'FILE';
+      return {
+        ...(f.fieldKey ? { fieldKey: f.fieldKey } : {}),
+        isCustom: f.isCustom,
+        ...(f.isCustom
+          ? {
+              label: f.label.trim(),
+              dataType: f.dataType,
+              group: f.group,
+              placeholder: f.placeholder || undefined,
+            }
+          : {}),
+        ...(carriesOptions ? { options: f.options } : {}),
+        visibility: f.visibility,
+        requirement: f.requirement,
+        readOnly: f.readOnly,
+        sortOrder: i,
+        helperTextOverride: f.helperTextOverride || undefined,
+      };
+    });
 
   const validate = (): string | null => {
     if (!name.trim()) return 'Give the template a name';
@@ -589,6 +593,32 @@ function FieldRow({
                 </div>
               )}
             </>
+          )}
+
+          {field.dataType === 'FILE' && (
+            <div className="space-y-1.5 border-t pt-3">
+              <label className="text-xs font-medium">Allowed file types</label>
+              <div className="flex flex-wrap gap-x-4 gap-y-2">
+                {FILE_TYPE_OPTIONS.map((ft) => {
+                  const checked = (field.options ?? []).some((o) => o.value === ft.value);
+                  return (
+                    <label key={ft.value} className="flex items-center gap-1.5 text-sm">
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(c) => {
+                          const cur = field.options ?? [];
+                          onPatch(field.key, {
+                            options: c ? [...cur, ft] : cur.filter((o) => o.value !== ft.value),
+                          });
+                        }}
+                      />
+                      {ft.label}
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-muted-foreground">Leave all unchecked to allow any type. Max size {MAX_FILE_SIZE_MB} MB.</p>
+            </div>
           )}
         </div>
       )}

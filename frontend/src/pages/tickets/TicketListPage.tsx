@@ -16,6 +16,7 @@ import {
 import { getPriorityMeta, isTerminalStatus, type TicketSummary } from './ticketHelpers';
 
 interface TemplateSummary { id: string; name: string; }
+interface CompanyOption { id: string; name: string; }
 interface UserOption { id: string; username: string; }
 interface PicklistOpt { value: string; label: string; isActive?: boolean }
 interface MyTask {
@@ -73,6 +74,7 @@ export default function TicketListPage() {
   const [view, setView] = useState<ViewKey>('all');
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
+  const [companyFilter, setCompanyFilter] = useState<string>('all');
   const [sort, setSort] = useState<SortKey>('newest');
 
   const { data: tickets = [], isLoading } = useQuery<TicketSummary[]>({
@@ -87,6 +89,13 @@ export default function TicketListPage() {
   const { data: myTasks = [] } = useQuery<MyTask[]>({
     queryKey: ['my-tasks'],
     queryFn: async () => (await api.get('/api/my-tasks')).data,
+  });
+  // Customer companies for the "filter by customer" control (staff only).
+  const isCustomer = !!user?.roles.includes('Customer') && !isAdmin;
+  const { data: companies = [] } = useQuery<CompanyOption[]>({
+    queryKey: ['customer-companies'],
+    queryFn: async () => (await api.get('/api/customer-companies')).data,
+    enabled: !isCustomer,
   });
 
   const categories = useMemo(
@@ -114,8 +123,9 @@ export default function TicketListPage() {
     if (view === 'unassigned') list = list.filter((t) => t.technicians.length === 0);
     if (priorityFilter !== 'all') list = list.filter((t) => (t.priority ?? '').toLowerCase() === priorityFilter);
     if (categoryFilter !== 'all') list = list.filter((t) => t.ticketCategory === categoryFilter);
+    if (companyFilter !== 'all') list = list.filter((t) => t.customerCompany?.id === companyFilter);
     return list;
-  }, [byType, view, priorityFilter, categoryFilter, user?.id]);
+  }, [byType, view, priorityFilter, categoryFilter, companyFilter, user?.id]);
 
   const sorted = useMemo(() => {
     const list = [...filtered];
@@ -205,6 +215,15 @@ export default function TicketListPage() {
             {templates.map((t) => <SelectItem key={t.id} value={t.name}>{t.name}</SelectItem>)}
           </SelectContent>
         </Select>
+        {!isCustomer && companies.length > 0 && (
+          <Select value={companyFilter} onValueChange={setCompanyFilter}>
+            <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All customers</SelectItem>
+              {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        )}
         <div className="ml-auto">
           <Select value={sort} onValueChange={(v) => setSort(v as SortKey)}>
             <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
@@ -313,6 +332,7 @@ export default function TicketListPage() {
 
                     {/* Meta line 2 */}
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                      {t.customerCompany && (<><span>Customer : <span className="text-foreground">{t.customerCompany.name}</span></span>{sep}</>)}
                       {t.department && (<><span>Department : <span className="text-foreground">{t.department}</span></span>{sep}</>)}
                       {t.ticketCategory && (<><span>Category : <span className="text-foreground">{t.ticketCategory}</span></span>{sep}</>)}
                       <AssignedTo

@@ -4,6 +4,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { z } from 'zod';
 import { toast } from 'sonner';
 import api from '../../lib/api';
+import { useAuth } from '../../context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import DynamicTicketField, { type MergedTemplateField } from './DynamicTicketField';
@@ -24,6 +25,7 @@ interface TemplateData {
 
 interface PicklistOption { value: string; label: string; parentValue?: string | null; }
 interface UserOption { id: string; username: string; }
+interface CompanyOption { id: string; name: string; }
 interface SlaPolicy { id: string; priority: string; resolutionHours: number; responseHours?: number | null; isActive: boolean; }
 
 const GROUP_LABELS: Record<MergedTemplateField['group'], string> = {
@@ -81,10 +83,20 @@ function defaultValueFor(f: MergedTemplateField, descriptionGuidance?: string | 
 
 export default function CreateTicketPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const isCustomer = !!user?.roles.includes('Customer') && !user?.roles.includes('Admin');
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string>('');
   const [values, setValues] = useState<Record<string, any>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [attachmentFiles, setAttachmentFiles] = useState<File[]>([]);
+
+  // Staff can tag the ticket with a customer company (customers are auto-tagged server-side).
+  const { data: companies = [] } = useQuery<CompanyOption[]>({
+    queryKey: ['customer-companies'],
+    queryFn: async () => (await api.get('/api/customer-companies')).data,
+    enabled: !isCustomer,
+  });
 
   const { data: templates = [] } = useQuery<TemplateSummary[]>({
     queryKey: ['templates'],
@@ -172,6 +184,7 @@ export default function CreateTicketPage() {
   const createMutation = useMutation({
     mutationFn: async (_mode: 'submit' | 'saveAndNew') => {
       const payload: Record<string, any> = { templateId: selectedTemplateId };
+      if (selectedCompanyId) payload.customerCompanyId = selectedCompanyId;
       const customFields: Record<string, any> = {};
       for (const f of visibleFields) {
         if (f.dataType === 'SYSTEM' || f.dataType === 'FILE') continue;
@@ -254,7 +267,19 @@ export default function CreateTicketPage() {
     <div>
       <div className="mb-6 flex items-center justify-between gap-4">
         <h1 className="text-2xl font-bold text-foreground">New Ticket</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {!isCustomer && companies.length > 0 && (
+            <>
+              <label className="text-sm font-medium text-muted-foreground">Customer</label>
+              <Select value={selectedCompanyId || 'none'} onValueChange={(v) => setSelectedCompanyId(v === 'none' ? '' : v)}>
+                <SelectTrigger className="w-48"><SelectValue placeholder="No company" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No company</SelectItem>
+                  {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </>
+          )}
           <label className="text-sm font-medium text-muted-foreground">Template</label>
           <Select
             value={selectedTemplateId ?? undefined}

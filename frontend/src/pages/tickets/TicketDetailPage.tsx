@@ -32,6 +32,7 @@ interface TicketDetail {
   requestorName?: string | null;
   requestorContact?: string | null;
   customerName?: string | null;
+  customerCompany?: { id: string; name: string } | null;
   notifyEmails: string[];
   dueDate?: string | null;
   expectedResolutionDate?: string | null;
@@ -335,6 +336,7 @@ export default function TicketDetailPage() {
             <CardContent className="space-y-1 pb-4 text-sm">
               <div className="text-foreground">{ticket.requestorName || '—'}</div>
               {ticket.requestorContact && <div className="text-muted-foreground">{ticket.requestorContact}</div>}
+              {ticket.customerCompany && <div className="text-muted-foreground">Company: <span className="text-foreground">{ticket.customerCompany.name}</span></div>}
               {ticket.customerName && <div className="text-muted-foreground">Customer: {ticket.customerName}</div>}
             </CardContent>
           </Card>

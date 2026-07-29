@@ -17,6 +17,7 @@ export interface TicketSummary {
   createdAt: string;
   template: { id: string; name: string; category?: string | null };
   technicians: TicketTechnicianRow[];
+  customerCompany?: { id: string; name: string } | null;
 }
 
 const PRIORITY_META: Record<string, { label: string; code: string; barClass: string; textClass: string }> = {

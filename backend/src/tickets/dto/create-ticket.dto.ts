@@ -16,6 +16,7 @@ export class CreateTicketDto {
   @IsOptional() @IsString() requestorName?: string;
   @IsOptional() @IsString() requestorEmail?: string;
   @IsOptional() @IsString() customerName?: string;
+  @IsOptional() @IsString() customerCompanyId?: string;
   @IsOptional() @IsString() department?: string;
   @IsOptional() @IsString() requestorContact?: string;
   @IsOptional() @IsString() priority?: string;

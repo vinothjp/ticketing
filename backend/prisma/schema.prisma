@@ -48,7 +48,29 @@ model Client {
   slaPolicies  SlaPolicy[]
   messagingChannels MessagingChannel[]
   tickets      Ticket[]
+  customerCompanies CustomerCompany[]
   ticketSequence Int @default(0)
+}
+
+// An external customer company of the tenant (Client). Each has a handful of
+// contact users who log in and raise tickets; agents see and filter by company.
+model CustomerCompany {
+  id           String   @id @default(uuid())
+  clientId     String
+  client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name         String
+  code         String?
+  contactEmail String?
+  status       String   @default("ACTIVE")
+  maxContacts  Int      @default(5)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  createdBy    String?
+  updatedBy    String?
+  users        User[]
+  tickets      Ticket[]
+
+  @@unique([clientId, name])
 }
 
 model License {
@@ -81,6 +103,9 @@ model User {
   updatedBy      String?
   clientId       String?
   client         Client?     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // Set for external customer-contact users; null for internal staff/agents.
+  customerCompanyId String?
+  customerCompany   CustomerCompany? @relation(fields: [customerCompanyId], references: [id], onDelete: SetNull)
   userRoles      UserRole[]
   ticketAssignments TicketTechnician[]
 }
@@ -254,6 +279,7 @@ model Ticket {
   requestorUserId       String?
   requestorEmail        String?
   customerName          String?
+  customerCompanyId     String?
   department             String?
   requestorContact      String?
   priority              String?
@@ -286,6 +312,7 @@ model Ticket {
   createdBy             String?
   updatedBy             String?
 
+  customerCompany       CustomerCompany? @relation(fields: [customerCompanyId], references: [id])
   technicians           TicketTechnician[]
   attachments           TicketAttachment[]
   activities            TicketActivity[]
@@ -294,6 +321,7 @@ model Ticket {
   messages              TicketMessage[]
 
   @@unique([clientId, ticketNumber])
+  @@index([clientId, customerCompanyId])
   @@index([customFields(ops: JsonbOps)], type: Gin)
 }
 

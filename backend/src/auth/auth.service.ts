@@ -56,7 +56,13 @@ export class AuthService {
     }
 
     const roles = user.userRoles.map((ur) => ur.role.name);
-    const payload = { sub: user.id, username: user.username, roles, clientId: user.clientId };
+    const payload = {
+      sub: user.id,
+      username: user.username,
+      roles,
+      clientId: user.clientId,
+      customerCompanyId: user.customerCompanyId,
+    };
 
     const accessToken = this.jwtService.sign(payload, {
       secret: this.config.get('JWT_SECRET'),
@@ -77,6 +83,7 @@ export class AuthService {
         email: user.email,
         roles,
         clientId: user.clientId,
+        customerCompanyId: user.customerCompanyId,
       },
     };
   }

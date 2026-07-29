@@ -140,9 +140,9 @@ export default function TicketListPage() {
   const views: { key: ViewKey; label: string; count: number }[] = [
     { key: 'all', label: 'All tickets', count: viewCounts.all },
     { key: 'mine', label: 'Assigned tickets', count: viewCounts.mine },
+    { key: 'tasks', label: 'Assigned tasks', count: viewCounts.tasks },
     { key: 'overdue', label: 'Overdue', count: viewCounts.overdue },
     { key: 'unassigned', label: 'Unassigned', count: viewCounts.unassigned },
-    { key: 'tasks', label: 'Assigned tasks', count: viewCounts.tasks },
   ];
 
   return (

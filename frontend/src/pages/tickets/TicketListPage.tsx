@@ -18,8 +18,16 @@ import { getPriorityMeta, isTerminalStatus, type TicketSummary } from './ticketH
 interface TemplateSummary { id: string; name: string; }
 interface UserOption { id: string; username: string; }
 interface PicklistOpt { value: string; label: string; isActive?: boolean }
+interface MyTask {
+  id: string;
+  title: string;
+  status: string;
+  dueDate?: string | null;
+  assigneeName?: string | null;
+  ticket: { id: string; ticketNumber: string; subject: string; ticketStatus: string; priority?: string | null };
+}
 
-type ViewKey = 'all' | 'mine' | 'overdue' | 'unassigned';
+type ViewKey = 'all' | 'mine' | 'overdue' | 'unassigned' | 'tasks';
 type SortKey = 'newest' | 'oldest' | 'priority' | 'due';
 
 const PRIORITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -75,6 +83,11 @@ export default function TicketListPage() {
     queryKey: ['templates'],
     queryFn: async () => (await api.get('/api/templates')).data,
   });
+  // Open tasks assigned to the current agent across all tickets (incl. other agents' tickets).
+  const { data: myTasks = [] } = useQuery<MyTask[]>({
+    queryKey: ['my-tasks'],
+    queryFn: async () => (await api.get('/api/my-tasks')).data,
+  });
 
   const categories = useMemo(
     () => Array.from(new Set(tickets.map((t) => t.ticketCategory).filter((c): c is string => !!c))),
@@ -91,7 +104,8 @@ export default function TicketListPage() {
     mine: byType.filter((t) => t.technicians.some((tt) => tt.user.id === user?.id)).length,
     overdue: byType.filter((t) => !isTerminalStatus(t.ticketStatus) && t.dueDate && new Date(t.dueDate) < new Date()).length,
     unassigned: byType.filter((t) => t.technicians.length === 0).length,
-  }), [byType, user?.id]);
+    tasks: myTasks.length,
+  }), [byType, user?.id, myTasks.length]);
 
   const filtered = useMemo(() => {
     let list = byType;
@@ -124,18 +138,23 @@ export default function TicketListPage() {
   }, [filtered, sort]);
 
   const views: { key: ViewKey; label: string; count: number }[] = [
-    { key: 'all', label: 'All requests', count: viewCounts.all },
-    { key: 'mine', label: 'Assigned to me', count: viewCounts.mine },
+    { key: 'all', label: 'All tickets', count: viewCounts.all },
+    { key: 'mine', label: 'Assigned tickets', count: viewCounts.mine },
     { key: 'overdue', label: 'Overdue', count: viewCounts.overdue },
     { key: 'unassigned', label: 'Unassigned', count: viewCounts.unassigned },
+    { key: 'tasks', label: 'Assigned tasks', count: viewCounts.tasks },
   ];
 
   return (
     <div>
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">{typeFilter || 'All requests'}</h1>
-          <p className="text-sm text-muted-foreground">{sorted.length} of {tickets.length}</p>
+          <h1 className="text-2xl font-bold text-foreground">
+            {view === 'tasks' ? 'Assigned tasks' : (typeFilter || 'All tickets')}
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            {view === 'tasks' ? `${myTasks.length} open task(s)` : `${sorted.length} of ${tickets.length}`}
+          </p>
         </div>
         <Button asChild>
           <Link to="/tickets/new"><Plus className="size-4" /> New request</Link>
@@ -160,8 +179,8 @@ export default function TicketListPage() {
         ))}
       </div>
 
-      {/* Filters + sort */}
-      <div className="mb-5 flex flex-wrap items-center gap-2 py-3">
+      {/* Filters + sort (tickets only) */}
+      <div className={cn('mb-5 flex flex-wrap items-center gap-2 py-3', view === 'tasks' && 'hidden')}>
         <Select value={priorityFilter} onValueChange={setPriorityFilter}>
           <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -199,7 +218,38 @@ export default function TicketListPage() {
         </div>
       </div>
 
-      {isLoading ? (
+      {view === 'tasks' ? (
+        <div className="divide-y border-y">
+          {myTasks.length === 0 && <p className="p-6 text-center text-muted-foreground">No open tasks assigned to you.</p>}
+          {myTasks.map((task) => {
+            const priority = getPriorityMeta(task.ticket.priority);
+            const due = task.dueDate
+              ? new Date(task.dueDate).toLocaleString(undefined, { month: 'short', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+              : '—';
+            return (
+              <div
+                key={task.id}
+                onClick={() => navigate(`/tickets/${task.ticket.id}`)}
+                className="flex cursor-pointer items-stretch gap-3 px-1 py-3 transition-colors hover:bg-accent/40"
+              >
+                <div className={`w-1 shrink-0 rounded-full ${priority.barClass}`} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-foreground">{task.title}</div>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                    <span className="text-primary hover:underline">
+                      <span className="text-muted-foreground">#{task.ticket.ticketNumber}</span> {task.ticket.subject}
+                    </span>
+                    <span className="text-border">|</span>
+                    <span>Due : <span className="text-foreground">{due}</span></span>
+                    <span className="text-border">|</span>
+                    <span>Status : <span className="text-foreground">{task.status}</span></span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
       ) : (
         <div className="divide-y border-y">

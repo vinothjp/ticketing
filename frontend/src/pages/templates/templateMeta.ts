@@ -80,14 +80,14 @@ export const MAX_FILE_SIZE_MB = 5;
 
 /** File types an admin can allow on an Attachment field. `value` is the input `accept` string. */
 export const FILE_TYPE_OPTIONS: { value: string; label: string }[] = [
-  { value: '.pdf', label: 'PDF' },
-  { value: '.doc,.docx', label: 'Word' },
-  { value: '.xls,.xlsx', label: 'Excel' },
-  { value: '.ppt,.pptx', label: 'PowerPoint' },
-  { value: '.png,.jpg,.jpeg,.gif', label: 'Images' },
-  { value: '.txt', label: 'Text' },
-  { value: '.csv', label: 'CSV' },
-  { value: '.zip', label: 'Zip' },
+  { value: '.pdf', label: '.pdf' },
+  { value: '.doc,.docx', label: '.docx' },
+  { value: '.xls,.xlsx', label: '.xlsx' },
+  { value: '.ppt,.pptx', label: '.pptx' },
+  { value: '.png,.jpg,.jpeg,.gif', label: '.png/.jpg' },
+  { value: '.txt', label: '.txt' },
+  { value: '.csv', label: '.csv' },
+  { value: '.zip', label: '.zip' },
 ];
 
 export const FIELD_GROUPS: { value: 'ticket_info' | 'ticket_detail' | 'root_cause'; label: string }[] = [

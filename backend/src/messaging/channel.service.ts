@@ -39,6 +39,48 @@ export class ChannelService {
     return null;
   }
 
+  /** Email the ticket's assigned technicians about an internal note (excludes the note's author). */
+  private async notifyAssignedTechnicians(
+    ticketId: string,
+    ticketSubject: string,
+    body: string,
+    author: { username: string | null; email: string | null } | null,
+    attachments: { filename: string; path: string }[],
+  ) {
+    const techs = await this.prisma.ticketTechnician.findMany({
+      where: { ticketId },
+      include: { user: { select: { email: true } } },
+    });
+    const recipients = Array.from(
+      new Set(
+        techs
+          .map((t) => t.user?.email)
+          .filter((e): e is string => !!e && EMAIL_RE.test(e) && e !== author?.email),
+      ),
+    );
+    if (recipients.length === 0) return;
+
+    const subject = `Internal note · ${ticketSubject}`;
+    try {
+      if (await this.mailer.isConfigured()) {
+        await this.mailer.sendMail({
+          to: recipients.join(', '),
+          subject,
+          html: `<div style="white-space:pre-wrap;font-family:sans-serif">${escapeHtml(body)}</div>`,
+          text: body,
+          replyTo: author?.email ?? undefined,
+          attachments,
+        });
+      } else {
+        // Mock channel — logs instead of sending, so dev works without SMTP.
+        console.log(`[MOCK EMAIL] to=${recipients.join(', ')} subject="${subject}"\n${body}`);
+      }
+    } catch (e) {
+      // An internal-note email failure must not block saving the note.
+      console.warn('[internal-note] failed to email assigned technicians:', e);
+    }
+  }
+
   async sendReply(
     ticketId: string,
     clientId: string,
@@ -60,14 +102,19 @@ export class ChannelService {
     let externalId: string | undefined;
     let toAddress: string | null = null;
     const subject = `[${ticket.ticketNumber}] ${ticket.subject}`;
+    const attachments = (files ?? []).map((f) => ({
+      filename: f.originalname,
+      path: join(process.cwd(), 'uploads/messages', f.filename),
+    }));
+
+    if (internal) {
+      // Internal notes go ONLY to the assigned technician(s) — never the customer.
+      await this.notifyAssignedTechnicians(ticket.id, subject, input.body, author, attachments);
+    }
 
     if (!internal) {
       toAddress = this.recipientEmail(ticket);
       if (!toAddress) throw new BadRequestException('No email address on file for the requester');
-      const attachments = (files ?? []).map((f) => ({
-        filename: f.originalname,
-        path: join(process.cwd(), 'uploads/messages', f.filename),
-      }));
       try {
         if (await this.mailer.isConfigured()) {
           const res = await this.mailer.sendMail({

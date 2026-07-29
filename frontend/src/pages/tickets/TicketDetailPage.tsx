@@ -140,7 +140,7 @@ export default function TicketDetailPage() {
   return (
     <div>
       <Button variant="ghost" size="sm" asChild className="mb-3 -ml-2">
-        <Link to="/tickets"><ArrowLeft className="size-4" /> All requests</Link>
+        <Link to="/tickets"><ArrowLeft className="size-4" /> All tickets</Link>
       </Button>
 
       <div className="mb-6 flex items-center justify-between">
@@ -256,7 +256,15 @@ export default function TicketDetailPage() {
                 <div className="mb-1 text-xs text-muted-foreground">Status</div>
                 <Select
                   value={ticket.ticketStatus}
-                  onValueChange={(v) => updateMutation.mutate({ ticketStatus: v })}
+                  onValueChange={(v) => {
+                    updateMutation.mutate({ ticketStatus: v });
+                    // On Resolved: jump to the Resolution tab. If a resolution note
+                    // already exists just confirm; otherwise the tab prompts for one.
+                    if (v.toLowerCase() === 'resolved') {
+                      setTab('resolution');
+                      if (ticket.resolution?.trim()) toast.success('Ticket resolved');
+                    }
+                  }}
                 >
                   <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>

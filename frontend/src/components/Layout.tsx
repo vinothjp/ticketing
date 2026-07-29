@@ -37,6 +37,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import ChangePasswordDialog from './ChangePasswordDialog';
+import CopilotWidget from './CopilotWidget';
 
 interface NavItem {
   to: string;
@@ -265,6 +266,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       </main>
 
       <ChangePasswordDialog open={changePasswordOpen} onOpenChange={setChangePasswordOpen} />
+      {!isSuperAdmin && <CopilotWidget />}
     </div>
   );
 }

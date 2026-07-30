@@ -7,18 +7,31 @@ import { decrypt } from '../lib/encryption';
 export class MailerService {
   constructor(private prisma: PrismaService) {}
 
-  async getTransporter() {
-    const config = await this.prisma.smtpConfig.findUnique({ where: { id: 'global' } });
-    if (!config?.host || !config.username || !config.passwordEncrypted || !config.enabled) {
+  /** Effective SMTP config for a client: the client's own if enabled+complete, else the global fallback. */
+  private async resolveConfig(clientId?: string | null) {
+    const complete = (c: { host?: string | null; username?: string | null; passwordEncrypted?: string | null; enabled?: boolean } | null) =>
+      !!(c?.host && c.username && c.passwordEncrypted && c.enabled);
+
+    if (clientId) {
+      const tenant = await this.prisma.smtpConfig.findUnique({ where: { clientId } });
+      if (complete(tenant)) return tenant;
+    }
+    const global = await this.prisma.smtpConfig.findUnique({ where: { id: 'global' } });
+    return complete(global) ? global : null;
+  }
+
+  async getTransporter(clientId?: string | null) {
+    const config = await this.resolveConfig(clientId);
+    if (!config) {
       throw new BadRequestException('SMTP is not configured');
     }
 
     return nodemailer.createTransport({
-      host: config.host,
+      host: config.host!,
       port: config.port,
       secure: config.port === 465,
       requireTLS: config.useTls && config.port !== 465,
-      auth: { user: config.username, pass: decrypt(config.passwordEncrypted) },
+      auth: { user: config.username!, pass: decrypt(config.passwordEncrypted!) },
     });
   }
 
@@ -30,9 +43,9 @@ export class MailerService {
     replyTo?: string;
     headers?: Record<string, string>;
     attachments?: { filename: string; path: string }[];
-  }): Promise<{ messageId?: string }> {
-    const config = await this.prisma.smtpConfig.findUnique({ where: { id: 'global' } });
-    const transporter = await this.getTransporter();
+  }, clientId?: string | null): Promise<{ messageId?: string }> {
+    const config = await this.resolveConfig(clientId);
+    const transporter = await this.getTransporter(clientId);
     const info = await transporter.sendMail({
       from: config?.fromAddress || config?.username || undefined,
       to: options.to,
@@ -46,13 +59,12 @@ export class MailerService {
     return { messageId: (info as { messageId?: string })?.messageId };
   }
 
-  /** Whether SMTP is configured + enabled (so callers can fall back to a mock channel). */
-  async isConfigured(): Promise<boolean> {
-    const config = await this.prisma.smtpConfig.findUnique({ where: { id: 'global' } });
-    return !!(config?.host && config.username && config.passwordEncrypted && config.enabled);
+  /** Whether SMTP is configured + enabled for this client (or the global fallback). */
+  async isConfigured(clientId?: string | null): Promise<boolean> {
+    return !!(await this.resolveConfig(clientId));
   }
 
-  async sendPasswordResetEmail(to: string, username: string, resetUrl: string) {
+  async sendPasswordResetEmail(to: string, username: string, resetUrl: string, clientId?: string | null) {
     const html = `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 480px; margin: 0 auto;">
         <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 32px; border-radius: 12px 12px 0 0; text-align: center;">
@@ -68,6 +80,6 @@ export class MailerService {
         </div>
       </div>
     `;
-    await this.sendMail({ to, subject: 'Reset your password', html, text: `Reset your password: ${resetUrl}` });
+    await this.sendMail({ to, subject: 'Reset your password', html, text: `Reset your password: ${resetUrl}` }, clientId);
   }
 }

@@ -319,7 +319,8 @@ export default function UsersPage() {
                     <FormLabel>Roles</FormLabel>
                     <div className="space-y-2 rounded-lg border p-3">
                       {roles.length === 0 && <p className="text-sm text-muted-foreground">No roles available yet.</p>}
-                      {roles.map((role) => (
+                      {/* Customer logins are managed via Customer Companies → contacts (which sets their company). */}
+                      {roles.filter((role) => role.name !== 'Customer').map((role) => (
                         <div key={role.id} className="flex items-center gap-2">
                           <Checkbox
                             checked={field.value.includes(role.id)}

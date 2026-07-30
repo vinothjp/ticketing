@@ -49,6 +49,7 @@ model Client {
   messagingChannels MessagingChannel[]
   tickets      Ticket[]
   customerCompanies CustomerCompany[]
+  smtpConfig   SmtpConfig?
   ticketSequence Int @default(0)
 }
 
@@ -151,7 +152,10 @@ model UserRole {
 }
 
 model SmtpConfig {
-  id                String   @id @default("global")
+  id                String   @id @default(uuid())
+  // null = the platform-global config (id "global"); set = a tenant's own SMTP.
+  clientId          String?  @unique
+  client            Client?  @relation(fields: [clientId], references: [id], onDelete: Cascade)
   host              String?
   port              Int      @default(587)
   useTls            Boolean  @default(true)

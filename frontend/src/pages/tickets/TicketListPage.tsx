@@ -1,7 +1,7 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus } from 'lucide-react';
+import { Plus, ChevronDown, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
@@ -71,9 +71,14 @@ export default function TicketListPage() {
   });
   const typeFilter = searchParams.get('type') ?? '';
 
-  const [view, setView] = useState<ViewKey>('all');
+  // Initial view/status can be deep-linked from the dashboard (?view=, ?status=).
+  const initialView = (searchParams.get('view') ?? 'all') as ViewKey;
+  const [view, setView] = useState<ViewKey>(
+    (['all', 'mine', 'overdue', 'unassigned', 'tasks'] as string[]).includes(initialView) ? initialView : 'all',
+  );
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>(searchParams.get('status') ?? 'all');
   const [companyFilter, setCompanyFilter] = useState<string>('all');
   const [sort, setSort] = useState<SortKey>('newest');
 
@@ -85,13 +90,14 @@ export default function TicketListPage() {
     queryKey: ['templates'],
     queryFn: async () => (await api.get('/api/templates')).data,
   });
-  // Open tasks assigned to the current agent across all tickets (incl. other agents' tickets).
+  // Customer companies for the "filter by customer" control (staff only).
+  const isCustomer = !!user?.roles.includes('Customer') && !isAdmin;
+  // Open tasks assigned to the current agent (internal — customers never see tasks).
   const { data: myTasks = [] } = useQuery<MyTask[]>({
     queryKey: ['my-tasks'],
     queryFn: async () => (await api.get('/api/my-tasks')).data,
+    enabled: !isCustomer,
   });
-  // Customer companies for the "filter by customer" control (staff only).
-  const isCustomer = !!user?.roles.includes('Customer') && !isAdmin;
   const { data: companies = [] } = useQuery<CompanyOption[]>({
     queryKey: ['customer-companies'],
     queryFn: async () => (await api.get('/api/customer-companies')).data,
@@ -100,6 +106,10 @@ export default function TicketListPage() {
 
   const categories = useMemo(
     () => Array.from(new Set(tickets.map((t) => t.ticketCategory).filter((c): c is string => !!c))),
+    [tickets],
+  );
+  const statuses = useMemo(
+    () => Array.from(new Set(tickets.map((t) => t.ticketStatus).filter((s): s is string => !!s))),
     [tickets],
   );
 
@@ -123,9 +133,10 @@ export default function TicketListPage() {
     if (view === 'unassigned') list = list.filter((t) => t.technicians.length === 0);
     if (priorityFilter !== 'all') list = list.filter((t) => (t.priority ?? '').toLowerCase() === priorityFilter);
     if (categoryFilter !== 'all') list = list.filter((t) => t.ticketCategory === categoryFilter);
+    if (statusFilter !== 'all') list = list.filter((t) => t.ticketStatus === statusFilter);
     if (companyFilter !== 'all') list = list.filter((t) => t.customerCompany?.id === companyFilter);
     return list;
-  }, [byType, view, priorityFilter, categoryFilter, companyFilter, user?.id]);
+  }, [byType, view, priorityFilter, categoryFilter, statusFilter, companyFilter, user?.id]);
 
   const sorted = useMemo(() => {
     const list = [...filtered];
@@ -147,13 +158,46 @@ export default function TicketListPage() {
     return list;
   }, [filtered, sort]);
 
-  const views: { key: ViewKey; label: string; count: number }[] = [
+  const allViews: { key: ViewKey; label: string; count: number }[] = [
     { key: 'all', label: 'All tickets', count: viewCounts.all },
     { key: 'mine', label: 'Assigned tickets', count: viewCounts.mine },
     { key: 'tasks', label: 'Assigned tasks', count: viewCounts.tasks },
     { key: 'overdue', label: 'Overdue', count: viewCounts.overdue },
     { key: 'unassigned', label: 'Unassigned', count: viewCounts.unassigned },
   ];
+  // Customers only get their own ticket views — agent/task concepts are hidden.
+  const views = isCustomer ? allViews.filter((v) => v.key === 'all' || v.key === 'overdue') : allViews;
+
+  // Export the currently filtered/sorted tickets to CSV (client-side, no backend needed).
+  const exportCsv = () => {
+    const headers = ['Ticket #', 'Subject', 'Status', 'Priority', 'Requester', 'Customer', 'Category', 'Department', 'Assigned To', 'Due date', 'Created'];
+    const rows = sorted.map((t) => [
+      t.ticketNumber,
+      t.subject,
+      t.ticketStatus,
+      getPriorityMeta(t.priority).label,
+      t.requestorName ?? '',
+      t.customerCompany?.name ?? '',
+      t.ticketCategory ?? '',
+      t.department ?? '',
+      t.technicians.map((x) => x.user.username).join('; ') || 'Unassigned',
+      t.dueDate ? new Date(t.dueDate).toLocaleString() : '',
+      new Date(t.createdAt).toLocaleString(),
+    ]);
+    const esc = (v: unknown) => {
+      const s = String(v ?? '');
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const csv = [headers, ...rows].map((r) => r.map(esc).join(',')).join('\r\n');
+    // BOM so Excel reads UTF-8 correctly.
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `tickets-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div>
@@ -166,9 +210,16 @@ export default function TicketListPage() {
             {view === 'tasks' ? `${myTasks.length} open task(s)` : `${sorted.length} of ${tickets.length}`}
           </p>
         </div>
-        <Button asChild>
-          <Link to="/tickets/new"><Plus className="size-4" /> New request</Link>
-        </Button>
+        <div className="flex items-center gap-2">
+          {view !== 'tasks' && (
+            <Button variant="outline" onClick={exportCsv} disabled={sorted.length === 0}>
+              <Download className="size-4" /> Export
+            </Button>
+          )}
+          <Button asChild>
+            <Link to="/tickets/new"><Plus className="size-4" /> New request</Link>
+          </Button>
+        </div>
       </div>
 
       {/* Views (segmented) */}
@@ -189,10 +240,10 @@ export default function TicketListPage() {
         ))}
       </div>
 
-      {/* Filters + sort (tickets only) */}
-      <div className={cn('mb-5 flex flex-wrap items-center gap-2 py-3', view === 'tasks' && 'hidden')}>
+      {/* Filters + sort (tickets only) — single row */}
+      <div className={cn('mb-5 flex items-center gap-2 py-3', view === 'tasks' && 'hidden')}>
         <Select value={priorityFilter} onValueChange={setPriorityFilter}>
-          <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="min-w-0 flex-1"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All priorities</SelectItem>
             <SelectItem value="critical">Critical</SelectItem>
@@ -202,31 +253,38 @@ export default function TicketListPage() {
           </SelectContent>
         </Select>
         <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-          <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="min-w-0 flex-1"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All categories</SelectItem>
             {categories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
           </SelectContent>
         </Select>
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="min-w-0 flex-1"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All statuses</SelectItem>
+            {statuses.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+          </SelectContent>
+        </Select>
         <Select value={typeFilter || 'all'} onValueChange={(v) => setSearchParams(v === 'all' ? {} : { type: v })}>
-          <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="min-w-0 flex-1"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All templates</SelectItem>
             {templates.map((t) => <SelectItem key={t.id} value={t.name}>{t.name}</SelectItem>)}
           </SelectContent>
         </Select>
         {!isCustomer && companies.length > 0 && (
-          <Select value={companyFilter} onValueChange={setCompanyFilter}>
-            <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All customers</SelectItem>
-              {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          <SearchableSelect
+            value={companyFilter}
+            onChange={setCompanyFilter}
+            options={companies}
+            allLabel="All customers"
+            className="min-w-0 flex-1"
+          />
         )}
-        <div className="ml-auto">
+        <div className="min-w-0 flex-1">
           <Select value={sort} onValueChange={(v) => setSort(v as SortKey)}>
-            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="newest">Newest first</SelectItem>
               <SelectItem value="oldest">Oldest first</SelectItem>
@@ -448,5 +506,76 @@ function AssignedTo({
         </DropdownMenuContent>
       </DropdownMenu>
     </span>
+  );
+}
+
+// A select with a type-to-search box. Used for the customer filter (can be many companies).
+function SearchableSelect({
+  value, onChange, options, allLabel, className,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: { id: string; name: string }[];
+  allLabel: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  const selected = options.find((o) => o.id === value);
+  const filtered = query
+    ? options.filter((o) => o.name.toLowerCase().includes(query.toLowerCase()))
+    : options;
+
+  const pick = (v: string) => { onChange(v); setOpen(false); setQuery(''); };
+
+  return (
+    <div ref={ref} className={cn('relative', className)}>
+      {/* The field itself is typeable — type to filter, click an option to pick. */}
+      <div className="flex h-9 items-center gap-1 rounded-md border bg-background px-3 text-sm focus-within:ring-2 focus-within:ring-ring">
+        <input
+          value={open ? query : (value === 'all' ? '' : selected?.name ?? '')}
+          placeholder={allLabel}
+          onFocus={() => { setOpen(true); setQuery(''); }}
+          onChange={(e) => { setOpen(true); setQuery(e.target.value); }}
+          className="min-w-0 flex-1 bg-transparent text-foreground outline-none placeholder:text-muted-foreground"
+        />
+        <ChevronDown className="size-4 shrink-0 opacity-50" />
+      </div>
+      {open && (
+        <div className="absolute left-0 z-50 mt-1 max-h-60 w-56 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md">
+          <button
+            type="button"
+            onClick={() => pick('all')}
+            className="block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-accent"
+          >
+            {allLabel}
+          </button>
+          {filtered.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              onClick={() => pick(o.id)}
+              className={cn('block w-full truncate rounded px-2 py-1.5 text-left text-sm hover:bg-accent', o.id === value && 'bg-accent')}
+            >
+              {o.name}
+            </button>
+          ))}
+          {filtered.length === 0 && (
+            <div className="px-2 py-1.5 text-sm text-muted-foreground">No matches</div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

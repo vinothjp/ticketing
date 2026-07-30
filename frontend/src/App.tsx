@@ -13,6 +13,7 @@ import UsersPage from './pages/UsersPage';
 import RolesPage from './pages/RolesPage';
 import OrganizationPage from './pages/OrganizationPage';
 import CustomerCompaniesPage from './pages/CustomerCompaniesPage';
+import TenantSmtpConfigPage from './pages/SmtpConfigPage';
 import ClientsPage from './pages/super-admin/ClientsPage';
 import ClientFormPage from './pages/super-admin/ClientFormPage';
 import FormsPage from './pages/super-admin/FormsPage';
@@ -31,6 +32,8 @@ import ProjectsPage from './pages/ProjectsPage';
 const queryClient = new QueryClient();
 const isSuperAdmin = (roles: string[]) => roles.includes('SuperAdmin');
 const isTenantAdmin = (roles: string[]) => roles.includes('Admin');
+// SMTP settings: admins + agents (Viewer), never customers.
+const isStaff = (roles: string[]) => roles.includes('Admin') || roles.includes('Viewer');
 
 export default function App() {
   return (
@@ -87,6 +90,7 @@ export default function App() {
                         <Route path="/admin/picklists" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><PicklistOptionsPage /></RoleGate>} />
                         <Route path="/admin/sla" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><SlaPolicyPage /></RoleGate>} />
                         <Route path="/admin/channels" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ChannelsPage /></RoleGate>} />
+                        <Route path="/admin/smtp-config" element={<RoleGate allow={isStaff} redirectTo="/tickets"><TenantSmtpConfigPage /></RoleGate>} />
                         <Route path="*" element={<Navigate to="/dashboard" replace />} />
                       </Routes>
                     </Layout>

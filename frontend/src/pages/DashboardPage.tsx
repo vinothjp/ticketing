@@ -21,9 +21,20 @@ interface MyTask {
 
 const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 
+// Preferred display order for the per-status breakdown row; unknown statuses append after.
+const STATUS_ORDER = [
+  'Open', 'Assigned', 'In Progress', 'On Hold',
+  'Awaiting Vendor Update', 'Awaiting End-user Response',
+  'Approval Pending', 'Resolved', 'Closed',
+];
+// Friendlier labels for a few status boxes (value stays the real status).
+const STATUS_LABELS: Record<string, string> = { Open: 'Open tickets' };
+
 export default function DashboardPage() {
   const { user } = useAuth();
   const isAdmin = !!user?.roles.includes('Admin');
+  // Tasks are internal (agent-to-agent); customers never see them.
+  const isCustomer = !!user?.roles.includes('Customer') && !isAdmin;
 
   // Month filter — defaults to the current month; last 12 months available.
   const [month, setMonth] = useState(monthKey(new Date()));
@@ -57,6 +68,7 @@ export default function DashboardPage() {
     queryFn: async () => (await api.get('/api/my-tasks', {
       params: isAdmin && agentId !== 'all' ? { assignee: agentId } : undefined,
     })).data,
+    enabled: !isCustomer,
   });
 
   // Scope tickets to the selected month (by created date) and, for admins, the selected agent.
@@ -72,6 +84,27 @@ export default function DashboardPage() {
   const scopedTasks = useMemo(
     () => myTasks.filter((t) => monthKey(new Date(t.createdAt)) === month),
     [myTasks, month],
+  );
+
+  // Ticket count per status (within the selected month/agent scope).
+  // A fixed baseline is always shown (even at 0) so every dashboard — admin,
+  // agent, customer — has the same boxes; other statuses append only if present.
+  const statusBreakdown = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const t of scoped) counts[t.ticketStatus] = (counts[t.ticketStatus] ?? 0) + 1;
+    const base = ['Open', 'Resolved', 'Closed'];
+    const hidden = new Set(['New']);
+    const extras = [
+      ...STATUS_ORDER.filter((s) => counts[s] && !base.includes(s) && !hidden.has(s)),
+      ...Object.keys(counts).filter((s) => !STATUS_ORDER.includes(s) && !base.includes(s) && !hidden.has(s)),
+    ];
+    return [...base, ...extras].map((status) => ({ status, count: counts[status] ?? 0 }));
+  }, [scoped]);
+
+  // Overdue = past due date and not yet resolved/closed (a condition, not a status).
+  const overdueCount = useMemo(
+    () => scoped.filter((t) => !isTerminalStatus(t.ticketStatus) && t.dueDate && new Date(t.dueDate) < new Date()).length,
+    [scoped],
   );
 
   const stats = useMemo(() => {
@@ -128,25 +161,27 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="mb-8 grid grid-cols-2 gap-4 lg:grid-cols-5">
-        <div className="rounded-lg bg-muted/50 p-4">
-          <div className="text-sm text-muted-foreground">Open tickets</div>
+      <div className={`mb-8 grid grid-cols-2 gap-4 ${isCustomer ? 'lg:grid-cols-4' : 'lg:grid-cols-5'}`}>
+        <Link to="/tickets" className="rounded-lg bg-muted/50 p-4 transition-colors hover:bg-muted">
+          <div className="text-sm text-muted-foreground">Unresolved</div>
           <div className="mt-1 text-3xl font-bold text-foreground">{isLoading ? '—' : stats.open.length}</div>
-        </div>
-        <div className="rounded-lg bg-muted/50 p-4">
-          <div className="text-sm text-muted-foreground">Open tasks</div>
-          <div className="mt-1 text-3xl font-bold text-foreground">{scopedTasks.length}</div>
-        </div>
-        <div className="rounded-lg bg-muted/50 p-4">
+        </Link>
+        {!isCustomer && (
+          <Link to="/tickets?view=tasks" className="rounded-lg bg-muted/50 p-4 transition-colors hover:bg-muted">
+            <div className="text-sm text-muted-foreground">Open tasks</div>
+            <div className="mt-1 text-3xl font-bold text-foreground">{scopedTasks.length}</div>
+          </Link>
+        )}
+        <Link to="/tickets" className="rounded-lg bg-muted/50 p-4 transition-colors hover:bg-muted">
           <div className="text-sm text-muted-foreground">Due today</div>
           <div className="mt-1 text-3xl font-bold text-foreground">{isLoading ? '—' : stats.dueToday.length}</div>
-        </div>
-        <div className={stats.slaAtRisk.length > 0 ? 'rounded-lg bg-destructive/10 p-4' : 'rounded-lg bg-muted/50 p-4'}>
+        </Link>
+        <Link to="/tickets?view=overdue" className={stats.slaAtRisk.length > 0 ? 'rounded-lg bg-destructive/10 p-4 transition-colors hover:bg-destructive/20' : 'rounded-lg bg-muted/50 p-4 transition-colors hover:bg-muted'}>
           <div className={stats.slaAtRisk.length > 0 ? 'text-sm text-destructive' : 'text-sm text-muted-foreground'}>SLA at risk</div>
           <div className={stats.slaAtRisk.length > 0 ? 'mt-1 text-3xl font-bold text-destructive' : 'mt-1 text-3xl font-bold text-foreground'}>
             {isLoading ? '—' : stats.slaAtRisk.length}
           </div>
-        </div>
+        </Link>
         <div className="rounded-lg bg-muted/50 p-4">
           <div className="text-sm text-muted-foreground">Avg. resolution</div>
           <div className="mt-1 text-3xl font-bold text-foreground">
@@ -155,7 +190,30 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      {/* Per-status breakdown — same card style/size as the KPI row, click to filter the list */}
+      {statusBreakdown.length > 0 && (
+        <div className="mb-8">
+          <div className="mb-2 text-sm font-medium text-muted-foreground">By status</div>
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+            {statusBreakdown.map((s) => (
+              <Link
+                key={s.status}
+                to={`/tickets?status=${encodeURIComponent(s.status)}`}
+                className="rounded-lg bg-muted/50 p-4 transition-colors hover:bg-muted"
+              >
+                <div className="truncate text-sm text-muted-foreground" title={s.status}>{STATUS_LABELS[s.status] ?? s.status}</div>
+                <div className="mt-1 text-3xl font-bold text-foreground">{s.count}</div>
+              </Link>
+            ))}
+            <Link to="/tickets?view=overdue" className="rounded-lg bg-muted/50 p-4 transition-colors hover:bg-muted">
+              <div className="truncate text-sm text-muted-foreground">Overdue</div>
+              <div className="mt-1 text-3xl font-bold text-foreground">{overdueCount}</div>
+            </Link>
+          </div>
+        </div>
+      )}
+
+      <div className={`grid grid-cols-1 gap-6 ${isCustomer ? '' : 'lg:grid-cols-2'}`}>
       <section>
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-semibold text-foreground">Ticket queue</h2>
@@ -201,6 +259,7 @@ export default function DashboardPage() {
         </div>
       </section>
 
+      {!isCustomer && (
       <section>
         <div className="mb-4 flex items-center gap-2">
           <ListChecks className="size-4 text-muted-foreground" />
@@ -236,6 +295,7 @@ export default function DashboardPage() {
           )}
         </div>
       </section>
+      )}
       </div>
     </div>
   );

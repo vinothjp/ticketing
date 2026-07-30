@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Mail, Lock, Paperclip, Send } from 'lucide-react';
 import api from '../../../lib/api';
+import { useAuth } from '../../../context/AuthContext';
 import { assetUrl } from '@/lib/assetUrl';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -15,6 +16,7 @@ interface Message {
   channel: string;
   direction: string;
   isInternal: boolean;
+  authorUserId?: string | null;
   authorName?: string | null;
   fromAddress?: string | null;
   toAddress?: string | null;
@@ -26,6 +28,7 @@ interface Message {
 
 export default function ConversationTab({ ticketId }: { ticketId: string }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
   const [channel, setChannel] = useState<'EMAIL' | 'INTERNAL'>('EMAIL');
   const [body, setBody] = useState('');
   const [files, setFiles] = useState<File[]>([]);
@@ -95,14 +98,16 @@ export default function ConversationTab({ ticketId }: { ticketId: string }) {
           {messages.map((m) => {
             const outbound = m.direction === 'OUTBOUND';
             const internal = m.isInternal;
+            // Chat-style: the viewer's own messages on the right, everyone else on the left.
+            const mine = !!m.authorUserId && m.authorUserId === user?.id;
             return (
-              <div key={m.id} className={cn('flex', outbound ? 'justify-end' : 'justify-start')}>
+              <div key={m.id} className={cn('flex', mine ? 'justify-end' : 'justify-start')}>
                 <div
                   className={cn(
                     'max-w-[85%] rounded-lg border px-3 py-2 text-sm',
                     internal
                       ? 'border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/20'
-                      : outbound
+                      : mine
                         ? 'bg-primary/5'
                         : 'bg-muted',
                   )}

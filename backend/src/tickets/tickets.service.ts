@@ -53,6 +53,11 @@ export class TicketsService {
     // and can't self-assign technicians — force those server-side.
     let requestorDefaults: { name?: string; email?: string; companyId?: string } = {};
     if (viewer && isCustomer(viewer)) {
+      // A customer must belong to a company; otherwise the ticket would be
+      // orphaned (no company) and invisible even to its own creator.
+      if (!viewer.customerCompanyId) {
+        throw new BadRequestException('Your account is not linked to a customer company');
+      }
       const me = await this.prisma.user.findUnique({
         where: { id: viewer.id },
         select: { username: true, email: true },

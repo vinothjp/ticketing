@@ -34,13 +34,16 @@ const smtpSchema = z.object({
 });
 type SmtpValues = z.infer<typeof smtpSchema>;
 
-export default function SmtpConfigPage() {
+export default function SmtpConfigPage({
+  basePath = '/api/super-admin/smtp-config',
+  queryKey = 'smtp-config',
+}: { basePath?: string; queryKey?: string } = {}) {
   const qc = useQueryClient();
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const { data, isLoading } = useQuery<SmtpConfigResponse>({
-    queryKey: ['smtp-config'],
-    queryFn: async () => (await api.get('/api/super-admin/smtp-config')).data,
+    queryKey: [queryKey],
+    queryFn: async () => (await api.get(basePath)).data,
   });
 
   const form = useForm<SmtpValues>({
@@ -66,7 +69,7 @@ export default function SmtpConfigPage() {
 
   const saveMutation = useMutation({
     mutationFn: (values: SmtpValues) =>
-      api.put('/api/super-admin/smtp-config', {
+      api.put(basePath, {
         host: values.host,
         port: Number(values.port),
         useTls: values.useTls,
@@ -76,14 +79,14 @@ export default function SmtpConfigPage() {
         fromAddress: values.fromAddress,
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['smtp-config'] });
+      qc.invalidateQueries({ queryKey: [queryKey] });
       form.setValue('password', '');
     },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error saving SMTP settings'),
   });
 
   const testMutation = useMutation({
-    mutationFn: () => api.post('/api/super-admin/smtp-config/test'),
+    mutationFn: () => api.post(`${basePath}/test`),
     onSuccess: (res) => setTestResult(res.data),
     onError: (e: any) => setTestResult({ success: false, message: e.response?.data?.message || 'Connection failed' }),
   });

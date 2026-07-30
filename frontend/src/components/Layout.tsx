@@ -105,19 +105,33 @@ export default function Layout({ children }: { children: ReactNode }) {
   const isCustomer = !!user?.roles.includes('Customer') && !isAdmin;
   const navGroups = isSuperAdmin
     ? superAdminNavGroups
-    : tenantNavGroups
-        // Administration is admin-only; regular users just get the Workspace group.
-        .filter((group) => group.label !== 'Administration' || isAdmin)
-        .map((group) => {
-          if (group.label === 'Administration') {
-            return { ...group, items: [...group.items, { to: '/organization', label: 'Organization', icon: Building2 }] };
-          }
-          // Customers only see Dashboard + Tickets, not internal KB/Projects.
-          if (group.label === 'Workspace' && isCustomer) {
-            return { ...group, items: group.items.filter((i) => i.to === '/dashboard' || i.to === '/tickets') };
-          }
-          return group;
-        });
+    : (() => {
+        const groups = tenantNavGroups
+          // Administration is admin-only; regular users just get the Workspace group.
+          .filter((group) => group.label !== 'Administration' || isAdmin)
+          .map((group) => {
+            if (group.label === 'Administration') {
+              return {
+                ...group,
+                items: [
+                  ...group.items,
+                  { to: '/organization', label: 'Organization', icon: Building2 },
+                  { to: '/admin/smtp-config', label: 'Email Settings', icon: Mail },
+                ],
+              };
+            }
+            // Customers only see Dashboard + Tickets, not internal KB/Projects.
+            if (group.label === 'Workspace' && isCustomer) {
+              return { ...group, items: group.items.filter((i) => i.to === '/dashboard' || i.to === '/tickets') };
+            }
+            return group;
+          });
+        // Agents (non-admin, non-customer) get Email Settings via a small Settings group.
+        if (!isAdmin && !isCustomer) {
+          groups.push({ label: 'Settings', color: 'text-amber-400', items: [{ to: '/admin/smtp-config', label: 'Email Settings', icon: Mail }] });
+        }
+        return groups;
+      })();
 
   const { data: myClient } = useQuery<MyClient | null>({
     queryKey: ['my-client'],
@@ -192,7 +206,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         </button>
       </aside>
 
-      <main className={cn('flex min-h-screen flex-1 flex-col transition-[margin] duration-200', collapsed ? 'ml-16' : 'ml-60')}>
+      <main className={cn('flex min-h-screen min-w-0 flex-1 flex-col transition-[margin] duration-200', collapsed ? 'ml-16' : 'ml-60')}>
         <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-4 border-b bg-background px-4">
           <button
             type="button"
@@ -262,7 +276,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           </DropdownMenu>
         </header>
 
-        <div className="flex-1 bg-muted/30 p-8">{children}</div>
+        <div className="min-w-0 flex-1 bg-muted/30 p-8">{children}</div>
       </main>
 
       <ChangePasswordDialog open={changePasswordOpen} onOpenChange={setChangePasswordOpen} />

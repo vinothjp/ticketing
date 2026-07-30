@@ -111,7 +111,7 @@ export class AuthService {
       try {
         const frontendUrl = this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:5173';
         const resetUrl = `${frontendUrl}/reset-password?token=${token}`;
-        await this.mailer.sendPasswordResetEmail(user.email, user.username, resetUrl);
+        await this.mailer.sendPasswordResetEmail(user.email, user.username, resetUrl, user.clientId);
       } catch (err) {
         // Don't let a broken SMTP config break password reset for users —
         // log it for the Super Admin to notice and fix in the SMTP settings.

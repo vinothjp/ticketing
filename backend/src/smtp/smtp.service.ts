@@ -11,8 +11,13 @@ export class SmtpService {
     private mailer: MailerService,
   ) {}
 
-  async getConfig() {
-    const config = await this.prisma.smtpConfig.findUnique({ where: { id: 'global' } });
+  // A tenant's config is keyed by clientId; the platform-global fallback is id "global".
+  private whereFor(clientId?: string | null) {
+    return clientId ? { clientId } : { id: 'global' };
+  }
+
+  async getConfig(clientId?: string | null) {
+    const config = await this.prisma.smtpConfig.findUnique({ where: this.whereFor(clientId) });
     if (!config) {
       return {
         host: null, port: 587, useTls: true, enabled: false,
@@ -23,30 +28,33 @@ export class SmtpService {
     return { ...rest, passwordSet: !!passwordEncrypted };
   }
 
-  async upsertConfig(dto: UpsertSmtpConfigDto, actorId: string) {
+  async upsertConfig(dto: UpsertSmtpConfigDto, actorId: string, clientId?: string | null) {
+    // Trim stray whitespace — a pasted leading/trailing space in host/username
+    // breaks DNS resolution and auth with a confusing ENOTFOUND.
     const data = {
-      host: dto.host,
+      host: dto.host?.trim(),
       port: dto.port,
       useTls: dto.useTls,
       enabled: dto.enabled,
-      username: dto.username,
-      fromAddress: dto.fromAddress,
+      username: dto.username?.trim(),
+      fromAddress: dto.fromAddress?.trim(),
       updatedBy: actorId,
-      ...(dto.password ? { passwordEncrypted: encrypt(dto.password) } : {}),
+      ...(dto.password ? { passwordEncrypted: encrypt(dto.password.trim()) } : {}),
     };
 
     await this.prisma.smtpConfig.upsert({
-      where: { id: 'global' },
+      where: this.whereFor(clientId),
       update: data,
-      create: { id: 'global', ...data },
+      // Tenant rows carry clientId (uuid id auto-generated); the global row keeps id "global".
+      create: clientId ? { clientId, ...data } : { id: 'global', ...data },
     });
 
-    return this.getConfig();
+    return this.getConfig(clientId);
   }
 
-  async testConnection() {
+  async testConnection(clientId?: string | null) {
     try {
-      const transporter = await this.mailer.getTransporter();
+      const transporter = await this.mailer.getTransporter(clientId);
       await transporter.verify();
       return { success: true, message: 'Connection successful' };
     } catch (err) {

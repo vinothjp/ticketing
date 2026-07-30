@@ -20,8 +20,10 @@ export class ChannelService {
 
   async listMessages(ticketId: string, clientId: string, viewer: TicketViewer) {
     await this.tickets.findOne(ticketId, clientId, viewer);
+    // Customers must never see internal (agent-only) notes.
+    const isCustomer = viewer.roles.includes('Customer') && !viewer.roles.includes('Admin');
     return this.prisma.ticketMessage.findMany({
-      where: { ticketId },
+      where: { ticketId, ...(isCustomer ? { isInternal: false } : {}) },
       orderBy: { createdAt: 'asc' },
       include: { attachments: true },
     });
@@ -46,6 +48,7 @@ export class ChannelService {
     body: string,
     author: { username: string | null; email: string | null } | null,
     attachments: { filename: string; path: string }[],
+    clientId: string,
   ) {
     const techs = await this.prisma.ticketTechnician.findMany({
       where: { ticketId },
@@ -62,7 +65,7 @@ export class ChannelService {
 
     const subject = `Internal note · ${ticketSubject}`;
     try {
-      if (await this.mailer.isConfigured()) {
+      if (await this.mailer.isConfigured(clientId)) {
         await this.mailer.sendMail({
           to: recipients.join(', '),
           subject,
@@ -70,7 +73,7 @@ export class ChannelService {
           text: body,
           replyTo: author?.email ?? undefined,
           attachments,
-        });
+        }, clientId);
       } else {
         // Mock channel — logs instead of sending, so dev works without SMTP.
         console.log(`[MOCK EMAIL] to=${recipients.join(', ')} subject="${subject}"\n${body}`);
@@ -109,14 +112,14 @@ export class ChannelService {
 
     if (internal) {
       // Internal notes go ONLY to the assigned technician(s) — never the customer.
-      await this.notifyAssignedTechnicians(ticket.id, subject, input.body, author, attachments);
+      await this.notifyAssignedTechnicians(ticket.id, subject, input.body, author, attachments, ticket.clientId);
     }
 
     if (!internal) {
       toAddress = this.recipientEmail(ticket);
       if (!toAddress) throw new BadRequestException('No email address on file for the requester');
       try {
-        if (await this.mailer.isConfigured()) {
+        if (await this.mailer.isConfigured(ticket.clientId)) {
           const res = await this.mailer.sendMail({
             to: toAddress,
             subject,
@@ -124,7 +127,7 @@ export class ChannelService {
             text: input.body,
             replyTo: author?.email ?? undefined,
             attachments,
-          });
+          }, ticket.clientId);
           externalId = res.messageId;
         } else {
           // Mock channel — logs instead of sending, so dev works without SMTP.

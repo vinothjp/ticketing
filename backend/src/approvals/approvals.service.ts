@@ -58,7 +58,7 @@ export class ApprovalsService {
         to: approver.email,
         subject: `[${ticket.ticketNumber}] Approval requested: ${ticket.subject}`,
         html: `<p>You have an approval request on ticket <b>${ticket.ticketNumber}</b> — ${ticket.subject}.</p>${dto.comment ? `<p>${dto.comment}</p>` : ''}<p>Open the ticket to approve or reject.</p>`,
-      });
+      }, clientId);
     } catch {
       /* swallow — notification is best-effort */
     }

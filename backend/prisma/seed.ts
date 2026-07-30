@@ -572,6 +572,11 @@ async function main() {
       tasks: [{ title: 'Approve VPN access request', assignee: 'agent1' }],
     },
     {
+      subject: `${SAMPLE_PREFIX} New laptop request`,
+      template: 'IT Service Request', priority: 'medium', status: 'Open', technician: 'agent3',
+      createdAt: thisMonth(Math.max(1, now.getDate() - 2), 10), dueDate: hoursFromNow(40), department: 'it', category: 'Software', company: 'Initech Inc',
+    },
+    {
       subject: `${SAMPLE_PREFIX} Email not syncing on mobile`,
       template: 'IT Incident', priority: 'critical', status: 'Open', technician: 'agent4',
       createdAt: lastMonth(18, 11), dueDate: lastMonth(19, 11), department: 'operations', category: 'Software', company: 'Initech Inc',

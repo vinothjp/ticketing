@@ -170,6 +170,8 @@ export class TicketsService {
               OR: [
                 { technicians: { some: { userId: viewer.id } } },
                 { approvals: { some: { approverUserId: viewer.id } } },
+                // Tickets on which the viewer has an assigned task (possibly created by another agent).
+                { tasks: { some: { assigneeUserId: viewer.id } } },
               ],
             }),
       },
@@ -195,13 +197,20 @@ export class TicketsService {
       },
     });
     if (!ticket) throw new NotFoundException('Ticket not found');
-    // A non-admin can access a ticket they're assigned to, or one they're a named approver on.
+    // A non-admin can access a ticket they're assigned to, a named approver on,
+    // or one where they have an assigned task (possibly created by another agent).
     if (viewer && !isAdmin(viewer) && !ticket.technicians.some((t) => t.user.id === viewer.id)) {
-      const isApprover = await this.prisma.ticketApproval.findFirst({
-        where: { ticketId: id, approverUserId: viewer.id },
-        select: { id: true },
-      });
-      if (!isApprover) throw new NotFoundException('Ticket not found');
+      const [isApprover, isTaskAssignee] = await Promise.all([
+        this.prisma.ticketApproval.findFirst({
+          where: { ticketId: id, approverUserId: viewer.id },
+          select: { id: true },
+        }),
+        this.prisma.ticketTask.findFirst({
+          where: { ticketId: id, assigneeUserId: viewer.id },
+          select: { id: true },
+        }),
+      ]);
+      if (!isApprover && !isTaskAssignee) throw new NotFoundException('Ticket not found');
     }
     return ticket;
   }
@@ -378,7 +387,7 @@ export class TicketsService {
   async setResolution(
     id: string,
     clientId: string,
-    dto: { resolution?: string; resolutionCode?: string; ticketStatus?: string },
+    dto: { resolution?: string; ticketStatus?: string },
     actorId: string,
     viewer: TicketViewer,
   ) {
@@ -388,7 +397,6 @@ export class TicketsService {
       where: { id },
       data: {
         resolution: dto.resolution,
-        resolutionCode: dto.resolutionCode,
         resolvedAt: new Date(),
         resolvedById: actorId,
         ticketStatus: resolvedStatus,
@@ -399,7 +407,7 @@ export class TicketsService {
       ticketId: id,
       actorUserId: actorId,
       type: 'RESOLVED',
-      summary: `Ticket resolved${dto.resolutionCode ? ` (${dto.resolutionCode})` : ''}`,
+      summary: 'Ticket resolved',
     });
     return updated;
   }

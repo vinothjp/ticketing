@@ -166,6 +166,28 @@ async function main() {
     create: { userId: adminUser.id, roleId: adminRole.id },
   });
 
+  // --- Sample agent users (non-admin, Viewer role) — used as ticket technicians/task assignees ---
+  const agentPasswordHash = await bcrypt.hash('Admin@123', 12);
+  const agentIds: Record<string, string> = {};
+  for (const name of ['agent1', 'agent2', 'agent3', 'agent4', 'agent5']) {
+    const agent = await prisma.user.upsert({
+      where: { email: `${name}@acme.example` },
+      update: {},
+      create: {
+        username: name,
+        email: `${name}@acme.example`,
+        passwordHash: agentPasswordHash,
+        clientId: client.id,
+      },
+    });
+    await prisma.userRole.upsert({
+      where: { userId_roleId: { userId: agent.id, roleId: viewerRole.id } },
+      update: {},
+      create: { userId: agent.id, roleId: viewerRole.id },
+    });
+    agentIds[name] = agent.id;
+  }
+
   // --- Ticketing master data (Acme Corp) — values per the Support Ticket spec ---
   const priorityOptions = [
     { value: 'critical', label: 'Critical' },
@@ -466,6 +488,128 @@ async function main() {
     });
   }
 
+  // --- Sample tickets + cross-agent tasks (dev/demo data; every subject prefixed [SAMPLE]) ---
+  // Rebuilt on each seed run; only touches [SAMPLE] rows, never hand-made tickets.
+  const SAMPLE_PREFIX = '[SAMPLE]';
+  const allTemplates = await prisma.template.findMany({
+    where: { clientId: client.id },
+    select: { id: true, name: true },
+  });
+  const tplId = (name: string) =>
+    (allTemplates.find((t) => t.name === name) ?? allTemplates[0]).id;
+
+  await prisma.ticket.deleteMany({
+    where: { clientId: client.id, subject: { startsWith: SAMPLE_PREFIX } },
+  });
+
+  const now = new Date();
+  const thisMonth = (day: number, h = 10) => new Date(now.getFullYear(), now.getMonth(), day, h);
+  const lastMonth = (day: number, h = 10) => new Date(now.getFullYear(), now.getMonth() - 1, day, h);
+  const twoMonthsAgo = (day: number, h = 10) => new Date(now.getFullYear(), now.getMonth() - 2, day, h);
+  const hoursFromNow = (h: number) => new Date(now.getTime() + h * 3600 * 1000);
+
+  type SampleTask = { title: string; assignee: string; status?: 'OPEN' | 'IN_PROGRESS' | 'DONE' };
+  type SampleTicket = {
+    subject: string; template: string; priority: string; status: string; technician: string;
+    createdAt: Date; dueDate?: Date; resolution?: string; resolvedBy?: string;
+    department?: string; category?: string; tasks?: SampleTask[];
+  };
+
+  const sampleTickets: SampleTicket[] = [
+    {
+      subject: `${SAMPLE_PREFIX} Printer offline in Finance`,
+      template: 'IT Incident', priority: 'high', status: 'In Progress', technician: 'agent1',
+      createdAt: thisMonth(now.getDate(), 9), dueDate: hoursFromNow(2), department: 'finance', category: 'Downtime',
+      tasks: [
+        { title: 'Replace toner cartridge', assignee: 'agent2' },
+        { title: 'Check printer drivers', assignee: 'agent3' },
+      ],
+    },
+    {
+      subject: `${SAMPLE_PREFIX} VPN access for new contractor`,
+      template: 'IT Service Request', priority: 'medium', status: 'Open', technician: 'agent2',
+      createdAt: thisMonth(Math.max(1, now.getDate() - 1), 14), dueDate: hoursFromNow(30), department: 'it', category: 'Networking',
+      tasks: [{ title: 'Approve VPN access request', assignee: 'agent1' }],
+    },
+    {
+      subject: `${SAMPLE_PREFIX} Email not syncing on mobile`,
+      template: 'IT Incident', priority: 'critical', status: 'Open', technician: 'agent4',
+      createdAt: lastMonth(18, 11), dueDate: lastMonth(19, 11), department: 'operations', category: 'Software',
+      tasks: [{ title: 'Investigate mailbox on server', assignee: 'agent5' }],
+    },
+    {
+      subject: `${SAMPLE_PREFIX} Laptop replacement`,
+      template: 'IT Service Request', priority: 'low', status: 'Resolved', technician: 'agent3',
+      createdAt: lastMonth(6, 9), resolution: 'Provided a new Dell laptop and migrated the user data.', resolvedBy: 'agent3',
+      department: 'hr', category: 'Software',
+    },
+    {
+      subject: `${SAMPLE_PREFIX} Annual software license renewal`,
+      template: 'General Inquiry', priority: 'medium', status: 'Resolved', technician: 'agent1',
+      createdAt: twoMonthsAgo(10, 10), resolution: 'Renewed the annual license and shared the new key with the team.', resolvedBy: 'agent1',
+      department: 'it', category: 'Software',
+    },
+    {
+      subject: `${SAMPLE_PREFIX} Onboarding — prepare new hire`,
+      template: 'General Inquiry', priority: 'high', status: 'Assigned', technician: 'agent5',
+      createdAt: twoMonthsAgo(22, 13), dueDate: hoursFromNow(48), department: 'hr', category: 'Software',
+      tasks: [
+        { title: 'Prepare workstation & peripherals', assignee: 'agent4' },
+        { title: 'Create AD + email accounts', assignee: 'agent2', status: 'DONE' },
+      ],
+    },
+  ];
+
+  for (const s of sampleTickets) {
+    const seq = await prisma.client.update({
+      where: { id: client.id },
+      data: { ticketSequence: { increment: 1 } },
+    });
+    const ticketNumber = `TCK-${String(seq.ticketSequence).padStart(6, '0')}`;
+    const resolved = s.status === 'Resolved';
+
+    await prisma.ticket.create({
+      data: {
+        clientId: client.id,
+        ticketNumber,
+        templateId: tplId(s.template),
+        subject: s.subject,
+        description: `${s.subject.replace(SAMPLE_PREFIX, '').trim()} — sample ticket for feature verification.`,
+        ticketStatus: s.status,
+        priority: s.priority,
+        department: s.department,
+        ticketCategory: s.category,
+        requestorName: 'Sample Requester',
+        requestorEmail: 'requester@customer.example',
+        createdAt: s.createdAt,
+        updatedAt: s.createdAt,
+        dueDate: s.dueDate ?? null,
+        ...(resolved
+          ? {
+              resolution: s.resolution,
+              resolvedAt: s.createdAt,
+              resolvedById: s.resolvedBy ? agentIds[s.resolvedBy] : null,
+              closedDate: s.createdAt,
+            }
+          : {}),
+        technicians: { create: [{ userId: agentIds[s.technician] }] },
+        tasks: s.tasks?.length
+          ? {
+              create: s.tasks.map((t, i) => ({
+                title: t.title,
+                assigneeUserId: agentIds[t.assignee],
+                assigneeName: t.assignee,
+                status: t.status ?? 'OPEN',
+                sortOrder: i,
+                completedAt: t.status === 'DONE' ? s.createdAt : null,
+                createdBy: agentIds[s.technician],
+              })),
+            }
+          : undefined,
+      },
+    });
+  }
+
   console.log('Seed complete!');
   console.log(
     'Super Admin login: username=superadmin, password=SuperAdmin@123',
@@ -473,6 +617,10 @@ async function main() {
   console.log(
     'Client (Acme Corp) Admin login: username=admin, password=Admin@123',
   );
+  console.log(
+    'Agents: username=agent1..agent5, password=Admin@123',
+  );
+  console.log(`Sample tickets seeded: ${sampleTickets.length} (subjects prefixed "${SAMPLE_PREFIX}")`);
 }
 
 main()

@@ -66,7 +66,7 @@ export default function ConversationTab({ ticketId }: { ticketId: string }) {
               <SelectItem value="INTERNAL">Internal note</SelectItem>
             </SelectContent>
           </Select>
-          {channel === 'INTERNAL' && <span className="text-xs text-muted-foreground">Private — not sent to the requester</span>}
+          {channel === 'INTERNAL' && <span className="text-xs text-muted-foreground">Sent to the assigned agent(s) — not the customer</span>}
         </div>
         <Textarea
           rows={3}

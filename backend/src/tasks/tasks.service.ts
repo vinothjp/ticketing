@@ -26,6 +26,29 @@ export class TasksService {
     });
   }
 
+  /**
+   * Open tasks assigned to a user across all tickets in the tenant — including tasks
+   * created by other agents on their own tickets. Non-admins only ever see their own;
+   * admins may target another agent via `assigneeId`.
+   */
+  async myTasks(clientId: string, viewer: TicketViewer, assigneeId?: string) {
+    const isAdmin = viewer.roles.includes('Admin');
+    const assignee = assigneeId && isAdmin ? assigneeId : viewer.id;
+    return this.prisma.ticketTask.findMany({
+      where: {
+        assigneeUserId: assignee,
+        status: { not: 'DONE' },
+        ticket: { clientId },
+      },
+      orderBy: [{ dueDate: 'asc' }, { createdAt: 'asc' }],
+      include: {
+        ticket: {
+          select: { id: true, ticketNumber: true, subject: true, ticketStatus: true, priority: true },
+        },
+      },
+    });
+  }
+
   async create(ticketId: string, clientId: string, dto: CreateTaskDto, actorId: string, viewer: TicketViewer) {
     await this.tickets.findOne(ticketId, clientId, viewer);
     const last = await this.prisma.ticketTask.findFirst({

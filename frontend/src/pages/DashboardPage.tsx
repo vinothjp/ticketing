@@ -14,6 +14,7 @@ interface MyTask {
   id: string;
   title: string;
   status: string;
+  createdAt: string;
   dueDate?: string | null;
   ticket: { id: string; ticketNumber: string; subject: string; ticketStatus: string; priority?: string | null };
 }
@@ -66,6 +67,12 @@ export default function DashboardPage() {
     }
     return list;
   }, [tickets, month, agentId, isAdmin]);
+
+  // Open tasks for the selected month (by task created date), matching the ticket scope.
+  const scopedTasks = useMemo(
+    () => myTasks.filter((t) => monthKey(new Date(t.createdAt)) === month),
+    [myTasks, month],
+  );
 
   const stats = useMemo(() => {
     const open = scoped.filter((t) => !isTerminalStatus(t.ticketStatus));
@@ -121,10 +128,14 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="mb-8 grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="mb-8 grid grid-cols-2 gap-4 lg:grid-cols-5">
         <div className="rounded-lg bg-muted/50 p-4">
           <div className="text-sm text-muted-foreground">Open tickets</div>
           <div className="mt-1 text-3xl font-bold text-foreground">{isLoading ? '—' : stats.open.length}</div>
+        </div>
+        <div className="rounded-lg bg-muted/50 p-4">
+          <div className="text-sm text-muted-foreground">Open tasks</div>
+          <div className="mt-1 text-3xl font-bold text-foreground">{scopedTasks.length}</div>
         </div>
         <div className="rounded-lg bg-muted/50 p-4">
           <div className="text-sm text-muted-foreground">Due today</div>
@@ -144,7 +155,8 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <section className="mb-8">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <section>
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-semibold text-foreground">Ticket queue</h2>
           <Button asChild variant="ghost" size="sm">
@@ -193,13 +205,13 @@ export default function DashboardPage() {
         <div className="mb-4 flex items-center gap-2">
           <ListChecks className="size-4 text-muted-foreground" />
           <h2 className="text-base font-semibold text-foreground">Open tasks</h2>
-          <span className="rounded-full bg-muted px-1.5 text-xs text-muted-foreground">{myTasks.length}</span>
+          <span className="rounded-full bg-muted px-1.5 text-xs text-muted-foreground">{scopedTasks.length}</span>
         </div>
         <div className="divide-y border-y">
-          {myTasks.length === 0 ? (
-            <p className="p-4 text-sm text-muted-foreground">No open tasks assigned.</p>
+          {scopedTasks.length === 0 ? (
+            <p className="p-4 text-sm text-muted-foreground">No open tasks for this period.</p>
           ) : (
-            myTasks.map((task) => {
+            scopedTasks.map((task) => {
               const priority = getPriorityMeta(task.ticket.priority);
               const due = task.dueDate
                 ? new Date(task.dueDate).toLocaleString(undefined, { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })
@@ -224,6 +236,7 @@ export default function DashboardPage() {
           )}
         </div>
       </section>
+      </div>
     </div>
   );
 }

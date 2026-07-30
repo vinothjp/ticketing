@@ -502,6 +502,46 @@ async function main() {
     where: { clientId: client.id, subject: { startsWith: SAMPLE_PREFIX } },
   });
 
+  // --- Sample customer companies + contact logins (Phase 7 demo) ---
+  const customerRole = await prisma.role.upsert({
+    where: { clientId_name: { clientId: client.id, name: 'Customer' } },
+    update: {},
+    create: { name: 'Customer', description: 'External customer contact', clientId: client.id },
+  });
+  const companySpecs = [
+    { name: 'Globex Ltd', code: 'GLX', contacts: [
+      { username: 'globex_amy', email: 'amy@globex.example' },
+      { username: 'globex_bob', email: 'bob@globex.example' },
+    ] },
+    { name: 'Initech Inc', code: 'INI', contacts: [
+      { username: 'initech_ivan', email: 'ivan@initech.example' },
+    ] },
+  ];
+  const companyIds: Record<string, string> = {};
+  for (const cs of companySpecs) {
+    const company = await prisma.customerCompany.upsert({
+      where: { clientId_name: { clientId: client.id, name: cs.name } },
+      update: { code: cs.code },
+      create: { clientId: client.id, name: cs.name, code: cs.code, maxContacts: 5 },
+    });
+    companyIds[cs.name] = company.id;
+    for (const ct of cs.contacts) {
+      const existing = await prisma.user.findUnique({ where: { email: ct.email } });
+      if (!existing) {
+        await prisma.user.create({
+          data: {
+            username: ct.username,
+            email: ct.email,
+            passwordHash: agentPasswordHash, // Admin@123
+            clientId: client.id,
+            customerCompanyId: company.id,
+            userRoles: { create: [{ roleId: customerRole.id }] },
+          },
+        });
+      }
+    }
+  }
+
   const now = new Date();
   const thisMonth = (day: number, h = 10) => new Date(now.getFullYear(), now.getMonth(), day, h);
   const lastMonth = (day: number, h = 10) => new Date(now.getFullYear(), now.getMonth() - 1, day, h);
@@ -512,14 +552,14 @@ async function main() {
   type SampleTicket = {
     subject: string; template: string; priority: string; status: string; technician: string;
     createdAt: Date; dueDate?: Date; resolution?: string; resolvedBy?: string;
-    department?: string; category?: string; tasks?: SampleTask[];
+    department?: string; category?: string; company?: string; tasks?: SampleTask[];
   };
 
   const sampleTickets: SampleTicket[] = [
     {
       subject: `${SAMPLE_PREFIX} Printer offline in Finance`,
       template: 'IT Incident', priority: 'high', status: 'In Progress', technician: 'agent1',
-      createdAt: thisMonth(now.getDate(), 9), dueDate: hoursFromNow(2), department: 'finance', category: 'Downtime',
+      createdAt: thisMonth(now.getDate(), 9), dueDate: hoursFromNow(2), department: 'finance', category: 'Downtime', company: 'Globex Ltd',
       tasks: [
         { title: 'Replace toner cartridge', assignee: 'agent2' },
         { title: 'Check printer drivers', assignee: 'agent3' },
@@ -528,13 +568,13 @@ async function main() {
     {
       subject: `${SAMPLE_PREFIX} VPN access for new contractor`,
       template: 'IT Service Request', priority: 'medium', status: 'Open', technician: 'agent2',
-      createdAt: thisMonth(Math.max(1, now.getDate() - 1), 14), dueDate: hoursFromNow(30), department: 'it', category: 'Networking',
+      createdAt: thisMonth(Math.max(1, now.getDate() - 1), 14), dueDate: hoursFromNow(30), department: 'it', category: 'Networking', company: 'Globex Ltd',
       tasks: [{ title: 'Approve VPN access request', assignee: 'agent1' }],
     },
     {
       subject: `${SAMPLE_PREFIX} Email not syncing on mobile`,
       template: 'IT Incident', priority: 'critical', status: 'Open', technician: 'agent4',
-      createdAt: lastMonth(18, 11), dueDate: lastMonth(19, 11), department: 'operations', category: 'Software',
+      createdAt: lastMonth(18, 11), dueDate: lastMonth(19, 11), department: 'operations', category: 'Software', company: 'Initech Inc',
       tasks: [{ title: 'Investigate mailbox on server', assignee: 'agent5' }],
     },
     {
@@ -579,6 +619,8 @@ async function main() {
         priority: s.priority,
         department: s.department,
         ticketCategory: s.category,
+        customerCompanyId: s.company ? companyIds[s.company] : null,
+        customerName: s.company ?? null,
         requestorName: 'Sample Requester',
         requestorEmail: 'requester@customer.example',
         createdAt: s.createdAt,

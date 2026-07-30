@@ -23,7 +23,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
 import { FIELD_CATALOG } from './field-catalog';
 
-type AuthedRequest = { user: { id: string; clientId: string; roles: string[] } };
+type AuthedRequest = { user: { id: string; clientId: string; roles: string[]; customerCompanyId?: string | null } };
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('api/tickets')
@@ -61,7 +61,7 @@ export class TicketsController {
 
   @Post()
   create(@Body() dto: CreateTicketDto, @Request() req: AuthedRequest) {
-    return this.ticketsService.create(dto, req.user.clientId, req.user.id);
+    return this.ticketsService.create(dto, req.user.clientId, req.user.id, req.user);
   }
 
   @Put(':id')

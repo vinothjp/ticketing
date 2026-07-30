@@ -18,6 +18,7 @@ import { TicketsModule } from './tickets/tickets.module';
 import { TasksModule } from './tasks/tasks.module';
 import { ApprovalsModule } from './approvals/approvals.module';
 import { MessagingModule } from './messaging/messaging.module';
+import { CustomerCompaniesModule } from './customer-companies/customer-companies.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { MessagingModule } from './messaging/messaging.module';
     TasksModule,
     ApprovalsModule,
     MessagingModule,
+    CustomerCompaniesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

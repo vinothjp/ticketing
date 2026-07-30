@@ -12,6 +12,7 @@ import DashboardPage from './pages/DashboardPage';
 import UsersPage from './pages/UsersPage';
 import RolesPage from './pages/RolesPage';
 import OrganizationPage from './pages/OrganizationPage';
+import CustomerCompaniesPage from './pages/CustomerCompaniesPage';
 import ClientsPage from './pages/super-admin/ClientsPage';
 import ClientFormPage from './pages/super-admin/ClientFormPage';
 import FormsPage from './pages/super-admin/FormsPage';
@@ -77,6 +78,7 @@ export default function App() {
                         <Route path="/projects" element={<ProjectsPage />} />
                         {/* Admin-only sections — non-admins are redirected to their tickets */}
                         <Route path="/users" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><UsersPage /></RoleGate>} />
+                        <Route path="/admin/customer-companies" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><CustomerCompaniesPage /></RoleGate>} />
                         <Route path="/roles" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><RolesPage /></RoleGate>} />
                         <Route path="/organization" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><OrganizationPage /></RoleGate>} />
                         <Route path="/admin/templates" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><TemplatesListPage /></RoleGate>} />

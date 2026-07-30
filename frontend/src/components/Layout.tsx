@@ -37,6 +37,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import ChangePasswordDialog from './ChangePasswordDialog';
+import CopilotWidget from './CopilotWidget';
 
 interface NavItem {
   to: string;
@@ -67,6 +68,7 @@ const tenantNavGroups: NavGroup[] = [
     items: [
       { to: '/users', label: 'Users', icon: Users },
       { to: '/roles', label: 'Roles', icon: KeyRound },
+      { to: '/admin/customer-companies', label: 'Customer Companies', icon: Building2 },
       { to: '/admin/templates', label: 'Templates', icon: LayoutTemplate },
       { to: '/admin/picklists', label: 'Picklist Options', icon: ListTree },
       { to: '/admin/sla', label: 'SLA Policies', icon: Timer },
@@ -99,16 +101,23 @@ export default function Layout({ children }: { children: ReactNode }) {
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const isSuperAdmin = !!user?.roles.includes('SuperAdmin');
   const isAdmin = !!user?.roles.includes('Admin');
+  // External customer contacts get a restricted portal — just their tickets.
+  const isCustomer = !!user?.roles.includes('Customer') && !isAdmin;
   const navGroups = isSuperAdmin
     ? superAdminNavGroups
     : tenantNavGroups
         // Administration is admin-only; regular users just get the Workspace group.
         .filter((group) => group.label !== 'Administration' || isAdmin)
-        .map((group) =>
-          group.label === 'Administration'
-            ? { ...group, items: [...group.items, { to: '/organization', label: 'Organization', icon: Building2 }] }
-            : group,
-        );
+        .map((group) => {
+          if (group.label === 'Administration') {
+            return { ...group, items: [...group.items, { to: '/organization', label: 'Organization', icon: Building2 }] };
+          }
+          // Customers only see Dashboard + Tickets, not internal KB/Projects.
+          if (group.label === 'Workspace' && isCustomer) {
+            return { ...group, items: group.items.filter((i) => i.to === '/dashboard' || i.to === '/tickets') };
+          }
+          return group;
+        });
 
   const { data: myClient } = useQuery<MyClient | null>({
     queryKey: ['my-client'],
@@ -257,6 +266,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       </main>
 
       <ChangePasswordDialog open={changePasswordOpen} onOpenChange={setChangePasswordOpen} />
+      {!isSuperAdmin && <CopilotWidget />}
     </div>
   );
 }

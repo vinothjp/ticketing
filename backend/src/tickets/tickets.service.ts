@@ -36,8 +36,9 @@ function isEmpty(value: unknown) {
 }
 
 /** The authenticated user viewing/acting on tickets. Admins see all; others only their assigned tickets. */
-export type TicketViewer = { id: string; roles: string[] };
+export type TicketViewer = { id: string; roles: string[]; customerCompanyId?: string | null };
 const isAdmin = (viewer: TicketViewer) => viewer.roles.includes('Admin');
+const isCustomer = (viewer: TicketViewer) => viewer.roles.includes('Customer');
 
 @Injectable()
 export class TicketsService {
@@ -47,7 +48,23 @@ export class TicketsService {
     private activity: ActivityService,
   ) {}
 
-  async create(dto: CreateTicketDto, clientId: string, actorId: string) {
+  async create(dto: CreateTicketDto, clientId: string, actorId: string, viewer?: TicketViewer) {
+    // A customer contact can only ever raise a ticket under their own company,
+    // and can't self-assign technicians — force those server-side.
+    let requestorDefaults: { name?: string; email?: string; companyId?: string } = {};
+    if (viewer && isCustomer(viewer)) {
+      const me = await this.prisma.user.findUnique({
+        where: { id: viewer.id },
+        select: { username: true, email: true },
+      });
+      dto = {
+        ...dto,
+        customerCompanyId: viewer.customerCompanyId ?? undefined,
+        technicianUserIds: [],
+        requestorUserId: viewer.id,
+      } as CreateTicketDto & { requestorUserId?: string };
+      requestorDefaults = { name: me?.username, email: me?.email, companyId: viewer.customerCompanyId ?? undefined };
+    }
     const template = await this.templatesService.getById(
       dto.templateId,
       clientId,
@@ -123,9 +140,11 @@ export class TicketsService {
           ticketNumber,
           templateId: template.id,
           ticketStatus,
-          requestorName: dto.requestorName,
-          requestorEmail: dto.requestorEmail,
+          requestorName: dto.requestorName ?? requestorDefaults.name,
+          requestorEmail: dto.requestorEmail ?? requestorDefaults.email,
+          requestorUserId: (dto as { requestorUserId?: string }).requestorUserId,
           customerName: dto.customerName,
+          customerCompanyId: dto.customerCompanyId,
           department: dto.department,
           requestorContact: dto.requestorContact,
           priority: dto.priority,
@@ -164,7 +183,10 @@ export class TicketsService {
       // Non-admins see tickets assigned to them, plus any they've been asked to approve.
       where: {
         clientId,
-        ...(isAdmin(viewer)
+        ...(isCustomer(viewer)
+          ? // A customer contact only sees their own company's tickets.
+            { customerCompanyId: viewer.customerCompanyId ?? '__none__' }
+          : isAdmin(viewer)
           ? {}
           : {
               OR: [
@@ -181,6 +203,7 @@ export class TicketsService {
         technicians: {
           include: { user: { select: { id: true, username: true } } },
         },
+        customerCompany: { select: { id: true, name: true } },
       },
     });
   }
@@ -194,9 +217,17 @@ export class TicketsService {
           include: { user: { select: { id: true, username: true } } },
         },
         attachments: true,
+        customerCompany: { select: { id: true, name: true } },
       },
     });
     if (!ticket) throw new NotFoundException('Ticket not found');
+    // A customer contact may only access tickets belonging to their own company.
+    if (viewer && isCustomer(viewer)) {
+      if (!viewer.customerCompanyId || ticket.customerCompanyId !== viewer.customerCompanyId) {
+        throw new NotFoundException('Ticket not found');
+      }
+      return ticket;
+    }
     // A non-admin can access a ticket they're assigned to, a named approver on,
     // or one where they have an assigned task (possibly created by another agent).
     if (viewer && !isAdmin(viewer) && !ticket.technicians.some((t) => t.user.id === viewer.id)) {

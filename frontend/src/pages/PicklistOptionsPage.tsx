@@ -126,7 +126,7 @@ export default function PicklistOptionsPage() {
         ))}
       </div>
 
-      <div className="mb-4 flex flex-wrap items-end gap-2 rounded-xl border bg-card p-4">
+      <div className="mb-6 flex flex-wrap items-end gap-2 border-b pb-5">
         <div className="flex flex-col gap-1">
           <label className="text-xs text-muted-foreground">Value</label>
           <Input value={value} onChange={(e) => setValue(e.target.value)} placeholder="e.g. high" className="w-40" />
@@ -160,7 +160,7 @@ export default function PicklistOptionsPage() {
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
       ) : (
-        <div className="rounded-xl border bg-card">
+        <div className="border-t">
           <Table>
             <TableHeader>
               <TableRow>

@@ -2,14 +2,20 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import { Checkbox } from '@/components/ui/checkbox';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 export type FieldDataType =
-  | 'TEXT' | 'TEXTAREA' | 'SELECT' | 'MULTI_SELECT_USER' | 'DATE' | 'DATETIME'
-  | 'BOOLEAN' | 'EMAIL_LIST' | 'FILE' | 'SYSTEM';
+  | 'TEXT' | 'TEXTAREA' | 'NUMBER' | 'SELECT' | 'MULTI_SELECT' | 'RADIO'
+  | 'MULTI_SELECT_USER' | 'DATE' | 'DATETIME' | 'BOOLEAN' | 'EMAIL_LIST'
+  | 'PHONE' | 'FILE' | 'SYSTEM';
+
+export interface FieldOption { value: string; label: string; }
 
 export interface MergedTemplateField {
+  id?: string;
   fieldKey: string;
+  isCustom?: boolean;
   visibility: 'VISIBLE' | 'HIDDEN';
   requirement: 'MANDATORY' | 'OPTIONAL';
   readOnly: boolean;
@@ -18,7 +24,10 @@ export interface MergedTemplateField {
   group: 'ticket_info' | 'ticket_detail' | 'root_cause';
   dataType: FieldDataType;
   picklistKey?: string | null;
+  options?: FieldOption[] | null;
+  placeholder?: string | null;
   systemManaged: boolean;
+  storage?: 'column' | 'json';
   helperText: string;
 }
 
@@ -48,6 +57,8 @@ export default function DynamicTicketField({
 }) {
   const required = field.requirement === 'MANDATORY';
   const disabled = field.readOnly;
+  // Custom fields carry their own inline options; catalog selects get them via the `options` prop (picklist).
+  const choiceOptions: Option[] = field.isCustom ? (field.options ?? []) : (options ?? []);
 
   return (
     <div className="space-y-1.5">
@@ -61,11 +72,19 @@ export default function DynamicTicketField({
       )}
 
       {field.dataType === 'TEXT' && (
-        <Input value={value ?? ''} disabled={disabled} onChange={(e) => onChange(e.target.value)} />
+        <Input value={value ?? ''} disabled={disabled} placeholder={field.placeholder ?? ''} onChange={(e) => onChange(e.target.value)} />
       )}
 
       {field.dataType === 'TEXTAREA' && (
-        <Textarea rows={4} value={value ?? ''} disabled={disabled} onChange={(e) => onChange(e.target.value)} />
+        <Textarea rows={4} value={value ?? ''} disabled={disabled} placeholder={field.placeholder ?? ''} onChange={(e) => onChange(e.target.value)} />
+      )}
+
+      {field.dataType === 'NUMBER' && (
+        <Input type="number" value={value ?? ''} disabled={disabled} placeholder={field.placeholder ?? ''} onChange={(e) => onChange(e.target.value)} />
+      )}
+
+      {field.dataType === 'PHONE' && (
+        <Input type="tel" value={value ?? ''} disabled={disabled} placeholder={field.placeholder ?? '+1 555 010 0000'} onChange={(e) => onChange(e.target.value)} />
       )}
 
       {field.dataType === 'DATE' && (
@@ -100,11 +119,43 @@ export default function DynamicTicketField({
         <Select value={value || undefined} disabled={disabled} onValueChange={onChange}>
           <SelectTrigger className="w-full"><SelectValue placeholder="Select..." /></SelectTrigger>
           <SelectContent>
-            {(options ?? []).map((o) => (
+            {choiceOptions.map((o) => (
               <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
             ))}
           </SelectContent>
         </Select>
+      )}
+
+      {field.dataType === 'RADIO' && (
+        <RadioGroup value={value || undefined} disabled={disabled} onValueChange={onChange}>
+          {choiceOptions.map((o) => (
+            <label key={o.value} className="flex items-center gap-2 text-sm text-foreground">
+              <RadioGroupItem value={o.value} />
+              {o.label}
+            </label>
+          ))}
+        </RadioGroup>
+      )}
+
+      {field.dataType === 'MULTI_SELECT' && (
+        <div className="space-y-2 rounded-lg border p-3">
+          {choiceOptions.length === 0 && <p className="text-sm text-muted-foreground">No options.</p>}
+          {choiceOptions.map((o) => {
+            const selected: string[] = value ?? [];
+            return (
+              <label key={o.value} className="flex items-center gap-2 text-sm text-foreground">
+                <Checkbox
+                  checked={selected.includes(o.value)}
+                  disabled={disabled}
+                  onCheckedChange={(checked) =>
+                    onChange(checked ? [...selected, o.value] : selected.filter((v) => v !== o.value))
+                  }
+                />
+                {o.label}
+              </label>
+            );
+          })}
+        </div>
       )}
 
       {field.dataType === 'MULTI_SELECT_USER' && (
@@ -147,7 +198,7 @@ export default function DynamicTicketField({
       {error ? (
         <p className="text-xs text-destructive">{error}</p>
       ) : (
-        <p className="text-xs text-muted-foreground">{field.helperText}</p>
+        field.helperText && <p className="text-xs text-muted-foreground">{field.helperText}</p>
       )}
     </div>
   );

@@ -43,9 +43,9 @@ model Client {
   users        User[]
   roles        Role[]
   license      License?
-  requestTypes RequestType[]
   templates    Template[]
   picklistOptions PicklistOption[]
+  slaPolicies  SlaPolicy[]
   tickets      Ticket[]
   ticketSequence Int @default(0)
 }
@@ -157,33 +157,18 @@ model FormPermission {
   @@unique([roleId, formId])
 }
 
-model RequestType {
-  id          String    @id @default(uuid())
-  clientId    String
-  client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  name        String
-  description String?
-  color       String?
-  isActive    Boolean   @default(true)
-  sortOrder   Int       @default(0)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  createdBy   String?
-  updatedBy   String?
-  template    Template?
-  tickets     Ticket[]
-
-  @@unique([clientId, name])
-}
-
 model Template {
   id                  String         @id @default(uuid())
   clientId            String
   client              Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  requestTypeId       String         @unique
-  requestType         RequestType    @relation(fields: [requestTypeId], references: [id], onDelete: Cascade)
   name                String
+  category            String?
+  description         String?
   descriptionGuidance String?
+  icon                String?
+  color               String?
+  defaultPriority     String?
+  sortOrder           Int            @default(0)
   isActive            Boolean        @default(true)
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
@@ -191,6 +176,8 @@ model Template {
   updatedBy           String?
   fields              TemplateField[]
   tickets             Ticket[]
+
+  @@unique([clientId, name])
 }
 
 model TemplateField {
@@ -198,6 +185,12 @@ model TemplateField {
   templateId           String
   template             Template         @relation(fields: [templateId], references: [id], onDelete: Cascade)
   fieldKey             String
+  isCustom             Boolean          @default(false)
+  label                String?
+  dataType             String?
+  group                String?
+  placeholder          String?
+  options              Json?
   visibility           FieldVisibility  @default(HIDDEN)
   requirement          FieldRequirement @default(OPTIONAL)
   readOnly             Boolean          @default(false)
@@ -210,6 +203,22 @@ model TemplateField {
   updatedBy            String?
 
   @@unique([templateId, fieldKey])
+}
+
+model SlaPolicy {
+  id             String   @id @default(uuid())
+  clientId       String
+  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  priority       String
+  responseHours  Int?
+  resolutionHours Int
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  createdBy      String?
+  updatedBy      String?
+
+  @@unique([clientId, priority])
 }
 
 model PicklistOption {
@@ -236,8 +245,6 @@ model Ticket {
   clientId              String
   client                Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
   ticketNumber          String
-  requestTypeId         String
-  requestType           RequestType  @relation(fields: [requestTypeId], references: [id])
   templateId            String
   template              Template     @relation(fields: [templateId], references: [id])
 
@@ -254,19 +261,15 @@ model Ticket {
   notifyEmails          String[]     @default([])
   dueDate               DateTime?
   expectedResolutionDate DateTime?
-  customerConfirmation  Boolean?
+  slaHours              Int?
   closedDate            DateTime?
 
   // Ticket Detail
   subject               String
   description           String
 
-  // Root Cause Analysis
-  rootCauseCategory     String?
-  rootCauseDescription  String?
-  correctionAction      String?
-  preventionAction      String?
-  lessonsLearned        String?
+  // Admin-designed custom fields (keyed by TemplateField.fieldKey)
+  customFields          Json         @default("{}")
 
   createdAt             DateTime     @default(now())
   updatedAt             DateTime     @updatedAt
@@ -277,6 +280,7 @@ model Ticket {
   attachments           TicketAttachment[]
 
   @@unique([clientId, ticketNumber])
+  @@index([customFields(ops: JsonbOps)], type: Gin)
 }
 
 model TicketTechnician {

@@ -9,6 +9,7 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
   mkdirSync(join(process.cwd(), 'uploads/logos'), { recursive: true });
+  mkdirSync(join(process.cwd(), 'uploads/tickets'), { recursive: true });
   app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads' });
 
   app.enableCors({

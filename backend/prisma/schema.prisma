@@ -18,6 +18,16 @@ enum LicenseStatus {
   CANCELLED
 }
 
+enum FieldVisibility {
+  VISIBLE
+  HIDDEN
+}
+
+enum FieldRequirement {
+  MANDATORY
+  OPTIONAL
+}
+
 model Client {
   id           String       @id @default(uuid())
   name         String
@@ -33,6 +43,11 @@ model Client {
   users        User[]
   roles        Role[]
   license      License?
+  requestTypes RequestType[]
+  templates    Template[]
+  picklistOptions PicklistOption[]
+  tickets      Ticket[]
+  ticketSequence Int @default(0)
 }
 
 model License {
@@ -66,6 +81,7 @@ model User {
   clientId       String?
   client         Client?     @relation(fields: [clientId], references: [id], onDelete: Cascade)
   userRoles      UserRole[]
+  ticketAssignments TicketTechnician[]
 }
 
 model Role {
@@ -139,4 +155,149 @@ model FormPermission {
   updatedBy String?
 
   @@unique([roleId, formId])
+}
+
+model RequestType {
+  id          String    @id @default(uuid())
+  clientId    String
+  client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  color       String?
+  isActive    Boolean   @default(true)
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  createdBy   String?
+  updatedBy   String?
+  template    Template?
+  tickets     Ticket[]
+
+  @@unique([clientId, name])
+}
+
+model Template {
+  id                  String         @id @default(uuid())
+  clientId            String
+  client              Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  requestTypeId       String         @unique
+  requestType         RequestType    @relation(fields: [requestTypeId], references: [id], onDelete: Cascade)
+  name                String
+  descriptionGuidance String?
+  isActive            Boolean        @default(true)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  createdBy           String?
+  updatedBy           String?
+  fields              TemplateField[]
+  tickets             Ticket[]
+}
+
+model TemplateField {
+  id                   String           @id @default(uuid())
+  templateId           String
+  template             Template         @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  fieldKey             String
+  visibility           FieldVisibility  @default(HIDDEN)
+  requirement          FieldRequirement @default(OPTIONAL)
+  readOnly             Boolean          @default(false)
+  sortOrder            Int              @default(0)
+  helperTextOverride   String?
+  defaultValueOverride String?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+  createdBy            String?
+  updatedBy            String?
+
+  @@unique([templateId, fieldKey])
+}
+
+model PicklistOption {
+  id          String   @id @default(uuid())
+  clientId    String
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  listKey     String
+  value       String
+  label       String
+  parentValue String?
+  color       String?
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String?
+  updatedBy   String?
+
+  @@unique([clientId, listKey, value])
+}
+
+model Ticket {
+  id                    String       @id @default(uuid())
+  clientId              String
+  client                Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  ticketNumber          String
+  requestTypeId         String
+  requestType           RequestType  @relation(fields: [requestTypeId], references: [id])
+  templateId            String
+  template              Template     @relation(fields: [templateId], references: [id])
+
+  // Ticket Info
+  requestorName         String?
+  requestorUserId       String?
+  customerName          String?
+  department             String?
+  requestorContact      String?
+  priority              String?
+  ticketStatus          String
+  ticketCategory        String?
+  subCategory           String?
+  notifyEmails          String[]     @default([])
+  dueDate               DateTime?
+  expectedResolutionDate DateTime?
+  customerConfirmation  Boolean?
+  closedDate            DateTime?
+
+  // Ticket Detail
+  subject               String
+  description           String
+
+  // Root Cause Analysis
+  rootCauseCategory     String?
+  rootCauseDescription  String?
+  correctionAction      String?
+  preventionAction      String?
+  lessonsLearned        String?
+
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+  createdBy             String?
+  updatedBy             String?
+
+  technicians           TicketTechnician[]
+  attachments           TicketAttachment[]
+
+  @@unique([clientId, ticketNumber])
+}
+
+model TicketTechnician {
+  id         String   @id @default(uuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignedAt DateTime @default(now())
+
+  @@unique([ticketId, userId])
+}
+
+model TicketAttachment {
+  id         String   @id @default(uuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  fileName   String
+  filePath   String
+  mimeType   String
+  size       Int
+  uploadedAt DateTime @default(now())
+  uploadedBy String?
 }

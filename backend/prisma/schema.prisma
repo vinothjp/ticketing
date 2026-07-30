@@ -46,6 +46,7 @@ model Client {
   templates    Template[]
   picklistOptions PicklistOption[]
   slaPolicies  SlaPolicy[]
+  messagingChannels MessagingChannel[]
   tickets      Ticket[]
   ticketSequence Int @default(0)
 }
@@ -251,6 +252,7 @@ model Ticket {
   // Ticket Info
   requestorName         String?
   requestorUserId       String?
+  requestorEmail        String?
   customerName          String?
   department             String?
   requestorContact      String?
@@ -262,11 +264,19 @@ model Ticket {
   dueDate               DateTime?
   expectedResolutionDate DateTime?
   slaHours              Int?
+  firstResponseAt       DateTime?
   closedDate            DateTime?
 
   // Ticket Detail
   subject               String
   description           String
+
+  // Resolution
+  resolution            String?
+  resolutionCode        String?
+  resolvedAt            DateTime?
+  resolvedById          String?
+  reopenedCount         Int          @default(0)
 
   // Admin-designed custom fields (keyed by TemplateField.fieldKey)
   customFields          Json         @default("{}")
@@ -278,6 +288,10 @@ model Ticket {
 
   technicians           TicketTechnician[]
   attachments           TicketAttachment[]
+  activities            TicketActivity[]
+  tasks                 TicketTask[]
+  approvals             TicketApproval[]
+  messages              TicketMessage[]
 
   @@unique([clientId, ticketNumber])
   @@index([customFields(ops: JsonbOps)], type: Gin)
@@ -304,4 +318,110 @@ model TicketAttachment {
   size       Int
   uploadedAt DateTime @default(now())
   uploadedBy String?
+}
+
+// Audit trail / activity timeline (History tab)
+model TicketActivity {
+  id          String   @id @default(uuid())
+  ticketId    String
+  ticket      Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  actorUserId String?
+  actorName   String?
+  type        String
+  summary     String
+  meta        Json?
+  createdAt   DateTime @default(now())
+
+  @@index([ticketId, createdAt])
+}
+
+// Sub-tasks (Tasks tab)
+model TicketTask {
+  id             String    @id @default(uuid())
+  ticketId       String
+  ticket         Ticket    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  title          String
+  description    String?
+  assigneeUserId String?
+  assigneeName   String?
+  status         String    @default("OPEN")
+  dueDate        DateTime?
+  sortOrder      Int       @default(0)
+  completedAt    DateTime?
+  createdBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([ticketId])
+}
+
+// Approvals (Approvals tab)
+model TicketApproval {
+  id             String    @id @default(uuid())
+  ticketId       String
+  ticket         Ticket    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  approverUserId String
+  approverName   String?
+  status         String    @default("PENDING")
+  comment        String?
+  requestedById  String?
+  requestedByName String?
+  requestedAt    DateTime  @default(now())
+  decidedAt      DateTime?
+  level          Int       @default(1)
+
+  @@index([ticketId])
+}
+
+// Conversation messages (email + internal notes)
+model TicketMessage {
+  id           String   @id @default(uuid())
+  ticketId     String
+  ticket       Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  channel      String   @default("EMAIL")
+  direction    String   @default("OUTBOUND")
+  isInternal   Boolean  @default(false)
+  authorUserId String?
+  authorName   String?
+  fromAddress  String?
+  toAddress    String?
+  subject      String?
+  body         String
+  htmlBody     String?
+  externalId   String?
+  status       String   @default("SENT")
+  error        String?
+  createdAt    DateTime @default(now())
+
+  attachments  MessageAttachment[]
+
+  @@index([ticketId, createdAt])
+  @@index([externalId])
+}
+
+model MessageAttachment {
+  id        String        @id @default(uuid())
+  messageId String
+  message   TicketMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  fileName  String
+  filePath  String
+  mimeType  String
+  size      Int
+}
+
+// Per-client messaging channel config (IMAP inbox now; reusable for WhatsApp/SMS later)
+model MessagingChannel {
+  id              String   @id @default(uuid())
+  clientId        String
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  type            String
+  provider        String   @default("imap")
+  configEncrypted String?
+  fromIdentity    String?
+  enabled         Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  updatedBy       String?
+
+  @@unique([clientId, type])
 }

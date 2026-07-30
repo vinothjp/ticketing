@@ -22,16 +22,34 @@ export class MailerService {
     });
   }
 
-  async sendMail(options: { to: string; subject: string; html: string; text?: string }) {
+  async sendMail(options: {
+    to: string;
+    subject: string;
+    html: string;
+    text?: string;
+    replyTo?: string;
+    headers?: Record<string, string>;
+    attachments?: { filename: string; path: string }[];
+  }): Promise<{ messageId?: string }> {
     const config = await this.prisma.smtpConfig.findUnique({ where: { id: 'global' } });
     const transporter = await this.getTransporter();
-    await transporter.sendMail({
+    const info = await transporter.sendMail({
       from: config?.fromAddress || config?.username || undefined,
       to: options.to,
       subject: options.subject,
       html: options.html,
       text: options.text,
+      replyTo: options.replyTo,
+      headers: options.headers,
+      attachments: options.attachments,
     });
+    return { messageId: (info as { messageId?: string })?.messageId };
+  }
+
+  /** Whether SMTP is configured + enabled (so callers can fall back to a mock channel). */
+  async isConfigured(): Promise<boolean> {
+    const config = await this.prisma.smtpConfig.findUnique({ where: { id: 'global' } });
+    return !!(config?.host && config.username && config.passwordEncrypted && config.enabled);
   }
 
   async sendPasswordResetEmail(to: string, username: string, resetUrl: string) {

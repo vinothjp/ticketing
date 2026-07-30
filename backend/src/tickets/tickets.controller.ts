@@ -18,11 +18,12 @@ import { TicketsService } from './tickets.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { AssignTechniciansDto } from './dto/assign-technicians.dto';
+import { SetResolutionDto } from './dto/set-resolution.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
 import { FIELD_CATALOG } from './field-catalog';
 
-type AuthedRequest = { user: { id: string; clientId: string } };
+type AuthedRequest = { user: { id: string; clientId: string; roles: string[] } };
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('api/tickets')
@@ -31,12 +32,31 @@ export class TicketsController {
 
   @Get()
   findAll(@Request() req: AuthedRequest) {
-    return this.ticketsService.findAll(req.user.clientId);
+    return this.ticketsService.findAll(req.user.clientId, req.user);
   }
 
   @Get(':id')
   findOne(@Param('id') id: string, @Request() req: AuthedRequest) {
-    return this.ticketsService.findOne(id, req.user.clientId);
+    return this.ticketsService.findOne(id, req.user.clientId, req.user);
+  }
+
+  @Get(':id/activity')
+  getActivity(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.getActivity(id, req.user.clientId, req.user);
+  }
+
+  @Put(':id/resolution')
+  setResolution(
+    @Param('id') id: string,
+    @Body() dto: SetResolutionDto,
+    @Request() req: AuthedRequest,
+  ) {
+    return this.ticketsService.setResolution(id, req.user.clientId, dto, req.user.id, req.user);
+  }
+
+  @Post(':id/reopen')
+  reopen(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.reopen(id, req.user.clientId, req.user.id, req.user);
   }
 
   @Post()
@@ -50,7 +70,7 @@ export class TicketsController {
     @Body() dto: UpdateTicketDto,
     @Request() req: AuthedRequest,
   ) {
-    return this.ticketsService.update(id, req.user.clientId, dto, req.user.id);
+    return this.ticketsService.update(id, req.user.clientId, dto, req.user.id, req.user);
   }
 
   @Put(':id/technicians')
@@ -64,6 +84,7 @@ export class TicketsController {
       req.user.clientId,
       dto.userIds,
       req.user.id,
+      req.user,
     );
   }
 
@@ -76,7 +97,7 @@ export class TicketsController {
           cb(null, `${randomUUID()}${extname(file.originalname)}`);
         },
       }),
-      limits: { fileSize: 10 * 1024 * 1024 },
+      limits: { fileSize: 5 * 1024 * 1024 },
     }),
   )
   uploadAttachments(
@@ -89,6 +110,7 @@ export class TicketsController {
       req.user.clientId,
       files,
       req.user.id,
+      req.user,
     );
   }
 }

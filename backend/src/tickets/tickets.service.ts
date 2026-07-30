@@ -6,6 +6,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TemplatesService } from '../templates/templates.service';
+import { ActivityService } from '../activity/activity.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 
@@ -34,11 +35,16 @@ function isEmpty(value: unknown) {
   );
 }
 
+/** The authenticated user viewing/acting on tickets. Admins see all; others only their assigned tickets. */
+export type TicketViewer = { id: string; roles: string[] };
+const isAdmin = (viewer: TicketViewer) => viewer.roles.includes('Admin');
+
 @Injectable()
 export class TicketsService {
   constructor(
     private prisma: PrismaService,
     private templatesService: TemplatesService,
+    private activity: ActivityService,
   ) {}
 
   async create(dto: CreateTicketDto, clientId: string, actorId: string) {
@@ -118,6 +124,7 @@ export class TicketsService {
           templateId: template.id,
           ticketStatus,
           requestorName: dto.requestorName,
+          requestorEmail: dto.requestorEmail,
           customerName: dto.customerName,
           department: dto.department,
           requestorContact: dto.requestorContact,
@@ -143,12 +150,29 @@ export class TicketsService {
       });
     });
 
+    await this.activity.log({
+      ticketId: ticket.id,
+      actorUserId: actorId,
+      type: 'CREATED',
+      summary: 'Ticket created',
+    });
     return ticket;
   }
 
-  findAll(clientId: string) {
+  findAll(clientId: string, viewer: TicketViewer) {
     return this.prisma.ticket.findMany({
-      where: { clientId },
+      // Non-admins see tickets assigned to them, plus any they've been asked to approve.
+      where: {
+        clientId,
+        ...(isAdmin(viewer)
+          ? {}
+          : {
+              OR: [
+                { technicians: { some: { userId: viewer.id } } },
+                { approvals: { some: { approverUserId: viewer.id } } },
+              ],
+            }),
+      },
       orderBy: { createdAt: 'desc' },
       include: {
         template: { select: { id: true, name: true, category: true } },
@@ -159,7 +183,7 @@ export class TicketsService {
     });
   }
 
-  async findOne(id: string, clientId: string) {
+  async findOne(id: string, clientId: string, viewer?: TicketViewer) {
     const ticket = await this.prisma.ticket.findFirst({
       where: { id, clientId },
       include: {
@@ -171,6 +195,14 @@ export class TicketsService {
       },
     });
     if (!ticket) throw new NotFoundException('Ticket not found');
+    // A non-admin can access a ticket they're assigned to, or one they're a named approver on.
+    if (viewer && !isAdmin(viewer) && !ticket.technicians.some((t) => t.user.id === viewer.id)) {
+      const isApprover = await this.prisma.ticketApproval.findFirst({
+        where: { ticketId: id, approverUserId: viewer.id },
+        select: { id: true },
+      });
+      if (!isApprover) throw new NotFoundException('Ticket not found');
+    }
     return ticket;
   }
 
@@ -179,8 +211,9 @@ export class TicketsService {
     clientId: string,
     dto: UpdateTicketDto,
     actorId: string,
+    viewer: TicketViewer,
   ) {
-    const ticket = await this.findOne(id, clientId);
+    const ticket = await this.findOne(id, clientId, viewer);
 
     let closedDate = ticket.closedDate;
     if (
@@ -203,17 +236,34 @@ export class TicketsService {
           }
         : undefined;
 
-    return this.prisma.ticket.update({
+    // When priority changes, re-derive the SLA target + Due Date from the policy
+    // (measured from ticket creation), unless a Due Date is explicitly supplied.
+    let slaHours: number | undefined;
+    let slaDue: Date | undefined;
+    if (dto.priority && dto.priority !== ticket.priority) {
+      const sla = await this.prisma.slaPolicy.findFirst({
+        where: { clientId, priority: dto.priority, isActive: true },
+      });
+      if (sla) {
+        slaHours = sla.resolutionHours;
+        slaDue = new Date(
+          new Date(ticket.createdAt).getTime() + sla.resolutionHours * 3600 * 1000,
+        );
+      }
+    }
+
+    const updated = await this.prisma.ticket.update({
       where: { id },
       data: {
         ticketStatus: dto.ticketStatus,
         priority: dto.priority,
         ticketCategory: dto.ticketCategory,
         subCategory: dto.subCategory,
-        dueDate: dto.dueDate ? new Date(dto.dueDate) : undefined,
+        dueDate: dto.dueDate ? new Date(dto.dueDate) : slaDue,
         expectedResolutionDate: dto.expectedResolutionDate
           ? new Date(dto.expectedResolutionDate)
-          : undefined,
+          : slaDue,
+        ...(slaHours !== undefined && { slaHours }),
         closedDate,
         ...(mergedCustomFields !== undefined && {
           customFields: mergedCustomFields as Prisma.InputJsonValue,
@@ -227,6 +277,29 @@ export class TicketsService {
         },
       },
     });
+
+    if (dto.ticketStatus && dto.ticketStatus !== ticket.ticketStatus) {
+      await this.activity.log({
+        ticketId: id,
+        actorUserId: actorId,
+        type: 'STATUS_CHANGED',
+        summary: `Status changed to ${dto.ticketStatus}`,
+        meta: { from: ticket.ticketStatus, to: dto.ticketStatus },
+      });
+      if (closedDate && !ticket.closedDate) {
+        await this.activity.log({ ticketId: id, actorUserId: actorId, type: 'CLOSED', summary: 'Ticket closed' });
+      }
+    }
+    if (dto.priority && dto.priority !== ticket.priority) {
+      await this.activity.log({
+        ticketId: id,
+        actorUserId: actorId,
+        type: 'PRIORITY_CHANGED',
+        summary: `Priority changed to ${dto.priority}`,
+        meta: { from: ticket.priority, to: dto.priority },
+      });
+    }
+    return updated;
   }
 
   async assignTechnicians(
@@ -234,8 +307,9 @@ export class TicketsService {
     clientId: string,
     userIds: string[],
     actorId: string,
+    viewer: TicketViewer,
   ) {
-    await this.findOne(id, clientId);
+    await this.findOne(id, clientId, viewer);
 
     const ownedUsers = await this.prisma.user.count({
       where: { id: { in: userIds }, clientId },
@@ -257,7 +331,106 @@ export class TicketsService {
       data: { updatedBy: actorId },
     });
 
+    const assignees = userIds.length
+      ? (
+          await this.prisma.user.findMany({
+            where: { id: { in: userIds } },
+            select: { username: true },
+          })
+        )
+          .map((u) => u.username)
+          .join(', ')
+      : 'nobody';
+    await this.activity.log({
+      ticketId: id,
+      actorUserId: actorId,
+      type: 'ASSIGNED',
+      summary: `Assigned to ${assignees}`,
+      meta: { userIds },
+    });
+
     return this.findOne(id, clientId);
+  }
+
+  // ---- Activity (History) --------------------------------------------------
+
+  async getActivity(id: string, clientId: string, viewer: TicketViewer) {
+    await this.findOne(id, clientId, viewer);
+    const activities = await this.activity.list(id);
+    const actorIds = Array.from(
+      new Set(activities.map((a) => a.actorUserId).filter((x): x is string => !!x)),
+    );
+    const users = actorIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: actorIds } },
+          select: { id: true, username: true },
+        })
+      : [];
+    const nameById = new Map(users.map((u) => [u.id, u.username]));
+    return activities.map((a) => ({
+      ...a,
+      actorName: a.actorName ?? (a.actorUserId ? nameById.get(a.actorUserId) ?? null : null),
+    }));
+  }
+
+  // ---- Resolution ----------------------------------------------------------
+
+  async setResolution(
+    id: string,
+    clientId: string,
+    dto: { resolution?: string; resolutionCode?: string; ticketStatus?: string },
+    actorId: string,
+    viewer: TicketViewer,
+  ) {
+    await this.findOne(id, clientId, viewer);
+    const resolvedStatus = dto.ticketStatus || 'Resolved';
+    const updated = await this.prisma.ticket.update({
+      where: { id },
+      data: {
+        resolution: dto.resolution,
+        resolutionCode: dto.resolutionCode,
+        resolvedAt: new Date(),
+        resolvedById: actorId,
+        ticketStatus: resolvedStatus,
+        updatedBy: actorId,
+      },
+    });
+    await this.activity.log({
+      ticketId: id,
+      actorUserId: actorId,
+      type: 'RESOLVED',
+      summary: `Ticket resolved${dto.resolutionCode ? ` (${dto.resolutionCode})` : ''}`,
+    });
+    return updated;
+  }
+
+  async reopen(id: string, clientId: string, actorId: string, viewer: TicketViewer) {
+    await this.findOne(id, clientId, viewer);
+    const reopenStatus =
+      (
+        await this.prisma.picklistOption.findFirst({
+          where: { clientId, listKey: 'ticketStatus', isActive: true },
+          orderBy: { sortOrder: 'asc' },
+        })
+      )?.value ?? 'Open';
+    const updated = await this.prisma.ticket.update({
+      where: { id },
+      data: {
+        resolvedAt: null,
+        resolvedById: null,
+        closedDate: null,
+        ticketStatus: reopenStatus,
+        reopenedCount: { increment: 1 },
+        updatedBy: actorId,
+      },
+    });
+    await this.activity.log({
+      ticketId: id,
+      actorUserId: actorId,
+      type: 'REOPENED',
+      summary: 'Ticket reopened',
+    });
+    return updated;
   }
 
   async addAttachments(
@@ -265,8 +438,9 @@ export class TicketsService {
     clientId: string,
     files: Express.Multer.File[],
     actorId: string,
+    viewer: TicketViewer,
   ) {
-    await this.findOne(id, clientId);
+    await this.findOne(id, clientId, viewer);
     if (!files?.length) return [];
 
     await this.prisma.ticketAttachment.createMany({

@@ -6,9 +6,11 @@ export interface TicketSummary {
   id: string;
   ticketNumber: string;
   subject: string;
+  description?: string | null;
   priority?: string | null;
   ticketStatus: string;
   requestorName?: string | null;
+  department?: string | null;
   ticketCategory?: string | null;
   dueDate?: string | null;
   closedDate?: string | null;
@@ -49,7 +51,7 @@ export function formatDueStatus(dueDate?: string | null, statusLabel?: string | 
   return { label: `Due in ${diffDays}d`, tone: 'ok' };
 }
 
-export function formatCountdown(dueDate?: string | null): { label: string; overdue: boolean; fraction: number } {
+export function formatCountdown(dueDate?: string | null, slaHours?: number | null): { label: string; overdue: boolean; fraction: number } {
   if (!dueDate) return { label: 'No due date set', overdue: false, fraction: 0 };
   const due = new Date(dueDate).getTime();
   const now = Date.now();
@@ -59,7 +61,8 @@ export function formatCountdown(dueDate?: string | null): { label: string; overd
   const hours = Math.floor(abs / (1000 * 60 * 60));
   const mins = Math.floor((abs % (1000 * 60 * 60)) / (1000 * 60));
   const label = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
-  // Fraction remaining assuming a 48h SLA window, clamped — purely a visual approximation.
-  const fraction = overdue ? 0 : Math.max(0, Math.min(1, diffMs / (48 * 60 * 60 * 1000)));
+  // Fraction remaining against the real SLA window (falls back to 48h if unknown).
+  const windowMs = (slaHours && slaHours > 0 ? slaHours : 48) * 60 * 60 * 1000;
+  const fraction = overdue ? 0 : Math.max(0, Math.min(1, diffMs / windowMs));
   return { label: overdue ? `Overdue by ${label}` : `${label} left`, overdue, fraction };
 }

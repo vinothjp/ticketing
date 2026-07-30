@@ -59,8 +59,8 @@ export const TEMPLATE_CATEGORIES = [
 
 /** Custom field types an admin can design, with UI labels. Mirrors CUSTOM_FIELD_DATA_TYPES on the backend. */
 export const CUSTOM_FIELD_TYPES: { value: FieldDataType; label: string }[] = [
-  { value: 'TEXT', label: 'Short text' },
-  { value: 'TEXTAREA', label: 'Paragraph' },
+  { value: 'TEXT', label: 'Text' },
+  { value: 'TEXTAREA', label: 'Long Description' },
   { value: 'NUMBER', label: 'Number' },
   { value: 'SELECT', label: 'Dropdown' },
   { value: 'MULTI_SELECT', label: 'Multi-select' },
@@ -70,10 +70,25 @@ export const CUSTOM_FIELD_TYPES: { value: FieldDataType; label: string }[] = [
   { value: 'BOOLEAN', label: 'Checkbox (yes/no)' },
   { value: 'EMAIL_LIST', label: 'Email list' },
   { value: 'PHONE', label: 'Phone' },
-  { value: 'FILE', label: 'File upload' },
+  { value: 'FILE', label: 'Attachment' },
 ];
 
 export const OPTION_BACKED_TYPES: FieldDataType[] = ['SELECT', 'MULTI_SELECT', 'RADIO'];
+
+/** Max upload size (MB) enforced on all Attachment fields, client + server. */
+export const MAX_FILE_SIZE_MB = 5;
+
+/** File types an admin can allow on an Attachment field. `value` is the input `accept` string. */
+export const FILE_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: '.pdf', label: 'PDF' },
+  { value: '.doc,.docx', label: 'Word' },
+  { value: '.xls,.xlsx', label: 'Excel' },
+  { value: '.ppt,.pptx', label: 'PowerPoint' },
+  { value: '.png,.jpg,.jpeg,.gif', label: 'Images' },
+  { value: '.txt', label: 'Text' },
+  { value: '.csv', label: 'CSV' },
+  { value: '.zip', label: 'Zip' },
+];
 
 export const FIELD_GROUPS: { value: 'ticket_info' | 'ticket_detail' | 'root_cause'; label: string }[] = [
   { value: 'ticket_info', label: 'Ticket Info' },

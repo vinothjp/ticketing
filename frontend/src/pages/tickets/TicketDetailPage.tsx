@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Paperclip } from 'lucide-react';
@@ -12,6 +13,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { getPriorityMeta, formatCountdown, type TicketTechnicianRow } from './ticketHelpers';
 import type { MergedTemplateField } from './DynamicTicketField';
+import HistoryTab from './detail/HistoryTab';
+import ResolutionTab from './detail/ResolutionTab';
+import TasksTab from './detail/TasksTab';
+import ApprovalsTab from './detail/ApprovalsTab';
+import ConversationTab from './detail/ConversationTab';
 
 interface TicketDetail {
   id: string;
@@ -30,7 +36,12 @@ interface TicketDetail {
   dueDate?: string | null;
   expectedResolutionDate?: string | null;
   slaHours?: number | null;
+  firstResponseAt?: string | null;
   closedDate?: string | null;
+  resolution?: string | null;
+  resolutionCode?: string | null;
+  resolvedAt?: string | null;
+  reopenedCount?: number | null;
   createdAt: string;
   customFields: Record<string, unknown>;
   template: { id: string; name: string; category?: string | null };
@@ -70,6 +81,7 @@ function fieldDisplayValue(f: MergedTemplateField, ticket: TicketDetail): string
 export default function TicketDetailPage() {
   const { id } = useParams<{ id: string }>();
   const qc = useQueryClient();
+  const [tab, setTab] = useState('details');
 
   const { data: ticket, isLoading } = useQuery<TicketDetail>({
     queryKey: ['tickets', id],
@@ -114,14 +126,12 @@ export default function TicketDetailPage() {
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error assigning technicians'),
   });
 
-  const notReady = () => toast.info('Coming soon');
-
   if (isLoading || !ticket) {
     return <p className="text-muted-foreground">Loading...</p>;
   }
 
   const priority = getPriorityMeta(ticket.priority);
-  const countdown = formatCountdown(ticket.dueDate);
+  const countdown = formatCountdown(ticket.dueDate, ticket.slaHours);
   const templateFieldRows = (template?.fields ?? [])
     .filter((f) => f.visibility === 'VISIBLE' && !OMIT_FROM_TEMPLATE_FIELDS.has(f.fieldKey))
     .map((f) => ({ field: f, value: fieldDisplayValue(f, ticket) }))
@@ -140,14 +150,15 @@ export default function TicketDetailPage() {
           <Badge variant={priority.code === 'P1' ? 'destructive' : 'secondary'}>{priority.label}</Badge>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={notReady}>Reply</Button>
+          <Button onClick={() => setTab('conversation')}>Reply</Button>
         </div>
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
-        <Tabs defaultValue="details">
+        <Tabs value={tab} onValueChange={setTab}>
           <TabsList>
             <TabsTrigger value="details">Details</TabsTrigger>
+            <TabsTrigger value="conversation">Conversation</TabsTrigger>
             <TabsTrigger value="resolution">Resolution</TabsTrigger>
             <TabsTrigger value="tasks">Tasks</TabsTrigger>
             <TabsTrigger value="approvals">Approvals</TabsTrigger>
@@ -206,17 +217,20 @@ export default function TicketDetailPage() {
             )}
           </TabsContent>
 
+          <TabsContent value="conversation" className="pt-4">
+            <ConversationTab ticketId={ticket.id} />
+          </TabsContent>
           <TabsContent value="resolution" className="pt-4">
-            <p className="text-sm text-muted-foreground">Resolution tracking is coming soon.</p>
+            <ResolutionTab ticket={ticket} />
           </TabsContent>
           <TabsContent value="tasks" className="pt-4">
-            <p className="text-sm text-muted-foreground">Tasks are coming soon.</p>
+            <TasksTab ticketId={ticket.id} />
           </TabsContent>
           <TabsContent value="approvals" className="pt-4">
-            <p className="text-sm text-muted-foreground">Approvals are coming soon.</p>
+            <ApprovalsTab ticketId={ticket.id} />
           </TabsContent>
           <TabsContent value="history" className="pt-4">
-            <p className="text-sm text-muted-foreground">Lifecycle history is coming soon.</p>
+            <HistoryTab ticketId={ticket.id} />
           </TabsContent>
         </Tabs>
 

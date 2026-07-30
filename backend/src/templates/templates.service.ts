@@ -102,7 +102,7 @@ export class TemplatesService {
         group: (f.group as FieldGroup) ?? 'ticket_detail',
         dataType: (f.dataType as FieldDataType) ?? 'TEXT',
         picklistKey: null,
-        options: [],
+        options: (f.options as { value: string; label: string }[]) ?? [],
         placeholder: null,
         systemManaged: false,
         storage: 'json',
@@ -116,7 +116,7 @@ export class TemplatesService {
       group: catalog.group,
       dataType: catalog.dataType,
       picklistKey: catalog.picklistKey ?? null,
-      options: [],
+      options: (f.options as { value: string; label: string }[]) ?? [],
       placeholder: null,
       systemManaged: !!catalog.systemManaged,
       storage: catalog.storage ?? 'column',
@@ -177,10 +177,11 @@ export class TemplatesService {
       dataType: isCustom ? (field.dataType ?? null) : null,
       group: isCustom ? (field.group ?? 'ticket_detail') : null,
       placeholder: isCustom ? (field.placeholder ?? null) : null,
-      options:
-        isCustom && field.options?.length
-          ? (field.options as unknown as Prisma.InputJsonValue)
-          : Prisma.JsonNull,
+      // Persist options for custom option fields AND for Attachment fields
+      // (system or custom), where options carry the allowed file types.
+      options: field.options?.length
+        ? (field.options as unknown as Prisma.InputJsonValue)
+        : Prisma.JsonNull,
       visibility: field.visibility ?? 'VISIBLE',
       requirement: field.requirement ?? 'OPTIONAL',
       readOnly: field.readOnly ?? false,

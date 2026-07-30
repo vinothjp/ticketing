@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
@@ -59,6 +60,26 @@ export default function DynamicTicketField({
   const disabled = field.readOnly;
   // Custom fields carry their own inline options; catalog selects get them via the `options` prop (picklist).
   const choiceOptions: Option[] = field.isCustom ? (field.options ?? []) : (options ?? []);
+
+  // Attachment constraints: max 5 MB + allowed types (from the field's options).
+  const MAX_FILE_MB = 5;
+  const acceptTypes = (field.options ?? []).map((o) => o.value).join(',');
+  const [fileError, setFileError] = useState('');
+  const handleFiles = (list: FileList | null) => {
+    const chosen = Array.from(list ?? []);
+    const exts = acceptTypes ? acceptTypes.toLowerCase().split(',').map((s) => s.trim()) : null;
+    const rejected: string[] = [];
+    const valid = chosen.filter((f) => {
+      if (f.size > MAX_FILE_MB * 1024 * 1024) { rejected.push(`${f.name} — over ${MAX_FILE_MB} MB`); return false; }
+      if (exts) {
+        const ext = '.' + (f.name.split('.').pop() ?? '').toLowerCase();
+        if (!exts.includes(ext)) { rejected.push(`${f.name} — type not allowed`); return false; }
+      }
+      return true;
+    });
+    setFileError(rejected.length ? rejected.join('; ') : '');
+    onFilesChange?.(valid);
+  };
 
   return (
     <div className="space-y-1.5">
@@ -185,8 +206,13 @@ export default function DynamicTicketField({
             type="file"
             multiple
             disabled={disabled}
-            onChange={(e) => onFilesChange?.(Array.from(e.target.files ?? []))}
+            accept={acceptTypes || undefined}
+            onChange={(e) => handleFiles(e.target.files)}
           />
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Max {MAX_FILE_MB} MB{acceptTypes ? ` · ${(field.options ?? []).map((o) => o.label).join(', ')}` : ''}
+          </p>
+          {fileError && <p className="mt-1 text-xs text-destructive">{fileError}</p>}
           {!!files?.length && (
             <ul className="mt-1 text-xs text-muted-foreground">
               {files.map((f) => <li key={f.name}>{f.name}</li>)}

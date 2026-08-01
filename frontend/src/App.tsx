@@ -27,6 +27,8 @@ import CreateTicketPage from './pages/tickets/CreateTicketPage';
 import TicketListPage from './pages/tickets/TicketListPage';
 import TicketDetailPage from './pages/tickets/TicketDetailPage';
 import KnowledgeBasePage from './pages/KnowledgeBasePage';
+import KbArticlePage from './pages/kb/KbArticlePage';
+import KbArticleEditorPage from './pages/kb/KbArticleEditorPage';
 import ProjectsPage from './pages/ProjectsPage';
 
 const queryClient = new QueryClient();
@@ -78,6 +80,9 @@ export default function App() {
                         <Route path="/tickets/:id" element={<TicketDetailPage />} />
                         <Route path="/tickets" element={<TicketListPage />} />
                         <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
+                        <Route path="/knowledge-base/new" element={<RoleGate allow={isStaff} redirectTo="/knowledge-base"><KbArticleEditorPage /></RoleGate>} />
+                        <Route path="/knowledge-base/:id" element={<KbArticlePage />} />
+                        <Route path="/knowledge-base/:id/edit" element={<RoleGate allow={isStaff} redirectTo="/knowledge-base"><KbArticleEditorPage /></RoleGate>} />
                         <Route path="/projects" element={<ProjectsPage />} />
                         {/* Admin-only sections — non-admins are redirected to their tickets */}
                         <Route path="/users" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><UsersPage /></RoleGate>} />

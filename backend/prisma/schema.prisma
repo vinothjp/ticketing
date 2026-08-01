@@ -50,7 +50,57 @@ model Client {
   tickets      Ticket[]
   customerCompanies CustomerCompany[]
   smtpConfig   SmtpConfig?
+  kbArticles   KbArticle[]
   ticketSequence Int @default(0)
+  kbSequence   Int @default(0)
+}
+
+// Knowledge base article. Staff author; customers see published + customer-visible ones.
+model KbArticle {
+  id            String   @id @default(uuid())
+  clientId      String
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  documentNumber String?
+  articleType   String   @default("KNOWLEDGE")  // KNOWLEDGE | PROBLEM
+  title         String
+  category      String?
+  subCategory   String?
+  module        String?
+  subject       String?
+  versionNumber String?
+  body          String                          // "Content"
+  problemDescription String?
+  resolution    String?
+  cause         String?
+  prevention    String?
+  keywords      String[] @default([])
+  urlReferences Json     @default("[]")          // [{ label?, url }]
+  status        String   @default("DRAFT")       // DRAFT | PUBLISHED
+  audience      String   @default("INTERNAL")    // INTERNAL | CUSTOMER
+  knowledgeOwnerId   String?
+  knowledgeOwnerName String?
+  publishedDate DateTime?
+  expiryDate    DateTime?
+  createdBy     String?
+  createdByName String?
+  updatedBy     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  attachments   KbAttachment[]
+
+  @@index([clientId, status])
+}
+
+model KbAttachment {
+  id         String    @id @default(uuid())
+  articleId  String
+  article    KbArticle @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  fileName   String
+  filePath   String
+  mimeType   String
+  size       Int
+  uploadedAt DateTime  @default(now())
+  uploadedBy String?
 }
 
 // An external customer company of the tenant (Client). Each has a handful of

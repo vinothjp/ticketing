@@ -244,6 +244,30 @@ async function main() {
     { value: 'Duplicate', label: 'Duplicate' },
     { value: 'No Action Needed', label: 'No Action Needed' },
   ];
+  // Knowledge Base taxonomy (dropdowns in the KB editor).
+  const kbModuleOptions = [
+    { value: 'Email', label: 'Email' },
+    { value: 'Network', label: 'Network' },
+    { value: 'ERP', label: 'ERP' },
+    { value: 'Hardware', label: 'Hardware' },
+    { value: 'Security', label: 'Security' },
+  ];
+  const kbCategoryOptions = [
+    { value: 'Software', label: 'Software' },
+    { value: 'Hardware', label: 'Hardware' },
+    { value: 'Account', label: 'Account' },
+    { value: 'Networking', label: 'Networking' },
+  ];
+  const kbSubCategoryOptions = [
+    { value: 'Installation', label: 'Installation', parentValue: 'Software' },
+    { value: 'Configuration', label: 'Configuration', parentValue: 'Software' },
+    { value: 'Printer', label: 'Printer', parentValue: 'Hardware' },
+    { value: 'Laptop', label: 'Laptop', parentValue: 'Hardware' },
+    { value: 'Password Reset', label: 'Password Reset', parentValue: 'Account' },
+    { value: 'Access Request', label: 'Access Request', parentValue: 'Account' },
+    { value: 'VPN', label: 'VPN', parentValue: 'Networking' },
+    { value: 'WiFi', label: 'WiFi', parentValue: 'Networking' },
+  ];
 
   const picklists: {
     listKey: string;
@@ -258,6 +282,9 @@ async function main() {
     ...subCategoryOptions.map((o) => ({ listKey: 'subCategory', ...o })),
     ...requestTypeOptions.map((o) => ({ listKey: 'requestType', ...o })),
     ...resolutionCodeOptions.map((o) => ({ listKey: 'resolutionCode', ...o })),
+    ...kbModuleOptions.map((o) => ({ listKey: 'kbModule', ...o })),
+    ...kbCategoryOptions.map((o) => ({ listKey: 'kbCategory', ...o })),
+    ...kbSubCategoryOptions.map((o) => ({ listKey: 'kbSubCategory', ...o })),
   ];
 
   // Replace the picklist master so values match the spec exactly (dev data).

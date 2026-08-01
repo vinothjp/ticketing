@@ -19,6 +19,7 @@ import { TasksModule } from './tasks/tasks.module';
 import { ApprovalsModule } from './approvals/approvals.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { CustomerCompaniesModule } from './customer-companies/customer-companies.module';
+import { KbModule } from './kb/kb.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { CustomerCompaniesModule } from './customer-companies/customer-companies
     ApprovalsModule,
     MessagingModule,
     CustomerCompaniesModule,
+    KbModule,
   ],
   controllers: [AppController],
   providers: [AppService],

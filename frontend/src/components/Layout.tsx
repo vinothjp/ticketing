@@ -120,9 +120,9 @@ export default function Layout({ children }: { children: ReactNode }) {
                 ],
               };
             }
-            // Customers only see Dashboard + Tickets, not internal KB/Projects.
+            // Customers see Dashboard, Tickets, and the Knowledge Base (self-service) — not Projects.
             if (group.label === 'Workspace' && isCustomer) {
-              return { ...group, items: group.items.filter((i) => i.to === '/dashboard' || i.to === '/tickets') };
+              return { ...group, items: group.items.filter((i) => ['/dashboard', '/tickets', '/knowledge-base'].includes(i.to)) };
             }
             return group;
           });

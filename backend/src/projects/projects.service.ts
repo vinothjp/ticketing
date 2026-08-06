@@ -112,15 +112,24 @@ export class ProjectsService {
     };
   }
 
-  /** Per-project financial dashboard (Excel): revenue, cost, profit, margin, activity costing. */
-  async financials(projectId: string, clientId: string) {
-    await this.getOwned(projectId, clientId);
-    const [project, invoices, expenses, timesheets, resources] = await Promise.all([
-      this.prisma.project.findUnique({ where: { id: projectId }, select: { budget: true } }),
+  // Change-request statuses that count as "approved" (their budget increase applies to the baseline).
+  private static readonly CR_APPROVED = new Set(['APPROVED', 'CUSTOMER_APPROVED']);
+  // …and those still awaiting a decision (their increase is a pending, not-yet-applied ask).
+  private static readonly CR_PENDING = new Set(['SUBMITTED', 'PENDING_CUSTOMER']);
+
+  /**
+   * Shared financial math used by both the Financials dashboard and the Change-Request budget
+   * check: actual cost (timesheets + expenses), revenue, per-user rates, and the budget model
+   * (baseline = Project.budget, revised = baseline + Σ approved change requests).
+   */
+  private async financialCore(projectId: string) {
+    const [project, invoices, expenses, timesheets, resources, changeRequests] = await Promise.all([
+      this.prisma.project.findUnique({ where: { id: projectId }, select: { budget: true, currency: true } }),
       this.prisma.projectInvoice.findMany({ where: { projectId } }),
       this.prisma.projectExpense.findMany({ where: { projectId } }),
       this.prisma.projectTimesheet.findMany({ where: { projectId } }),
       this.prisma.projectResource.findMany({ where: { projectId }, include: { category: true } }),
+      this.prisma.projectChangeRequest.findMany({ where: { projectId } }),
     ]);
     const num = (d: unknown) => Number(d ?? 0);
     // A consultant's cost/billing rate comes from their resource-plan category.
@@ -146,20 +155,139 @@ export class ProjectsService {
     }
     const vendorCost = 0;
     const totalCost = resourceCost + expenseCost + vendorCost;
+
+    // Budget model: baseline never changes; approved change requests revise it upward.
+    const baseline = num(project?.budget);
+    const approvedChanges = changeRequests.filter((c) => ProjectsService.CR_APPROVED.has(c.status)).reduce((s, c) => s + num(c.budgetImpact), 0);
+    const pendingChanges = changeRequests.filter((c) => ProjectsService.CR_PENDING.has(c.status)).reduce((s, c) => s + num(c.budgetImpact), 0);
+    const revisedBudget = baseline + approvedChanges;
+
+    return {
+      project, num, rateByUser, invoices, expenses, changeRequests,
+      revenue, collected, expenseCost, resourceCost, vendorCost, totalCost, activityMap,
+      baseline, approvedChanges, pendingChanges, revisedBudget, remaining: revisedBudget - totalCost,
+    };
+  }
+
+  /** Per-project financial dashboard (Excel): revenue, cost, profit, margin, activity costing. */
+  async financials(projectId: string, clientId: string) {
+    await this.getOwned(projectId, clientId);
+    const c = await this.financialCore(projectId);
+    const { num, revenue, collected, expenseCost, resourceCost, vendorCost, totalCost } = c;
     const grossProfit = revenue - totalCost;
     const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 1000) / 10 : 0);
-    const budget = num(project?.budget);
     const expensesByCategory: Record<string, number> = {};
-    for (const e of expenses) expensesByCategory[e.category] = (expensesByCategory[e.category] ?? 0) + num(e.amount);
+    for (const e of c.expenses) expensesByCategory[e.category] = (expensesByCategory[e.category] ?? 0) + num(e.amount);
 
     return {
       revenue, collected, outstanding: revenue - collected,
       resourceCost, expenseCost, vendorCost, totalCost,
       grossProfit, grossMargin: pct(grossProfit, revenue),
-      budget, budgetRemaining: budget - totalCost,
+      // Budget: baseline (original) + approved change requests = revised. `budget`/`budgetRemaining`
+      // keep the revised meaning for any older callers; the tab uses the explicit fields.
+      budgetBaseline: c.baseline, approvedChanges: c.approvedChanges, pendingChanges: c.pendingChanges,
+      revisedBudget: c.revisedBudget,
+      budget: c.revisedBudget, budgetRemaining: c.remaining,
       expensesByCategory,
-      activityCosting: [...activityMap.values()].map((a) => ({ ...a, margin: pct(a.revenue - a.cost, a.revenue) })).sort((x, y) => y.revenue - x.revenue),
+      activityCosting: [...c.activityMap.values()].map((a) => ({ ...a, margin: pct(a.revenue - a.cost, a.revenue) })).sort((x, y) => y.revenue - x.revenue),
     };
+  }
+
+  /**
+   * Change-Request budget view: every CR enriched with the tasks it introduced, their auto-costed
+   * total (Σ estimatedHours × assignee hourly cost), and a budget verdict (fits the remaining
+   * budget, or needs a customer-approved increase). Plus a project-level budget summary.
+   */
+  async changeRequests(projectId: string, clientId: string) {
+    await this.getOwned(projectId, clientId);
+    const c = await this.financialCore(projectId);
+    // Load tasks with computed WBS codes so linked tasks read like the WBS tree.
+    const project = await this.prisma.project.findFirst({
+      where: { id: projectId, clientId },
+      include: { tasks: true, milestones: true },
+    });
+    const withCodes = project ? this.withWbs(project) : { tasks: [] as any[] };
+    const tasksByCr = new Map<string, any[]>();
+    for (const t of withCodes.tasks) {
+      if (t.changeRequestId) (tasksByCr.get(t.changeRequestId) ?? tasksByCr.set(t.changeRequestId, []).get(t.changeRequestId)!).push(t);
+    }
+    const { num, rateByUser, remaining } = c;
+    const unitCost = (t: any) => (t.assigneeUserId ? rateByUser.get(t.assigneeUserId)?.cost ?? 0 : 0);
+
+    // Every project task with its auto-cost, so the CR dialog can preview the change cost live
+    // as tasks are checked (leaves first — a parent's cost double-counts its children).
+    const tasks = withCodes.tasks
+      .slice()
+      .sort((a: any, b: any) => (a.wbsCode ?? '').localeCompare(b.wbsCode ?? '', undefined, { numeric: true }))
+      .map((t: any) => {
+        const rate = unitCost(t);
+        const hrs = t.estimatedHours ?? 0;
+        return {
+          id: t.id, wbsCode: t.wbsCode, title: t.title, assigneeName: t.assigneeName,
+          isParent: t.isParent, changeRequestId: t.changeRequestId ?? null,
+          estimatedHours: hrs, unitCost: rate, taskCost: hrs * rate,
+        };
+      });
+
+    const changeRequests = c.changeRequests
+      .slice()
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .map((cr) => {
+        const linkedTasks = (tasksByCr.get(cr.id) ?? []).map((t) => {
+          const rate = unitCost(t);
+          const hrs = t.estimatedHours ?? 0;
+          return { id: t.id, wbsCode: t.wbsCode, title: t.title, assigneeName: t.assigneeName, isParent: !!t.isParent, estimatedHours: hrs, unitCost: rate, taskCost: hrs * rate };
+        });
+        // Sum leaf tasks only, so linking a parent + its children never double-counts.
+        const costSuggested = linkedTasks.filter((t) => !t.isParent).reduce((s, t) => s + t.taskCost, 0);
+        const cost = cr.costEstimate != null ? num(cr.costEstimate) : costSuggested;
+        const withinBudget = cost <= remaining;
+        const shortfall = Math.max(0, Math.round((cost - remaining) * 100) / 100);
+        return {
+          ...cr,
+          budgetImpact: cr.budgetImpact != null ? num(cr.budgetImpact) : null,
+          costEstimate: cr.costEstimate != null ? num(cr.costEstimate) : null,
+          linkedTasks, costSuggested, cost,
+          verdict: { withinBudget, remaining, shortfall },
+        };
+      });
+
+    return {
+      budget: {
+        baseline: c.baseline, approvedChanges: c.approvedChanges, pendingChanges: c.pendingChanges,
+        revisedBudget: c.revisedBudget, totalCost: c.totalCost, remaining: c.remaining,
+        currency: (c.project as any)?.currency ?? null,
+      },
+      changeRequests, tasks,
+    };
+  }
+
+  /** Link/unlink WBS tasks to a change request (sets ProjectTask.changeRequestId to match the new set). */
+  async linkChangeRequestTasks(crId: string, taskIds: string[], clientId: string) {
+    const cr = await this.prisma.projectChangeRequest.findFirst({
+      where: { id: crId, project: { clientId } },
+      select: { id: true, projectId: true },
+    });
+    if (!cr) throw new NotFoundException('Change request not found');
+    // Keep only task ids that actually belong to this CR's project.
+    const valid = await this.prisma.projectTask.findMany({
+      where: { id: { in: taskIds.length ? taskIds : ['__none__'] }, projectId: cr.projectId },
+      select: { id: true },
+    });
+    const toLink = valid.map((t) => t.id);
+    await this.prisma.$transaction([
+      // Unlink tasks previously attributed to this CR but no longer selected.
+      this.prisma.projectTask.updateMany({
+        where: { changeRequestId: crId, id: { notIn: toLink.length ? toLink : ['__none__'] } },
+        data: { changeRequestId: null },
+      }),
+      // Link the selected tasks.
+      this.prisma.projectTask.updateMany({
+        where: { id: { in: toLink.length ? toLink : ['__none__'] }, projectId: cr.projectId },
+        data: { changeRequestId: crId },
+      }),
+    ]);
+    return { linked: toLink.length };
   }
 
   async findOne(id: string, clientId: string) {

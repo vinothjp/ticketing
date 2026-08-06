@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { AlertTriangle, Bug, GitPullRequest } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import RegisterSection, { type FieldCfg, type ColCfg } from './RegisterSection';
+import ChangeRequestsSection from './ChangeRequestsSection';
 import { type ProjectDetail } from '../projectMeta';
 import { attachmentTypesFor } from '../../../lib/uploads';
 
@@ -74,7 +75,9 @@ export default function RegisterTab({ project }: { project: ProjectDetail }) {
           </Button>
         ))}
       </div>
-      <RegisterSection projectId={project.id} type={reg.type} singular={reg.singular} fields={reg.fields} columns={reg.columns} attachEntityType={reg.attachEntityType} acceptTypes={reg.attachEntityType ? attachmentTypesFor(project.features, reg.attachEntityType) : undefined} />
+      {reg.key === 'changes'
+        ? <ChangeRequestsSection project={project} />
+        : <RegisterSection projectId={project.id} type={reg.type} singular={reg.singular} fields={reg.fields} columns={reg.columns} attachEntityType={reg.attachEntityType} acceptTypes={reg.attachEntityType ? attachmentTypesFor(project.features, reg.attachEntityType) : undefined} />}
     </div>
   );
 }

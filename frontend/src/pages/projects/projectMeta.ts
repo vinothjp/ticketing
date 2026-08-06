@@ -138,6 +138,7 @@ export interface ProjectTask {
   dueDate?: string | null;
   plannedEffort?: number | null;
   parentTaskId?: string | null;
+  changeRequestId?: string | null;   // the change request that introduced this task
   sortOrder: number;
   completedAt?: string | null;
   tags?: string[];

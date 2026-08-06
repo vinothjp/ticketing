@@ -26,25 +26,31 @@
   max-height: 560px;
 }
 
+/* Per-category bar colors. Defaults live in the var() fallbacks so the inline vars
+   set from project settings (features.ganttColors, applied on an ancestor) win via
+   inheritance — defining them on .gantt-container would override that inheritance. */
+
 /* Status-colored bars: tinted track + solid progress fill. */
-.gantt .bar-wrapper.gt-OPEN .bar { fill: color-mix(in srgb, var(--muted-foreground) 30%, transparent); }
-.gantt .bar-wrapper.gt-OPEN .bar-progress { fill: var(--muted-foreground); }
-.gantt .bar-wrapper.gt-IN_PROGRESS .bar { fill: color-mix(in srgb, var(--primary) 28%, transparent); }
-.gantt .bar-wrapper.gt-IN_PROGRESS .bar-progress { fill: var(--primary); }
-.gantt .bar-wrapper.gt-DONE .bar { fill: color-mix(in srgb, var(--success) 28%, transparent); }
-.gantt .bar-wrapper.gt-DONE .bar-progress { fill: var(--success); }
+.gantt .bar-wrapper.gt-TODO .bar { fill: color-mix(in srgb, var(--gt-todo, #94a3b8) 28%, transparent); }
+.gantt .bar-wrapper.gt-TODO .bar-progress { fill: var(--gt-todo, #94a3b8); }
+.gantt .bar-wrapper.gt-IN_PROGRESS .bar { fill: color-mix(in srgb, var(--gt-inprogress, #3b82f6) 28%, transparent); }
+.gantt .bar-wrapper.gt-IN_PROGRESS .bar-progress { fill: var(--gt-inprogress, #3b82f6); }
+.gantt .bar-wrapper.gt-REVIEW .bar { fill: color-mix(in srgb, var(--gt-review, #f59e0b) 28%, transparent); }
+.gantt .bar-wrapper.gt-REVIEW .bar-progress { fill: var(--gt-review, #f59e0b); }
+.gantt .bar-wrapper.gt-COMPLETED .bar { fill: color-mix(in srgb, var(--gt-completed, #22c55e) 28%, transparent); }
+.gantt .bar-wrapper.gt-COMPLETED .bar-progress { fill: var(--gt-completed, #22c55e); }
 
 /* Milestones stand out. */
 .gantt .bar-wrapper.gt-milestone .bar,
-.gantt .bar-wrapper.gt-milestone .bar-progress { fill: var(--primary); stroke: var(--primary); }
+.gantt .bar-wrapper.gt-milestone .bar-progress { fill: var(--gt-milestone, #8b5cf6); stroke: var(--gt-milestone, #8b5cf6); }
 
 /* Overdue tasks: red bar + red label. */
-.gantt .bar-wrapper.gt-overdue .bar { fill: color-mix(in srgb, var(--destructive) 30%, transparent); }
-.gantt .bar-wrapper.gt-overdue .bar-progress { fill: var(--destructive); }
-.gantt .bar-wrapper.gt-overdue .bar-label { fill: var(--destructive); font-weight: 600; }
+.gantt .bar-wrapper.gt-overdue .bar { fill: color-mix(in srgb, var(--gt-overdue, #ef4444) 30%, transparent); }
+.gantt .bar-wrapper.gt-overdue .bar-progress { fill: var(--gt-overdue, #ef4444); }
+.gantt .bar-wrapper.gt-overdue .bar-label { fill: var(--gt-overdue, #ef4444); font-weight: 600; }
 
-/* Task-list section summary bars: subtle accent band with a bold label. */
-.gantt .bar-wrapper.gt-section .bar { fill: color-mix(in srgb, var(--accent) 70%, transparent); stroke: var(--primary); rx: 2; }
+/* Task-list section summary bars: subtle tinted band with a bold label. */
+.gantt .bar-wrapper.gt-section .bar { fill: color-mix(in srgb, var(--gt-section, #6366f1) 22%, transparent); stroke: var(--gt-section, #6366f1); rx: 2; }
 .gantt .bar-wrapper.gt-section .bar-progress { fill: transparent; }
 .gantt .bar-wrapper.gt-section .bar-label { font-weight: 700; }
 .gantt .bar-wrapper.gt-section .handle { display: none; }

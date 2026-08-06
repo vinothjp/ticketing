@@ -48,6 +48,11 @@ export class UpdateProjectDto {
   @IsOptional() @IsString() successCriteria?: string;
 }
 
+// Body for linking WBS tasks to a change request.
+export class LinkTasksDto {
+  @IsArray() @IsString({ each: true }) taskIds!: string[];
+}
+
 // Shared WBS task fields (create + update).
 class BaseTaskDto {
   @IsOptional() @IsIn(TASK_TYPE) type?: string;

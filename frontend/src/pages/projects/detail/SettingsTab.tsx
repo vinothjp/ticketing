@@ -10,6 +10,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { invalidateProject, type ProjectDetail } from '../projectMeta';
 import { UPLOAD_TYPE_CATALOG, ATTACHMENT_SUBMODULES, DEFAULT_UPLOAD_EXTS } from '../../../lib/uploads';
+import { GANTT_COLORS, resolveGanttColors, defaultGanttColors, type GanttColorMap } from './ganttColors';
 
 const FEATURES: { key: string; label: string; desc: string; default: boolean }[] = [
   { key: 'timeTracking', label: 'Time tracking', desc: 'Let members log time spent on tasks.', default: false },
@@ -68,6 +69,14 @@ export default function SettingsTab({ project }: { project: ProjectDetail }) {
   const saveTypes = useMutation({
     mutationFn: () => api.patch(`/api/projects/${project.id}`, { features: { ...features, attachmentTypes: types } }),
     onSuccess: () => { invalidate(); toast.success('Attachment types saved'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error saving'),
+  });
+
+  // Gantt chart bar colours (saved under features.ganttColors).
+  const [gColors, setGColors] = useState<GanttColorMap>(() => resolveGanttColors(project.features));
+  const saveColors = useMutation({
+    mutationFn: () => api.patch(`/api/projects/${project.id}`, { features: { ...features, ganttColors: gColors } }),
+    onSuccess: () => { invalidate(); toast.success('Gantt colours saved'); },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error saving'),
   });
 
@@ -143,6 +152,35 @@ export default function SettingsTab({ project }: { project: ProjectDetail }) {
           <Button disabled={saveTypes.isPending} onClick={() => saveTypes.mutate()}>
             {saveTypes.isPending ? 'Saving...' : 'Save file types'}
           </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle className="text-sm">Gantt chart colours</CardTitle></CardHeader>
+        <CardContent className="space-y-4 pb-6">
+          <p className="text-xs text-muted-foreground">Colours for the bars and legend on the Tasks → Gantt timeline.</p>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {GANTT_COLORS.map((c) => (
+              <label key={c.key} className="flex items-center gap-2 text-sm">
+                <input
+                  type="color"
+                  className="h-8 w-10 cursor-pointer rounded border border-input bg-transparent p-0.5"
+                  value={gColors[c.key]}
+                  onChange={(e) => setGColors((s) => ({ ...s, [c.key]: e.target.value }))}
+                />
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block size-3 rounded-[3px]" style={{ backgroundColor: gColors[c.key] }} />
+                  {c.label}
+                </span>
+              </label>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <Button disabled={saveColors.isPending} onClick={() => saveColors.mutate()}>
+              {saveColors.isPending ? 'Saving...' : 'Save colours'}
+            </Button>
+            <Button variant="outline" onClick={() => setGColors(defaultGanttColors())}>Reset to defaults</Button>
+          </div>
         </CardContent>
       </Card>
     </div>

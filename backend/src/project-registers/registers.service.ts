@@ -9,7 +9,7 @@ const REGISTERS: Record<string, {
 }> = {
   risks: { model: 'projectRisk', str: ['title', 'probability', 'impact', 'mitigation', 'ownerName', 'status'], dates: [], nums: [], json: [], order: 'createdAt' },
   issues: { model: 'projectIssue', str: ['title', 'priority', 'ownerName', 'resolution', 'status'], dates: ['targetDate'], nums: [], json: [], order: 'createdAt' },
-  'change-requests': { model: 'projectChangeRequest', str: ['title', 'description', 'reason', 'scheduleImpact', 'requestedBy', 'status'], dates: ['decidedAt'], nums: ['budgetImpact'], json: [], order: 'createdAt' },
+  'change-requests': { model: 'projectChangeRequest', str: ['title', 'description', 'reason', 'scheduleImpact', 'requestedBy', 'status'], dates: ['decidedAt'], nums: ['budgetImpact', 'costEstimate'], json: [], order: 'createdAt' },
   meetings: { model: 'projectMeeting', str: ['title', 'attendees', 'notes'], dates: ['date'], nums: [], json: ['actionItems'], order: 'date' },
   documents: { model: 'projectDocument', str: ['docType', 'name', 'versionNumber', 'filePath'], dates: [], nums: [], json: [], order: 'uploadedAt' },
   expenses: { model: 'projectExpense', str: ['category', 'description'], dates: ['date'], nums: ['amount'], json: [], order: 'date' },
@@ -33,9 +33,12 @@ export class RegistersService {
     const data: Record<string, any> = {};
     for (const f of c.str) if (body[f] !== undefined) data[f] = typeof body[f] === 'string' ? (body[f].trim() || null) : body[f];
     for (const d of c.dates) if (body[d] !== undefined) data[d] = body[d] ? new Date(body[d]) : null;
-    // Omit empty numerics so column defaults apply (e.g. amount/amountPaid default 0);
-    // setting null would violate non-nullable Decimal columns.
-    for (const n of c.nums) if (body[n] !== undefined && body[n] !== '' && body[n] != null) data[n] = Number(body[n]);
+    // Numerics: an explicit null clears a nullable column (e.g. costEstimate override);
+    // '' is treated as "leave as-is" so column defaults apply (amount/amountPaid default 0).
+    for (const n of c.nums) {
+      if (body[n] === undefined || body[n] === '') continue;
+      data[n] = body[n] === null ? null : Number(body[n]);
+    }
     for (const j of c.json) if (body[j] !== undefined) data[j] = body[j];
     // Documents: accept a plain `url` and store it in filePath.
     if (type === 'documents' && body.url !== undefined) data.filePath = body.url?.trim() || null;

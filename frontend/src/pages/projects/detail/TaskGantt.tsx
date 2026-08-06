@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import Gantt, { type GanttTask, type GanttPopupContext } from 'frappe-gantt';
 import api from '../../../lib/api';
 import { invalidateProject, labelOf, type ProjectDetail, type ProjectTask } from '../projectMeta';
+import { GANTT_COLORS, resolveGanttColors, ganttStyleVars } from './ganttColors';
 import './frappe-gantt.vendor.css';
 import './frappe-gantt.overrides.css';
 
@@ -53,6 +54,8 @@ export default function TaskGantt({
   const qc = useQueryClient();
   const containerRef = useRef<HTMLDivElement>(null);
   const ganttRef = useRef<Gantt | null>(null);
+  // Per-project bar colors (Settings → Gantt chart colours), applied as CSS vars.
+  const colors = useMemo(() => resolveGanttColors(project.features), [project.features]);
   // Ids of collapsed WBS parents (click a summary bar to fold/unfold it).
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const toggleCollapse = (id: string) =>
@@ -148,10 +151,19 @@ export default function TaskGantt({
   }
 
   return (
-    <div className="min-w-0">
+    <div className="min-w-0" style={ganttStyleVars(colors)}>
       <p className="mb-2 text-xs text-muted-foreground">
         Drag a bar to reschedule · drag its edge to resize · click a section bar to fold/unfold · click a task to edit · use the view selector for Day / Week / Month.
       </p>
+      {/* Legend — colours come from Settings → Gantt chart colours. */}
+      <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+        {GANTT_COLORS.map((c) => (
+          <span key={c.key} className="inline-flex items-center gap-1.5">
+            <span className="inline-block size-3 rounded-[3px]" style={{ backgroundColor: colors[c.key] }} />
+            {c.label}
+          </span>
+        ))}
+      </div>
       <div ref={containerRef} className="min-w-0 max-w-full" />
     </div>
   );

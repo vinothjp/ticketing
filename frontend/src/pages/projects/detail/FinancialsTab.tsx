@@ -13,6 +13,7 @@ interface Financials {
   revenue: number; collected: number; outstanding: number;
   resourceCost: number; expenseCost: number; vendorCost: number; totalCost: number;
   grossProfit: number; grossMargin: number; budget: number; budgetRemaining: number;
+  budgetBaseline: number; approvedChanges: number; pendingChanges: number; revisedBudget: number;
   expensesByCategory: Record<string, number>;
   activityCosting: { activity: string; hours: number; cost: number; revenue: number; margin: number }[];
 }
@@ -72,7 +73,9 @@ export default function FinancialsTab({ project }: { project: ProjectDetail }) {
             <Kpi label="Total cost" value={money(f.totalCost)} />
             <Kpi label="Gross profit" value={money(f.grossProfit)} tone={f.grossProfit >= 0 ? 'good' : 'bad'} />
             <Kpi label="Gross margin" value={`${f.grossMargin}%`} tone={f.grossMargin >= 0 ? 'good' : 'bad'} />
-            <Kpi label="Budget" value={money(f.budget)} tone="muted" />
+            <Kpi label="Original budget" value={money(f.budgetBaseline)} tone="muted" />
+            <Kpi label="Approved changes" value={(f.approvedChanges > 0 ? '+' : '') + money(f.approvedChanges)} tone={f.approvedChanges > 0 ? 'good' : 'muted'} />
+            <Kpi label="Revised budget" value={money(f.revisedBudget)} />
             <Kpi label="Budget remaining" value={money(f.budgetRemaining)} tone={f.budgetRemaining >= 0 ? 'good' : 'bad'} />
             <Kpi label="Collected" value={money(f.collected)} />
             <Kpi label="Outstanding" value={money(f.outstanding)} tone={f.outstanding > 0 ? 'bad' : 'muted'} />

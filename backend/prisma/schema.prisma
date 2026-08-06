@@ -636,13 +636,15 @@ model ProjectChangeRequest {
   description    String?
   reason         String?
   scheduleImpact String?
-  budgetImpact   Decimal?
-  status         String   @default("SUBMITTED")        // DRAFT | SUBMITTED | APPROVED | REJECTED
+  costEstimate   Decimal?                                // cost of the change (auto-suggested from linked tasks, overridable)
+  budgetImpact   Decimal?                                // approved budget increase applied to the baseline on approval
+  status         String   @default("SUBMITTED")        // DRAFT | SUBMITTED | PENDING_CUSTOMER | CUSTOMER_APPROVED | APPROVED | REJECTED
   requestedBy    String?
   decidedAt      DateTime?
   createdBy      String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+  tasks          ProjectTask[]                           // WBS tasks this change request introduced
 
   @@index([projectId])
 }
@@ -852,6 +854,8 @@ model ProjectTask {
   parentTaskId   String?
   parentTask     ProjectTask?  @relation("ProjectTaskSubtasks", fields: [parentTaskId], references: [id], onDelete: SetNull)
   subtasks       ProjectTask[] @relation("ProjectTaskSubtasks")
+  changeRequestId String?                                 // the CR that introduced this task (scope change)
+  changeRequest  ProjectChangeRequest? @relation(fields: [changeRequestId], references: [id], onDelete: SetNull)
   tags           String[]  @default([])
   sortOrder      Int       @default(0)
   completedAt    DateTime?
@@ -866,6 +870,7 @@ model ProjectTask {
   predecessors   ProjectTaskDependency[] @relation("TaskAsSuccessor")   // rows where this task is the successor
 
   @@index([projectId, status])
+  @@index([changeRequestId])
 }
 
 // A comment on a task (supports @mentions stored as plain text in the body).

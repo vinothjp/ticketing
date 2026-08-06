@@ -4,7 +4,6 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { ArrowLeft, X, Plus, Paperclip, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
-import { assetUrl } from '@/lib/assetUrl';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -236,8 +235,8 @@ export default function KbArticleEditorPage() {
                     onMouseEnter={() => openPreview(d.id)}
                     onMouseLeave={closePreviewSoon}
                   >
-                    {/* Click the whole row to open the article (same tab). */}
-                    <Link to={`/knowledge-base/${d.id}`} className="block truncate rounded px-2 py-1.5 text-sm hover:bg-accent">
+                    {/* Click the whole row to open the article in a new tab (keeps your draft). */}
+                    <Link to={`/knowledge-base/${d.id}`} target="_blank" rel="noreferrer" className="block truncate rounded px-2 py-1.5 text-sm hover:bg-accent">
                       {d.title}
                       {d.category ? <span className="text-muted-foreground"> · {d.category}</span> : ''}
                     </Link>
@@ -258,7 +257,7 @@ export default function KbArticleEditorPage() {
                           {d.keywords.slice(0, 5).map((k) => <span key={k} className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{k}</span>)}
                         </div>
                       )}
-                      <Link to={`/knowledge-base/${d.id}`} className="mt-2 inline-flex items-center gap-1 text-xs text-primary hover:underline">
+                      <Link to={`/knowledge-base/${d.id}`} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs text-primary hover:underline">
                         View full <ExternalLink className="size-3" />
                       </Link>
                     </div>

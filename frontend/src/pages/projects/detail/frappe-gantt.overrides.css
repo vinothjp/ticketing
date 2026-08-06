@@ -1,0 +1,52 @@
+/* Map frappe-gantt's palette to the app's design tokens. Because the chart
+   lives inside the `.dark` subtree, referencing the app tokens themes both
+   light and dark automatically. */
+.gantt-container {
+  --g-bar-color: var(--muted);
+  --g-bar-border: var(--border);
+  --g-progress-color: var(--primary);
+  --g-text-dark: var(--foreground);
+  --g-text-muted: var(--muted-foreground);
+  --g-text-light: var(--primary-foreground);
+  --g-header-background: var(--card);
+  --g-row-color: var(--card);
+  --g-border-color: var(--border);
+  --g-row-border-color: var(--border);
+  --g-tick-color: var(--border);
+  --g-tick-color-thick: var(--muted);
+  --g-today-highlight: var(--destructive);
+  --g-arrow-color: var(--muted-foreground);
+  --g-actions-background: var(--muted);
+  --g-popup-actions: var(--muted);
+  --g-handle-color: var(--muted-foreground);
+  --g-weekend-highlight-color: var(--secondary);
+  --g-weekend-label-color: var(--muted);
+  --g-expected-progress: var(--accent);
+  border: 1px solid var(--border);
+  max-height: 560px;
+}
+
+/* Status-colored bars: tinted track + solid progress fill. */
+.gantt .bar-wrapper.gt-OPEN .bar { fill: color-mix(in srgb, var(--muted-foreground) 30%, transparent); }
+.gantt .bar-wrapper.gt-OPEN .bar-progress { fill: var(--muted-foreground); }
+.gantt .bar-wrapper.gt-IN_PROGRESS .bar { fill: color-mix(in srgb, var(--primary) 28%, transparent); }
+.gantt .bar-wrapper.gt-IN_PROGRESS .bar-progress { fill: var(--primary); }
+.gantt .bar-wrapper.gt-DONE .bar { fill: color-mix(in srgb, var(--success) 28%, transparent); }
+.gantt .bar-wrapper.gt-DONE .bar-progress { fill: var(--success); }
+
+/* Milestones stand out. */
+.gantt .bar-wrapper.gt-milestone .bar,
+.gantt .bar-wrapper.gt-milestone .bar-progress { fill: var(--primary); stroke: var(--primary); }
+
+/* Overdue tasks: red bar + red label. */
+.gantt .bar-wrapper.gt-overdue .bar { fill: color-mix(in srgb, var(--destructive) 30%, transparent); }
+.gantt .bar-wrapper.gt-overdue .bar-progress { fill: var(--destructive); }
+.gantt .bar-wrapper.gt-overdue .bar-label { fill: var(--destructive); font-weight: 600; }
+
+/* Task-list section summary bars: subtle accent band with a bold label. */
+.gantt .bar-wrapper.gt-section .bar { fill: color-mix(in srgb, var(--accent) 70%, transparent); stroke: var(--primary); rx: 2; }
+.gantt .bar-wrapper.gt-section .bar-progress { fill: transparent; }
+.gantt .bar-wrapper.gt-section .bar-label { font-weight: 700; }
+.gantt .bar-wrapper.gt-section .handle { display: none; }
+
+.gantt .bar-label { font-family: inherit; }

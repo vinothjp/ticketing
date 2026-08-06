@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Put, Delete, Body, Param, UseGuards, Request,
+  Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, Request,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -20,7 +20,9 @@ export class UsersController {
   // GET stays open to any authenticated tenant user — the ticket detail/create
   // screens need the user list to show/assign technicians.
   @Get()
-  findAll(@Request() req: AuthedRequest) { return this.usersService.findAll(req.user.clientId); }
+  findAll(@Request() req: AuthedRequest, @Query('includeCustomers') includeCustomers?: string) {
+    return this.usersService.findAll(req.user.clientId, includeCustomers === 'true');
+  }
 
   @Get(':id')
   findOne(@Param('id') id: string, @Request() req: AuthedRequest) {

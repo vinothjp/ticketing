@@ -1,0 +1,150 @@
+import { useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
+import api from '../../../lib/api';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { invalidateProject, type ProjectDetail } from '../projectMeta';
+import { UPLOAD_TYPE_CATALOG, ATTACHMENT_SUBMODULES, DEFAULT_UPLOAD_EXTS } from '../../../lib/uploads';
+
+const FEATURES: { key: string; label: string; desc: string; default: boolean }[] = [
+  { key: 'timeTracking', label: 'Time tracking', desc: 'Let members log time spent on tasks.', default: false },
+  { key: 'sprints', label: 'Go agile with Sprints', desc: 'Enable the Backlog and Sprints board.', default: true },
+  { key: 'cascadingDates', label: 'Cascading dates', desc: 'Push later tasks forward automatically when a task is extended.', default: true },
+];
+
+const str = (v: unknown) => (v == null ? '' : String(v));
+const toDate = (v?: string | null) => (v ? new Date(v).toISOString().slice(0, 10) : '');
+
+// Module-scope so inputs keep a stable identity (no focus loss on keystroke).
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return <div><div className="mb-1 text-sm">{label}</div>{children}</div>;
+}
+
+export default function SettingsTab({ project }: { project: ProjectDetail }) {
+  const qc = useQueryClient();
+  const [f, setF] = useState({
+    name: project.name, key: project.key ?? '', projectCode: project.projectCode ?? '',
+    projectSponsor: project.projectSponsor ?? '', department: project.department ?? '',
+    budget: str(project.budget), currency: project.currency ?? '', projectType: project.projectType ?? '',
+    goLiveDate: toDate(project.goLiveDate), description: project.description ?? '',
+    objective: project.objective ?? '', scope: project.scope ?? '', outOfScope: project.outOfScope ?? '', successCriteria: project.successCriteria ?? '',
+  });
+  const set = (patch: Partial<typeof f>) => setF((s) => ({ ...s, ...patch }));
+  const invalidate = () => invalidateProject(qc);
+
+  const saveGeneral = useMutation({
+    mutationFn: () => api.patch(`/api/projects/${project.id}`, {
+      name: f.name.trim(), key: f.key.trim() || undefined, projectCode: f.projectCode, projectSponsor: f.projectSponsor,
+      department: f.department, budget: f.budget === '' ? undefined : Number(f.budget), currency: f.currency, projectType: f.projectType,
+      goLiveDate: f.goLiveDate || undefined, description: f.description, objective: f.objective, scope: f.scope, outOfScope: f.outOfScope, successCriteria: f.successCriteria,
+    }),
+    onSuccess: () => { invalidate(); toast.success('Saved'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error saving'),
+  });
+  const toggleFeature = useMutation({
+    mutationFn: (features: Record<string, boolean>) => api.patch(`/api/projects/${project.id}`, { features }),
+    onSuccess: invalidate,
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error updating features'),
+  });
+
+  const features = project.features ?? {};
+  const isOn = (feat: (typeof FEATURES)[number]) => features[feat.key] ?? feat.default;
+
+  // Allowed attachment file types per submodule (defaults to the standard set when unset).
+  const savedTypes = (features.attachmentTypes ?? {}) as Record<string, string[]>;
+  const [types, setTypes] = useState<Record<string, string[]>>(() =>
+    Object.fromEntries(ATTACHMENT_SUBMODULES.map((m) => [m.entityType, savedTypes[m.entityType] ?? DEFAULT_UPLOAD_EXTS])),
+  );
+  const toggleType = (entityType: string, ext: string) =>
+    setTypes((s) => {
+      const cur = s[entityType] ?? [];
+      return { ...s, [entityType]: cur.includes(ext) ? cur.filter((e) => e !== ext) : [...cur, ext] };
+    });
+  const saveTypes = useMutation({
+    mutationFn: () => api.patch(`/api/projects/${project.id}`, { features: { ...features, attachmentTypes: types } }),
+    onSuccess: () => { invalidate(); toast.success('Attachment types saved'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error saving'),
+  });
+
+  return (
+    <div className="max-w-3xl space-y-6">
+      <Card>
+        <CardHeader><CardTitle className="text-sm">Project header</CardTitle></CardHeader>
+        <CardContent className="space-y-4 pb-6">
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="Name"><Input value={f.name} onChange={(e) => set({ name: e.target.value })} /></Field>
+            <Field label="Project key"><Input value={f.key} onChange={(e) => set({ key: e.target.value })} placeholder="e.g. ERP" /></Field>
+            <Field label="Project code"><Input value={f.projectCode} onChange={(e) => set({ projectCode: e.target.value })} /></Field>
+            <Field label="Sponsor"><Input value={f.projectSponsor} onChange={(e) => set({ projectSponsor: e.target.value })} /></Field>
+            <Field label="Department"><Input value={f.department} onChange={(e) => set({ department: e.target.value })} /></Field>
+            <Field label="Project type"><Input value={f.projectType} onChange={(e) => set({ projectType: e.target.value })} placeholder="Implementation" /></Field>
+            <Field label="Budget"><Input type="number" value={f.budget} onChange={(e) => set({ budget: e.target.value })} /></Field>
+            <Field label="Currency"><Input value={f.currency} onChange={(e) => set({ currency: e.target.value })} placeholder="USD" /></Field>
+            <Field label="Go-live date"><Input type="date" value={f.goLiveDate} onChange={(e) => set({ goLiveDate: e.target.value })} /></Field>
+          </div>
+          <Field label="Description"><Textarea rows={2} value={f.description} onChange={(e) => set({ description: e.target.value })} /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Objective"><Textarea rows={2} value={f.objective} onChange={(e) => set({ objective: e.target.value })} /></Field>
+            <Field label="Success criteria"><Textarea rows={2} value={f.successCriteria} onChange={(e) => set({ successCriteria: e.target.value })} /></Field>
+            <Field label="Scope"><Textarea rows={2} value={f.scope} onChange={(e) => set({ scope: e.target.value })} /></Field>
+            <Field label="Out of scope"><Textarea rows={2} value={f.outOfScope} onChange={(e) => set({ outOfScope: e.target.value })} /></Field>
+          </div>
+          <Button disabled={saveGeneral.isPending} onClick={() => saveGeneral.mutate()}>
+            {saveGeneral.isPending ? 'Saving...' : 'Save changes'}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle className="text-sm">Project features</CardTitle></CardHeader>
+        <CardContent className="space-y-4 pb-6">
+          {FEATURES.map((feat) => (
+            <div key={feat.key} className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-medium text-foreground">{feat.label}</div>
+                <div className="text-xs text-muted-foreground">{feat.desc}</div>
+              </div>
+              <Switch
+                checked={isOn(feat)}
+                onCheckedChange={(v) => toggleFeature.mutate({ ...features, [feat.key]: v })}
+              />
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Attachment file types</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-5 pb-6">
+          <p className="text-xs text-muted-foreground">Choose which file types can be uploaded in each submodule. Links are always allowed. Max size is 5 MB.</p>
+          {ATTACHMENT_SUBMODULES.map((m) => (
+            <div key={m.entityType}>
+              <div className="mb-1.5 text-sm font-medium text-foreground">{m.label}</div>
+              <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                {UPLOAD_TYPE_CATALOG.map((t) => (
+                  <label key={t.ext} className="flex items-center gap-1.5 text-sm">
+                    <Checkbox
+                      checked={(types[m.entityType] ?? []).includes(t.ext)}
+                      onCheckedChange={() => toggleType(m.entityType, t.ext)}
+                    />
+                    {t.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
+          <Button disabled={saveTypes.isPending} onClick={() => saveTypes.mutate()}>
+            {saveTypes.isPending ? 'Saving...' : 'Save file types'}
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

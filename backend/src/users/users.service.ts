@@ -13,9 +13,11 @@ import { UpdateUserDto } from './dto/update-user.dto';
 export class UsersService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(clientId: string) {
+  // Customer contacts (customerCompanyId set) are excluded unless explicitly requested,
+  // so assignee/owner pickers only ever show staff. The Users admin page opts in.
+  async findAll(clientId: string, includeCustomers = false) {
     return this.prisma.user.findMany({
-      where: { clientId },
+      where: { clientId, ...(includeCustomers ? {} : { customerCompanyId: null }) },
       select: {
         id: true,
         username: true,
@@ -71,6 +73,19 @@ export class UsersService {
 
   async update(id: string, dto: UpdateUserDto, clientId: string, actorId: string) {
     await this.findOne(id, clientId);
+    // Guard the unique username/email so a clash returns 409, not a raw 500.
+    if (dto.username || dto.email) {
+      const conflict = await this.prisma.user.findFirst({
+        where: {
+          id: { not: id },
+          OR: [
+            ...(dto.username ? [{ username: dto.username }] : []),
+            ...(dto.email ? [{ email: dto.email }] : []),
+          ],
+        },
+      });
+      if (conflict) throw new ConflictException('Username or email already exists');
+    }
     const data: Record<string, unknown> = { ...dto, updatedBy: actorId };
     if (dto.password) {
       data.passwordHash = await bcrypt.hash(dto.password, 12);

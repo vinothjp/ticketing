@@ -20,6 +20,10 @@ import { ApprovalsModule } from './approvals/approvals.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { CustomerCompaniesModule } from './customer-companies/customer-companies.module';
 import { KbModule } from './kb/kb.module';
+import { ProjectsModule } from './projects/projects.module';
+import { ResourcesModule } from './resources/resources.module';
+import { RegistersModule } from './project-registers/registers.module';
+import { ProjectAttachmentsModule } from './project-attachments/project-attachments.module';
 
 @Module({
   imports: [
@@ -42,6 +46,10 @@ import { KbModule } from './kb/kb.module';
     MessagingModule,
     CustomerCompaniesModule,
     KbModule,
+    ProjectsModule,
+    ResourcesModule,
+    RegistersModule,
+    ProjectAttachmentsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

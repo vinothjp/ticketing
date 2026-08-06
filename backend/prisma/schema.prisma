@@ -51,8 +51,11 @@ model Client {
   customerCompanies CustomerCompany[]
   smtpConfig   SmtpConfig?
   kbArticles   KbArticle[]
+  projects     Project[]
+  resourceCategories ResourceCategory[]
   ticketSequence Int @default(0)
   kbSequence   Int @default(0)
+  projectSequence Int @default(0)
 }
 
 // Knowledge base article. Staff author; customers see published + customer-visible ones.
@@ -120,6 +123,7 @@ model CustomerCompany {
   updatedBy    String?
   users        User[]
   tickets      Ticket[]
+  projects     Project[]
 
   @@unique([clientId, name])
 }
@@ -159,6 +163,9 @@ model User {
   customerCompany   CustomerCompany? @relation(fields: [customerCompanyId], references: [id], onDelete: SetNull)
   userRoles      UserRole[]
   ticketAssignments TicketTechnician[]
+  projectTaskWatchers ProjectTaskWatcher[]
+  projectResources ProjectResource[]
+  projectTimesheets ProjectTimesheet[]
 }
 
 model Role {
@@ -327,6 +334,8 @@ model Ticket {
   ticketNumber          String
   templateId            String
   template              Template     @relation(fields: [templateId], references: [id])
+  projectId             String?
+  project               Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
 
   // Ticket Info
   requestorName         String?
@@ -376,6 +385,7 @@ model Ticket {
 
   @@unique([clientId, ticketNumber])
   @@index([clientId, customerCompanyId])
+  @@index([clientId, projectId])
   @@index([customFields(ops: JsonbOps)], type: Gin)
 }
 
@@ -506,4 +516,391 @@ model MessagingChannel {
   updatedBy       String?
 
   @@unique([clientId, type])
+}
+
+// A project groups work (tasks, milestones) and can link related tickets.
+model Project {
+  id                String   @id @default(uuid())
+  clientId          String
+  client            Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  projectNumber     String
+  name              String
+  key               String?                              // short code, e.g. "WEB"
+  projectCode       String?                              // Excel "Project Code"
+  description       String?
+  status            String   @default("OPEN")            // OPEN | IN_PROGRESS | ON_HOLD | COMPLETED | CANCELLED
+  priority          String?                              // LOW | MEDIUM | HIGH | URGENT
+  managerUserId     String?
+  managerName       String?
+  projectSponsor    String?
+  department        String?
+  budget            Decimal?
+  currency          String?
+  projectType       String?
+  startDate         DateTime?
+  endDate           DateTime?
+  goLiveDate        DateTime?
+  // Project overview (Excel)
+  objective         String?
+  scope             String?
+  outOfScope        String?
+  successCriteria   String?
+  customerCompanyId String?
+  customerCompany   CustomerCompany? @relation(fields: [customerCompanyId], references: [id], onDelete: SetNull)
+  createdBy         String?
+  createdByName     String?
+  updatedBy         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  taskSequence      Int      @default(0)          // powers per-project task keys (KEY-#)
+  features          Json     @default("{}")        // feature toggles: { timeTracking, sprints, cascadingDates }
+  milestones        ProjectMilestone[]
+  sprints           ProjectSprint[]
+  tasks             ProjectTask[]
+  resources         ProjectResource[]
+  timesheets        ProjectTimesheet[]
+  risks             ProjectRisk[]
+  issues            ProjectIssue[]
+  changeRequests    ProjectChangeRequest[]
+  meetings          ProjectMeeting[]
+  documents         ProjectDocument[]
+  expenses          ProjectExpense[]
+  invoices          ProjectInvoice[]
+  attachments       ProjectAttachment[]
+  tickets           Ticket[]
+
+  @@unique([clientId, projectNumber])
+  @@index([clientId, status])
+}
+
+// Generic attachments (file upload OR pasted link) for any project sub-entity
+// (invoice / document / risk / issue / …), scoped by entityType + entityId.
+model ProjectAttachment {
+  id         String   @id @default(uuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  entityType String                                       // invoice | document | risk | issue | …
+  entityId   String
+  fileName   String?
+  filePath   String?                                      // /uploads/projects/… for uploaded files
+  mimeType   String?
+  size       Int?
+  url        String?                                      // external link (when not an uploaded file)
+  uploadedBy String?
+  uploadedAt DateTime @default(now())
+
+  @@index([projectId, entityType, entityId])
+}
+
+// --- Governance registers (Excel: Risks / Issues / Change Requests / Approvals / MoM / Deadlines / Documents) ---
+
+model ProjectRisk {
+  id          String   @id @default(uuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title       String
+  probability String   @default("MEDIUM")             // LOW | MEDIUM | HIGH
+  impact      String   @default("MEDIUM")             // LOW | MEDIUM | HIGH
+  mitigation  String?
+  ownerName   String?
+  status      String   @default("OPEN")               // OPEN | MITIGATED | CLOSED
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+model ProjectIssue {
+  id          String   @id @default(uuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title       String
+  priority    String?                                  // LOW | MEDIUM | HIGH | URGENT
+  ownerName   String?
+  targetDate  DateTime?
+  resolution  String?
+  status      String   @default("OPEN")               // OPEN | IN_PROGRESS | RESOLVED
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+model ProjectChangeRequest {
+  id             String   @id @default(uuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title          String
+  description    String?
+  reason         String?
+  scheduleImpact String?
+  budgetImpact   Decimal?
+  status         String   @default("SUBMITTED")        // DRAFT | SUBMITTED | APPROVED | REJECTED
+  requestedBy    String?
+  decidedAt      DateTime?
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+model ProjectMeeting {
+  id          String   @id @default(uuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title       String
+  date        DateTime?
+  attendees   String?
+  notes       String?
+  actionItems Json     @default("[]")                  // [{ text, owner?, due?, done? }]
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+model ProjectDocument {
+  id            String   @id @default(uuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  docType       String?
+  name          String
+  versionNumber String?
+  fileName      String?
+  filePath      String?
+  mimeType      String?
+  size          Int?
+  uploadedBy    String?
+  uploadedAt    DateTime @default(now())
+
+  @@index([projectId])
+}
+
+// Project expense (Excel "Expenses"): categorised spend.
+model ProjectExpense {
+  id          String   @id @default(uuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  category    String                                   // Consultant Cost | Travel | Accommodation | Food | Hardware | Software | Cloud | Third Party | Training | Other
+  description String?
+  amount      Decimal  @default(0)
+  date        DateTime?
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+// Customer invoice (Excel "Billing").
+model ProjectInvoice {
+  id            String   @id @default(uuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  invoiceNumber String
+  invoiceDate   DateTime?
+  amount        Decimal  @default(0)
+  amountPaid    Decimal  @default(0)
+  type          String?                                // Fixed Price | Time & Material | AMC | Internal
+  status        String   @default("DRAFT")             // DRAFT | SENT | PAID
+  createdBy     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+// Tenant cost catalog: a resource category with cost & billing rates (Excel "Resources Cost").
+model ResourceCategory {
+  id          String   @id @default(uuid())
+  clientId    String
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name        String                                  // e.g. Sr Developer / Jr Developer / Project Manager
+  hourlyCost  Decimal  @default(0)
+  billingRate Decimal  @default(0)
+  dailyHours  Int      @default(8)
+  isActive    Boolean  @default(true)
+  createdBy   String?
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  resources   ProjectResource[]
+
+  @@unique([clientId, name])
+}
+
+// A consultant allocated to a project (Excel "Resources Plan").
+model ProjectResource {
+  id             String   @id @default(uuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  consultantName String?
+  categoryId     String?
+  category       ResourceCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  role           String?
+  allocationPct  Int      @default(100)
+  dailyHours     Int      @default(8)
+  startDate      DateTime?
+  endDate        DateTime?
+  billable       Boolean  @default(true)
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+// A timesheet entry against a project / WBS activity (Excel "Project Time Sheet").
+model ProjectTimesheet {
+  id             String   @id @default(uuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  consultantName String?
+  date           DateTime
+  taskId         String?
+  activity       String?
+  hours          Decimal  @default(0)
+  workPerformed  String?
+  status         String   @default("SUBMITTED")       // SUBMITTED | APPROVED | REJECTED
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([projectId, date])
+}
+
+// An agile sprint: a time-boxed set of tasks pulled from the backlog.
+model ProjectSprint {
+  id         String   @id @default(uuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name       String
+  goal       String?
+  status     String   @default("PLANNED")          // PLANNED | ACTIVE | COMPLETED
+  startDate  DateTime?
+  endDate    DateTime?
+  sortOrder  Int      @default(0)
+  createdBy  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  tasks      ProjectTask[]
+
+  @@index([projectId])
+}
+
+// A project milestone / stage gate (Excel grouping). Tasks are grouped by milestone;
+// its % complete is computed from member tasks. Seeded with 8 defaults per project.
+model ProjectMilestone {
+  id         String   @id @default(uuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name       String
+  status     String   @default("PENDING")          // PENDING | IN_PROGRESS | COMPLETED
+  targetDate DateTime?
+  sortOrder  Int      @default(0)
+  // Stage-gate sign-off (folded in from the former Approvals register).
+  approverName    String?
+  approvalStatus  String   @default("PENDING")      // PENDING | APPROVED | REJECTED
+  decidedAt       DateTime?
+  createdBy  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  tasks      ProjectTask[]
+
+  @@index([projectId])
+}
+
+// A WBS node within a project: Phase → Task → Sub Task → Activity → Checklist.
+model ProjectTask {
+  id             String    @id @default(uuid())
+  projectId      String
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  milestoneId    String?
+  milestone      ProjectMilestone? @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+  sprintId       String?
+  sprint         ProjectSprint?   @relation(fields: [sprintId], references: [id], onDelete: SetNull)
+  storyPoints    Int?
+  taskNumber     Int?                                    // sequential within project → key = project.key + '-' + taskNumber
+  // WBS
+  wbsType        String    @default("TASK")             // PHASE | TASK | SUBTASK | ACTIVITY | CHECKLIST | MILESTONE
+  wbsCode        String?                                 // auto "1.2.3"
+  durationDays   Int?                                    // leaf value; parent = sum of children (computed)
+  completionPct  Int       @default(0)                   // 0–100
+  actualStart    DateTime?
+  actualFinish   DateTime?
+  estimatedHours Int?
+  actualHours    Int?
+  critical       Boolean   @default(false)
+  type           String    @default("TASK")             // legacy: TASK | MILESTONE (kept for compatibility)
+  title          String
+  description    String?
+  assigneeUserId String?
+  assigneeName   String?
+  status         String    @default("TODO")             // TODO | IN_PROGRESS | REVIEW | COMPLETED
+  priority       String?
+  startDate      DateTime?
+  dueDate        DateTime?
+  plannedEffort  Int?                                    // hours (supports Gantt later)
+  parentTaskId   String?
+  parentTask     ProjectTask?  @relation("ProjectTaskSubtasks", fields: [parentTaskId], references: [id], onDelete: SetNull)
+  subtasks       ProjectTask[] @relation("ProjectTaskSubtasks")
+  tags           String[]  @default([])
+  sortOrder      Int       @default(0)
+  completedAt    DateTime?
+  createdBy      String?
+  createdByName  String?
+  updatedBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  comments       ProjectTaskComment[]
+  watchers       ProjectTaskWatcher[]
+  successors     ProjectTaskDependency[] @relation("TaskAsPredecessor") // rows where this task is the predecessor
+  predecessors   ProjectTaskDependency[] @relation("TaskAsSuccessor")   // rows where this task is the successor
+
+  @@index([projectId, status])
+}
+
+// A comment on a task (supports @mentions stored as plain text in the body).
+model ProjectTaskComment {
+  id           String   @id @default(uuid())
+  taskId       String
+  task         ProjectTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorUserId String?
+  authorName   String?
+  body         String
+  createdAt    DateTime @default(now())
+
+  @@index([taskId, createdAt])
+}
+
+// A user watching a task (notified on updates, mirrors ticket watchers).
+model ProjectTaskWatcher {
+  id      String   @id @default(uuid())
+  taskId  String
+  task    ProjectTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId  String
+  user    User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  addedAt DateTime @default(now())
+
+  @@unique([taskId, userId])
+}
+
+// A dependency: the successor task cannot start until the predecessor completes.
+model ProjectTaskDependency {
+  id            String @id @default(uuid())
+  predecessorId String
+  successorId   String
+  predecessor   ProjectTask @relation("TaskAsPredecessor", fields: [predecessorId], references: [id], onDelete: Cascade)
+  successor     ProjectTask @relation("TaskAsSuccessor", fields: [successorId], references: [id], onDelete: Cascade)
+
+  @@unique([predecessorId, successorId])
+  @@index([successorId])
 }

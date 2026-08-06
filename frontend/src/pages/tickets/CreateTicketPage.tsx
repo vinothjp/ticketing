@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { z } from 'zod';
 import { toast } from 'sonner';
@@ -83,6 +83,9 @@ function defaultValueFor(f: MergedTemplateField, descriptionGuidance?: string | 
 
 export default function CreateTicketPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  // When launched from a project ("Create ticket"), link the new ticket back to it.
+  const projectId = searchParams.get('projectId');
   const { user } = useAuth();
   const isCustomer = !!user?.roles.includes('Customer') && !user?.roles.includes('Admin');
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
@@ -218,11 +221,17 @@ export default function CreateTicketPage() {
         });
       }
 
+      // Link the ticket to the originating project, if any.
+      if (projectId) {
+        await api.post(`/api/projects/${projectId}/tickets/${ticket.id}`);
+      }
+
       return ticket;
     },
     onSuccess: (ticket, mode) => {
-      toast.success(`Ticket ${ticket.ticketNumber} created`);
+      toast.success(`Ticket ${ticket.ticketNumber} created${projectId ? ' and linked to the project' : ''}`);
       if (mode === 'saveAndNew') resetForm();
+      else if (projectId) navigate(`/projects/${projectId}?tab=tickets`);
       else navigate('/dashboard');
     },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error creating ticket'),

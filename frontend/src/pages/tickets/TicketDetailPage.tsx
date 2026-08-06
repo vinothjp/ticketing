@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Paperclip } from 'lucide-react';
+import { ArrowLeft, Paperclip, FolderKanban, X } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
+import { useAuth } from '../../context/AuthContext';
 import { assetUrl } from '@/lib/assetUrl';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -33,6 +34,8 @@ interface TicketDetail {
   requestorContact?: string | null;
   customerName?: string | null;
   customerCompany?: { id: string; name: string } | null;
+  projectId?: string | null;
+  project?: { id: string; name: string; projectNumber: string } | null;
   notifyEmails: string[];
   dueDate?: string | null;
   expectedResolutionDate?: string | null;
@@ -125,6 +128,25 @@ export default function TicketDetailPage() {
       qc.invalidateQueries({ queryKey: ['tickets'] });
     },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error assigning technicians'),
+  });
+
+  // Project association (staff only).
+  const { user } = useAuth();
+  const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer');
+  const { data: projectOptions = [] } = useQuery<{ id: string; name: string; projectNumber: string }[]>({
+    queryKey: ['projects'],
+    queryFn: async () => (await api.get('/api/projects')).data,
+    enabled: isStaff,
+  });
+  const linkProject = useMutation({
+    mutationFn: (pid: string) => api.post(`/api/projects/${pid}/tickets/${id}`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tickets', id] }); toast.success('Linked to project'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error linking project'),
+  });
+  const unlinkProject = useMutation({
+    mutationFn: (pid: string) => api.delete(`/api/projects/${pid}/tickets/${id}`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tickets', id] }); toast.success('Unlinked from project'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error unlinking project'),
   });
 
   if (isLoading || !ticket) {
@@ -330,6 +352,33 @@ export default function TicketDetailPage() {
               })}
             </CardContent>
           </Card>
+
+          {isStaff && (
+            <Card>
+              <CardHeader><CardTitle className="flex items-center gap-1.5 text-sm"><FolderKanban className="size-4" /> Project</CardTitle></CardHeader>
+              <CardContent className="space-y-2 pb-4 text-sm">
+                {ticket.project ? (
+                  <div className="flex items-center justify-between gap-2 rounded-md border p-2">
+                    <Link to={`/projects/${ticket.project.id}`} className="min-w-0">
+                      <div className="truncate font-medium text-foreground hover:underline">{ticket.project.name}</div>
+                      <div className="text-xs text-muted-foreground">{ticket.project.projectNumber}</div>
+                    </Link>
+                    <Button size="icon" variant="ghost" className="size-7 shrink-0"
+                      onClick={() => unlinkProject.mutate(ticket.project!.id)} title="Unlink">
+                      <X className="size-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  <Select value="" onValueChange={(v) => linkProject.mutate(v)}>
+                    <SelectTrigger className="w-full"><SelectValue placeholder="Associate a project…" /></SelectTrigger>
+                    <SelectContent>
+                      {projectOptions.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader><CardTitle className="text-sm">Requester</CardTitle></CardHeader>

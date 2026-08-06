@@ -97,8 +97,8 @@ export default function UsersPage() {
   });
 
   const { data: users = [], isLoading } = useQuery<User[]>({
-    queryKey: ['users'],
-    queryFn: async () => (await api.get('/api/users')).data,
+    queryKey: ['users', 'all'],
+    queryFn: async () => (await api.get('/api/users', { params: { includeCustomers: true } })).data,
   });
   const { data: roles = [] } = useQuery<Role[]>({
     queryKey: ['roles'],

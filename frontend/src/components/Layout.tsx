@@ -22,6 +22,8 @@ import {
   BookOpen,
   FolderKanban,
   Inbox,
+  Wallet,
+  Clock3,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api from '../lib/api';
@@ -60,6 +62,7 @@ const tenantNavGroups: NavGroup[] = [
       { to: '/tickets', label: 'Tickets', icon: Ticket },
       { to: '/knowledge-base', label: 'Knowledge Base', icon: BookOpen },
       { to: '/projects', label: 'Projects', icon: FolderKanban },
+      { to: '/timesheet', label: 'Timesheet', icon: Clock3 },
     ],
   },
   {
@@ -73,6 +76,7 @@ const tenantNavGroups: NavGroup[] = [
       { to: '/admin/picklists', label: 'Picklist Options', icon: ListTree },
       { to: '/admin/sla', label: 'SLA Policies', icon: Timer },
       { to: '/admin/channels', label: 'Inbound Email', icon: Inbox },
+      { to: '/admin/resource-costs', label: 'Resource Costs', icon: Wallet },
     ],
   },
 ];

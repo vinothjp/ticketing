@@ -223,6 +223,7 @@ export class TicketsService {
         },
         attachments: true,
         customerCompany: { select: { id: true, name: true } },
+        project: { select: { id: true, name: true, projectNumber: true } },
       },
     });
     if (!ticket) throw new NotFoundException('Ticket not found');

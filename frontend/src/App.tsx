@@ -29,7 +29,11 @@ import TicketDetailPage from './pages/tickets/TicketDetailPage';
 import KnowledgeBasePage from './pages/KnowledgeBasePage';
 import KbArticlePage from './pages/kb/KbArticlePage';
 import KbArticleEditorPage from './pages/kb/KbArticleEditorPage';
-import ProjectsPage from './pages/ProjectsPage';
+import ProjectListPage from './pages/projects/ProjectListPage';
+import ProjectDetailPage from './pages/projects/ProjectDetailPage';
+import ProjectAnalyticsPage from './pages/projects/ProjectAnalyticsPage';
+import ResourceCostsPage from './pages/ResourceCostsPage';
+import TimesheetComingSoonPage from './pages/TimesheetComingSoonPage';
 
 const queryClient = new QueryClient();
 const isSuperAdmin = (roles: string[]) => roles.includes('SuperAdmin');
@@ -83,7 +87,10 @@ export default function App() {
                         <Route path="/knowledge-base/new" element={<RoleGate allow={isStaff} redirectTo="/knowledge-base"><KbArticleEditorPage /></RoleGate>} />
                         <Route path="/knowledge-base/:id" element={<KbArticlePage />} />
                         <Route path="/knowledge-base/:id/edit" element={<RoleGate allow={isStaff} redirectTo="/knowledge-base"><KbArticleEditorPage /></RoleGate>} />
-                        <Route path="/projects" element={<ProjectsPage />} />
+                        <Route path="/projects" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectListPage /></RoleGate>} />
+                        <Route path="/projects/analytics" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectAnalyticsPage /></RoleGate>} />
+                        <Route path="/timesheet" element={<RoleGate allow={isStaff} redirectTo="/tickets"><TimesheetComingSoonPage /></RoleGate>} />
+                        <Route path="/projects/:id" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectDetailPage /></RoleGate>} />
                         {/* Admin-only sections — non-admins are redirected to their tickets */}
                         <Route path="/users" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><UsersPage /></RoleGate>} />
                         <Route path="/admin/customer-companies" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><CustomerCompaniesPage /></RoleGate>} />
@@ -95,6 +102,7 @@ export default function App() {
                         <Route path="/admin/picklists" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><PicklistOptionsPage /></RoleGate>} />
                         <Route path="/admin/sla" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><SlaPolicyPage /></RoleGate>} />
                         <Route path="/admin/channels" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ChannelsPage /></RoleGate>} />
+                        <Route path="/admin/resource-costs" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ResourceCostsPage /></RoleGate>} />
                         <Route path="/admin/smtp-config" element={<RoleGate allow={isStaff} redirectTo="/tickets"><TenantSmtpConfigPage /></RoleGate>} />
                         <Route path="*" element={<Navigate to="/dashboard" replace />} />
                       </Routes>

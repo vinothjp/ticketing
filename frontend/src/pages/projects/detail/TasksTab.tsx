@@ -96,11 +96,12 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
   const parentStart = parentSel?.startDate ? toDateInput(parentSel.startDate) : undefined;
   const parentEnd = parentSel?.dueDate ? toDateInput(parentSel.dueDate) : undefined;
   const projMin = toDateInput(project.startDate);
+  const projMax = toDateInput(project.endDate);
   const latest = (...ds: (string | undefined)[]) => ds.filter(Boolean).sort().slice(-1)[0] as string | undefined;
   const earliest = (...ds: (string | undefined)[]) => ds.filter(Boolean).sort()[0] as string | undefined;
   const dateFloor = latest(parentStart, projMin);
-  // Cap a child by its parent's end; a top-level phase is uncapped so it can extend the project.
-  const dateCap = parentEnd;
+  // Cap a child by its parent's end; a top-level phase by the project's end (its timeline).
+  const dateCap = parentEnd ?? projMax;
   const wDur = form.watch('durationDays');
   useEffect(() => {
     if (wStart && wDue) {
@@ -356,7 +357,7 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
 
       <TaskDetailDialog
         taskId={detailId} projectId={project.id} projectKey={project.key ?? null}
-        users={users} tasks={project.tasks} projectStart={projMin} onClose={() => setDetailId(null)}
+        users={users} tasks={project.tasks} projectStart={projMin} projectEnd={projMax} onClose={() => setDetailId(null)}
       />
 
       <Dialog open={dialogOpen} onOpenChange={(o) => { setDialogOpen(o); if (!o) setEditing(null); }}>

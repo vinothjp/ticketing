@@ -194,63 +194,31 @@ export class ProjectsService {
   }
 
   /**
-   * Change-Request budget view: every CR enriched with the tasks it introduced, their auto-costed
-   * total (Σ estimatedHours × assignee hourly cost), and a budget verdict (fits the remaining
-   * budget, or needs a customer-approved increase). Plus a project-level budget summary.
+   * Change-Request view: a CR charges the customer for a NEW feature they requested. Each row is
+   * just its amount (money charged) + status + the WBS item it created on approval. Plus the
+   * project budget summary (Revised = baseline + Σ approved CRs).
    */
   async changeRequests(projectId: string, clientId: string) {
     await this.getOwned(projectId, clientId);
     const c = await this.financialCore(projectId);
-    // Load tasks with computed WBS codes so linked tasks read like the WBS tree.
-    const project = await this.prisma.project.findFirst({
-      where: { id: projectId, clientId },
-      include: { tasks: true, milestones: true },
+    // Titles of the WBS items each approved CR introduced (changeRequestId = cr.id).
+    const created = await this.prisma.projectTask.findMany({
+      where: { projectId, changeRequestId: { not: null } },
+      select: { id: true, title: true, changeRequestId: true },
     });
-    const withCodes = project ? this.withWbs(project) : { tasks: [] as any[] };
-    const tasksByCr = new Map<string, any[]>();
-    for (const t of withCodes.tasks) {
-      if (t.changeRequestId) (tasksByCr.get(t.changeRequestId) ?? tasksByCr.set(t.changeRequestId, []).get(t.changeRequestId)!).push(t);
-    }
-    const { num, rateByUser, remaining } = c;
-    const unitCost = (t: any) => (t.assigneeUserId ? rateByUser.get(t.assigneeUserId)?.cost ?? 0 : 0);
-
-    // Every project task with its auto-cost, so the CR dialog can preview the change cost live
-    // as tasks are checked (leaves first — a parent's cost double-counts its children).
-    const tasks = withCodes.tasks
-      .slice()
-      .sort((a: any, b: any) => (a.wbsCode ?? '').localeCompare(b.wbsCode ?? '', undefined, { numeric: true }))
-      .map((t: any) => {
-        const rate = unitCost(t);
-        const hrs = t.estimatedHours ?? 0;
-        return {
-          id: t.id, wbsCode: t.wbsCode, title: t.title, assigneeName: t.assigneeName,
-          isParent: t.isParent, changeRequestId: t.changeRequestId ?? null,
-          estimatedHours: hrs, unitCost: rate, taskCost: hrs * rate,
-        };
-      });
+    const createdByCr = new Map<string, { id: string; title: string }>();
+    for (const t of created) if (t.changeRequestId) createdByCr.set(t.changeRequestId, { id: t.id, title: t.title });
+    const { num } = c;
 
     const changeRequests = c.changeRequests
       .slice()
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .map((cr) => {
-        const linkedTasks = (tasksByCr.get(cr.id) ?? []).map((t) => {
-          const rate = unitCost(t);
-          const hrs = t.estimatedHours ?? 0;
-          return { id: t.id, wbsCode: t.wbsCode, title: t.title, assigneeName: t.assigneeName, isParent: !!t.isParent, estimatedHours: hrs, unitCost: rate, taskCost: hrs * rate };
-        });
-        // Sum leaf tasks only, so linking a parent + its children never double-counts.
-        const costSuggested = linkedTasks.filter((t) => !t.isParent).reduce((s, t) => s + t.taskCost, 0);
-        const cost = cr.costEstimate != null ? num(cr.costEstimate) : costSuggested;
-        const withinBudget = cost <= remaining;
-        const shortfall = Math.max(0, Math.round((cost - remaining) * 100) / 100);
-        return {
-          ...cr,
-          budgetImpact: cr.budgetImpact != null ? num(cr.budgetImpact) : null,
-          costEstimate: cr.costEstimate != null ? num(cr.costEstimate) : null,
-          linkedTasks, costSuggested, cost,
-          verdict: { withinBudget, remaining, shortfall },
-        };
-      });
+      .map((cr) => ({
+        ...cr,
+        amount: cr.budgetImpact != null ? num(cr.budgetImpact) : 0,
+        budgetImpact: cr.budgetImpact != null ? num(cr.budgetImpact) : null,
+        createdTask: createdByCr.get(cr.id) ?? null,
+      }));
 
     return {
       budget: {
@@ -258,36 +226,49 @@ export class ProjectsService {
         revisedBudget: c.revisedBudget, totalCost: c.totalCost, remaining: c.remaining,
         currency: (c.project as any)?.currency ?? null,
       },
-      changeRequests, tasks,
+      changeRequests,
     };
   }
 
-  /** Link/unlink WBS tasks to a change request (sets ProjectTask.changeRequestId to match the new set). */
-  async linkChangeRequestTasks(crId: string, taskIds: string[], clientId: string) {
-    const cr = await this.prisma.projectChangeRequest.findFirst({
-      where: { id: crId, project: { clientId } },
-      select: { id: true, projectId: true },
-    });
+  /**
+   * Approve / reject / submit a change request. Approving creates the new top-level WBS item the
+   * customer's feature introduces (once — idempotent) and its amount revises the budget upward.
+   */
+  async decideChangeRequest(crId: string, status: string, clientId: string, actor: Actor) {
+    const cr = await this.prisma.projectChangeRequest.findFirst({ where: { id: crId, project: { clientId } } });
     if (!cr) throw new NotFoundException('Change request not found');
-    // Keep only task ids that actually belong to this CR's project.
-    const valid = await this.prisma.projectTask.findMany({
-      where: { id: { in: taskIds.length ? taskIds : ['__none__'] }, projectId: cr.projectId },
-      select: { id: true },
+    const decided = status === 'APPROVED' || status === 'REJECTED';
+    await this.prisma.projectChangeRequest.update({
+      where: { id: crId },
+      data: { status, decidedAt: decided ? new Date() : null, updatedAt: new Date() },
     });
-    const toLink = valid.map((t) => t.id);
-    await this.prisma.$transaction([
-      // Unlink tasks previously attributed to this CR but no longer selected.
-      this.prisma.projectTask.updateMany({
-        where: { changeRequestId: crId, id: { notIn: toLink.length ? toLink : ['__none__'] } },
-        data: { changeRequestId: null },
-      }),
-      // Link the selected tasks.
-      this.prisma.projectTask.updateMany({
-        where: { id: { in: toLink.length ? toLink : ['__none__'] }, projectId: cr.projectId },
-        data: { changeRequestId: crId },
-      }),
-    ]);
-    return { linked: toLink.length };
+    if (status === 'APPROVED') {
+      const existing = await this.prisma.projectTask.findFirst({ where: { projectId: cr.projectId, changeRequestId: crId }, select: { id: true } });
+      if (!existing) {
+        const project = await this.prisma.project.findUnique({ where: { id: cr.projectId }, select: { startDate: true, endDate: true } });
+        const roots = await this.prisma.projectTask.findMany({ where: { projectId: cr.projectId, parentTaskId: null }, select: { sortOrder: true } });
+        const sortOrder = roots.length ? Math.max(...roots.map((r) => r.sortOrder ?? 0)) + 1 : 0;
+        const seq = await this.prisma.project.update({ where: { id: cr.projectId }, data: { taskSequence: { increment: 1 } }, select: { taskSequence: true } });
+        await this.prisma.projectTask.create({
+          data: {
+            projectId: cr.projectId,
+            taskNumber: seq.taskSequence,
+            wbsType: 'TASK',
+            type: 'TASK',
+            title: cr.title,
+            status: 'TODO',
+            startDate: project?.startDate ?? null,
+            dueDate: project?.endDate ?? null,
+            changeRequestId: crId,
+            sortOrder,
+            createdBy: actor.id,
+            createdByName: actor.username ?? null,
+            updatedBy: actor.id,
+          },
+        });
+      }
+    }
+    return { id: crId, status };
   }
 
   async findOne(id: string, clientId: string) {
@@ -336,6 +317,8 @@ export class ProjectsService {
           managerUserId: dto.managerUserId || null,
           managerName,
           customerCompanyId: dto.customerCompanyId || null,
+          budget: dto.budget ?? null,
+          currency: dto.currency?.trim() || null,
           startDate: dto.startDate ? new Date(dto.startDate) : null,
           endDate: dto.endDate ? new Date(dto.endDate) : null,
           createdBy: actor.id,
@@ -352,7 +335,7 @@ export class ProjectsService {
   }
 
   async update(id: string, dto: UpdateProjectDto, clientId: string, actor: Actor) {
-    await this.getOwned(id, clientId);
+    const proj = await this.getOwned(id, clientId);
     const set = <T>(v: T | undefined) => v !== undefined;
 
     const data: Prisma.ProjectUpdateInput = { updatedBy: actor.id };
@@ -386,6 +369,13 @@ export class ProjectsService {
     }
 
     await this.prisma.project.update({ where: { id }, data });
+    // If the project's start/end window changed, re-bound every WBS item into it
+    // (expanding just widens the room; shrinking clamps out-of-range items to the edge).
+    if (set(dto.startDate) || set(dto.endDate)) {
+      const newStart = set(dto.startDate) ? (dto.startDate ? new Date(dto.startDate) : null) : proj.startDate;
+      const newEnd = set(dto.endDate) ? (dto.endDate ? new Date(dto.endDate) : null) : proj.endDate;
+      await this.clampTasksToWindow(id, newStart, newEnd);
+    }
     return this.findOne(id, clientId);
   }
 
@@ -491,9 +481,9 @@ export class ProjectsService {
   }
 
   // Authoritative date-window guard: a child must stay inside its parent's window
-  // (activity ⊂ sub-task ⊂ task ⊂ phase); a top-level item must not start before the
-  // project starts (its end is uncapped — a phase may extend the project). Throws a
-  // BadRequestException whose message the frontend surfaces as the "not allowed" toast.
+  // (activity ⊂ sub-task ⊂ task ⊂ phase); a top-level item (phase) must stay inside the
+  // project's start..end window. Throws a BadRequestException whose message the frontend
+  // surfaces as the "not allowed" toast.
   private async assertDateWindow(
     db: Prisma.TransactionClient | PrismaService,
     projectId: string,
@@ -520,11 +510,37 @@ export class ProjectsService {
         }
       }
     } else {
-      const proj = await db.project.findFirst({ where: { id: projectId, clientId }, select: { startDate: true } });
+      const proj = await db.project.findFirst({ where: { id: projectId, clientId }, select: { startDate: true, endDate: true } });
       if (proj?.startDate && start && start.getTime() < new Date(proj.startDate).getTime()) {
         throw new BadRequestException(`Start date can't be before the project starts (${fmt(new Date(proj.startDate))})`);
       }
+      if (proj?.endDate && end && end.getTime() > new Date(proj.endDate).getTime()) {
+        throw new BadRequestException(`End date can't be after the project ends (${fmt(new Date(proj.endDate))})`);
+      }
     }
+  }
+
+  // Re-bound + clamp: after the project window changes, pull any WBS item whose dates now fall
+  // outside [start, end] back to the nearest edge (items that already fit are left untouched).
+  private async clampTasksToWindow(projectId: string, start: Date | null, end: Date | null) {
+    if (!start && !end) return;
+    const clamp = (d: Date | null): Date | null => {
+      if (!d) return d;
+      let x = d.getTime();
+      if (start && x < start.getTime()) x = start.getTime();
+      if (end && x > end.getTime()) x = end.getTime();
+      return new Date(x);
+    };
+    const tasks = await this.prisma.projectTask.findMany({ where: { projectId }, select: { id: true, startDate: true, dueDate: true } });
+    const updates = [];
+    for (const t of tasks) {
+      let s = clamp(t.startDate);
+      let e = clamp(t.dueDate);
+      if (s && e && s.getTime() > e.getTime()) s = e; // keep start ≤ end after clamping
+      const changed = s?.getTime() !== t.startDate?.getTime() || e?.getTime() !== t.dueDate?.getTime();
+      if (changed) updates.push(this.prisma.projectTask.update({ where: { id: t.id }, data: { startDate: s, dueDate: e } }));
+    }
+    if (updates.length) await this.prisma.$transaction(updates);
   }
 
   async updateTask(taskId: string, dto: UpdateProjectTaskDto, clientId: string, actor: Actor) {

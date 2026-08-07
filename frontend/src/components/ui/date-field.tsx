@@ -20,10 +20,17 @@ export function DateField({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [dropUp, setDropUp] = useState(false);   // open the calendar above the field when there's no room below
   const [cursor, setCursor] = useState(() => parse(value) ?? parse(min) ?? new Date());
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { if (open) setCursor(parse(value) ?? parse(min) ?? new Date()); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!open) return;
+    setCursor(parse(value) ?? parse(min) ?? new Date());
+    // Flip up if the ~330px calendar would overflow the viewport bottom (e.g. field near a dialog's edge).
+    const r = ref.current?.getBoundingClientRect();
+    if (r) setDropUp(r.bottom + 330 > window.innerHeight);
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Close on outside-click / Escape.
   useEffect(() => {
@@ -58,7 +65,7 @@ export function DateField({
       </button>
 
       {open && (
-        <div className="absolute z-50 mt-1 w-64 rounded-md border bg-popover p-2 text-popover-foreground shadow-md">
+        <div className={`absolute left-0 z-50 w-64 rounded-md border bg-popover p-2 text-popover-foreground shadow-md ${dropUp ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
           <div className="mb-1 flex items-center justify-between">
             <button type="button" className="rounded p-1 hover:bg-accent" onClick={() => setCursor((c) => new Date(c.getFullYear(), c.getMonth() - 1, 1))}><ChevronLeft className="size-4" /></button>
             <span className="text-sm font-medium">{cursor.toLocaleString(undefined, { month: 'long', year: 'numeric' })}</span>

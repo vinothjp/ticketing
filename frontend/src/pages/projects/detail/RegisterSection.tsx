@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { DateField } from '@/components/ui/date-field';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -36,7 +37,7 @@ const toDateInput = (v?: string | null) => (v ? new Date(v).toISOString().slice(
 const money = (n: unknown) => (n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 }));
 
 export default function RegisterSection({
-  projectId, type, singular, fields, columns, attachEntityType, acceptTypes, exportable,
+  projectId, type, singular, fields, columns, attachEntityType, acceptTypes, exportable, budgetGuard,
 }: {
   projectId: string;
   type: string;
@@ -46,6 +47,9 @@ export default function RegisterSection({
   attachEntityType?: string;   // when set, each row gets an attachments (upload/link) dialog
   acceptTypes?: string[];      // allowed file extensions for this submodule (from Settings)
   exportable?: boolean;        // when set, show an "Export CSV" button
+  // When set, the dialog shows a budget panel and blocks Save if the amount field exceeds
+  // what's left of the budget (total − already-registered amounts, excluding the edited row).
+  budgetGuard?: { amountField: string; total: number; currency?: string };
 }) {
   const qc = useQueryClient();
   const { confirm, ConfirmDialog } = useConfirm();
@@ -64,6 +68,16 @@ export default function RegisterSection({
     queryKey: key,
     queryFn: async () => (await api.get(`/api/projects/${projectId}/registers/${type}`)).data,
   });
+
+  // Budget guard (invoices): how much of the budget is left to register, and whether this amount fits.
+  const gCur = budgetGuard?.currency ? `${budgetGuard.currency} ` : '';
+  const gMoney = (n: number) => `${gCur}${Math.round(n).toLocaleString()}`;
+  const gUsed = budgetGuard
+    ? items.reduce((s, r) => s + Number(r[budgetGuard.amountField] ?? 0), 0) - (editing ? Number(editing[budgetGuard.amountField] ?? 0) : 0)
+    : 0;
+  const gRemaining = budgetGuard ? budgetGuard.total - gUsed : 0;
+  const gAmount = budgetGuard ? Number(form[budgetGuard.amountField]) || 0 : 0;
+  const gOver = !!budgetGuard && gAmount > gRemaining;
 
   useEffect(() => {
     if (!open) return;
@@ -144,12 +158,26 @@ export default function RegisterSection({
                     <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                     <SelectContent>{(f.options ?? []).map((o) => <SelectItem key={o} value={o}>{o.replace('_', ' ')}</SelectItem>)}</SelectContent>
                   </Select>
+                ) : f.type === 'date' ? (
+                  <DateField value={form[f.key] ?? ''} onChange={(v) => setForm((s) => ({ ...s, [f.key]: v }))} />
                 ) : (
-                  <Input type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
+                  <Input type={f.type === 'number' ? 'number' : 'text'}
                     value={form[f.key] ?? ''} onChange={(e) => setForm((s) => ({ ...s, [f.key]: e.target.value }))} />
                 )}
               </div>
             ))}
+
+            {budgetGuard && (
+              <div className="rounded-md border bg-muted/30 p-3 text-sm">
+                <div className="flex justify-between"><span className="text-muted-foreground">Budget</span><span className="tabular-nums">{gMoney(budgetGuard.total)}</span></div>
+                <div className="mt-1 flex justify-between"><span className="text-muted-foreground">Remaining budget</span><span className="tabular-nums">{gMoney(gRemaining)}</span></div>
+                <div className="mt-1 flex justify-between border-t pt-1"><span className="text-muted-foreground">Amount to be paid</span><span className="tabular-nums">{gMoney(gAmount)}</span></div>
+                <div className={`mt-1 flex justify-between font-medium ${gOver ? 'text-destructive' : 'text-success'}`}>
+                  <span>Remaining after</span><span className="tabular-nums">{gMoney(gRemaining - gAmount)}</span>
+                </div>
+                {gOver && <p className="mt-1 text-xs font-medium text-destructive">Exceeds budget — not allowed.</p>}
+              </div>
+            )}
 
             {attachEntityType && (
               <div className="border-t pt-3">
@@ -204,7 +232,7 @@ export default function RegisterSection({
               </div>
             )}
           </div>
-          <DialogFooter><Button disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? 'Saving...' : 'Save'}</Button></DialogFooter>
+          <DialogFooter><Button disabled={save.isPending || gOver} onClick={() => save.mutate()}>{save.isPending ? 'Saving...' : gOver ? 'Over budget' : 'Save'}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

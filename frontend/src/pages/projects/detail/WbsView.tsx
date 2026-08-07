@@ -99,7 +99,7 @@ export default function WbsView({
           </span>
         </td>
         <td className="py-1.5 pr-2">
-          <button type="button" onClick={() => onOpen(t)} className="flex items-center gap-1.5 text-left text-sm font-medium hover:underline">
+          <button type="button" onClick={() => onOpen(t)} className={`flex items-center gap-1.5 text-left text-sm font-medium hover:underline ${dueIn.tone === 'bad' ? 'text-destructive' : ''}`}>
             {t.wbsType === 'MILESTONE' && <Flag className="size-3.5 text-primary" />}
             {t.critical && <Zap className="size-3.5 text-destructive" />}
             <PriorityMark priority={t.priority} />

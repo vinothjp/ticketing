@@ -140,7 +140,8 @@ export default function FinancialsTab({ project }: { project: ProjectDetail }) {
         </div>
         {view === 'expenses'
           ? <RegisterSection projectId={project.id} type="expenses" singular="Expense" fields={expenseFields} columns={expenseCols} attachEntityType="expense" acceptTypes={attachmentTypesFor(project.features, 'expense')} exportable />
-          : <RegisterSection projectId={project.id} type="invoices" singular="Invoice" fields={invoiceFields} columns={invoiceCols} attachEntityType="invoice" acceptTypes={attachmentTypesFor(project.features, 'invoice')} exportable />}
+          : <RegisterSection projectId={project.id} type="invoices" singular="Invoice" fields={invoiceFields} columns={invoiceCols} attachEntityType="invoice" acceptTypes={attachmentTypesFor(project.features, 'invoice')} exportable
+              budgetGuard={f ? { amountField: 'amount', total: f.revisedBudget, currency: project.currency ?? undefined } : undefined} />}
       </div>
     </div>
   );

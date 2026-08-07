@@ -35,7 +35,7 @@ function Section({ icon: Icon, title, count, children }: {
 }
 
 export default function TaskDetailDialog({
-  taskId, projectId, projectKey, users, tasks, projectStart, onClose,
+  taskId, projectId, projectKey, users, tasks, projectStart, projectEnd, onClose,
 }: {
   taskId: string | null;
   projectId: string;
@@ -43,6 +43,7 @@ export default function TaskDetailDialog({
   users: UserOption[];
   tasks: ProjectTask[];
   projectStart?: string;
+  projectEnd?: string;
   onClose: () => void;
 }) {
   const qc = useQueryClient();
@@ -100,7 +101,7 @@ export default function TaskDetailDialog({
   const latest = (...ds: (string | undefined)[]) => ds.filter(Boolean).sort().slice(-1)[0] as string | undefined;
   const earliest = (...ds: (string | undefined)[]) => ds.filter(Boolean).sort()[0] as string | undefined;
   const pMin = latest(parentStart, projectStart);        // floor: later of parent start / project start
-  const pMax = parentEnd;                                  // cap by parent end; top-level items uncapped
+  const pMax = parentEnd ?? projectEnd;                    // cap by parent end; top-level phase by project end
   const tags = task.tags ?? [];
   const watcherIds = new Set(task.watchers.map((w) => w.userId));
   const predIds = new Set(task.predecessors.map((l) => l.predecessor.id));

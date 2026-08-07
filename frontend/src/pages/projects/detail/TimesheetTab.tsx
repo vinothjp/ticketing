@@ -4,6 +4,7 @@ import { Plus, Trash2, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
+import { DateField } from '@/components/ui/date-field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -72,7 +73,7 @@ export default function TimesheetTab({ project, users }: { project: ProjectDetai
               </div>
               <div>
                 <div className="mb-1 text-sm">Date</div>
-                <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+                <DateField value={date} onChange={(v) => setDate(v)} />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">

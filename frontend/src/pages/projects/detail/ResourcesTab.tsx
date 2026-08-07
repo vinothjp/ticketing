@@ -4,6 +4,7 @@ import { Plus, Trash2, UserPlus, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
+import { DateField } from '@/components/ui/date-field';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -135,11 +136,11 @@ export default function ResourcesTab({ project, users }: { project: ProjectDetai
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <div className="mb-1 text-sm">Start date</div>
-                <Input type="date" value={form.startDate} onChange={(e) => setForm((f) => ({ ...f, startDate: e.target.value }))} />
+                <DateField value={form.startDate} onChange={(v) => setForm((f) => ({ ...f, startDate: v }))} />
               </div>
               <div>
                 <div className="mb-1 text-sm">End date</div>
-                <Input type="date" value={form.endDate} onChange={(e) => setForm((f) => ({ ...f, endDate: e.target.value }))} />
+                <DateField value={form.endDate} onChange={(v) => setForm((f) => ({ ...f, endDate: v }))} />
               </div>
             </div>
             <label className="flex items-center gap-2 text-sm">

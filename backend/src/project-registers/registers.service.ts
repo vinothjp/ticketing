@@ -9,7 +9,7 @@ const REGISTERS: Record<string, {
 }> = {
   risks: { model: 'projectRisk', str: ['title', 'probability', 'impact', 'mitigation', 'ownerName', 'status'], dates: [], nums: [], json: [], order: 'createdAt' },
   issues: { model: 'projectIssue', str: ['title', 'priority', 'ownerName', 'resolution', 'status'], dates: ['targetDate'], nums: [], json: [], order: 'createdAt' },
-  'change-requests': { model: 'projectChangeRequest', str: ['title', 'description', 'reason', 'scheduleImpact', 'requestedBy', 'status'], dates: ['decidedAt'], nums: ['budgetImpact', 'costEstimate'], json: [], order: 'createdAt' },
+  'change-requests': { model: 'projectChangeRequest', str: ['title', 'description', 'reason', 'scheduleImpact', 'requestedBy', 'status'], dates: ['decidedAt'], nums: ['budgetImpact'], json: [], order: 'createdAt' },
   meetings: { model: 'projectMeeting', str: ['title', 'attendees', 'notes'], dates: ['date'], nums: [], json: ['actionItems'], order: 'date' },
   documents: { model: 'projectDocument', str: ['docType', 'name', 'versionNumber', 'filePath'], dates: [], nums: [], json: [], order: 'uploadedAt' },
   expenses: { model: 'projectExpense', str: ['category', 'description'], dates: ['date'], nums: ['amount'], json: [], order: 'date' },
@@ -58,6 +58,7 @@ export class RegistersService {
     if (!data.title && !data.name && !data.gate && !data.category && !data.invoiceNumber) {
       throw new BadRequestException('A title/name is required');
     }
+    if (type === 'invoices' && data.amount != null) await this.assertInvoiceWithinBudget(projectId, Number(data.amount));
     return this.delegate(c.model).create({
       data: { projectId, ...data, ...(type === 'documents' ? { uploadedBy: actor.id } : { createdBy: actor.id }) },
     });
@@ -66,7 +67,30 @@ export class RegistersService {
   async update(type: string, itemId: string, body: Record<string, any>, clientId: string) {
     const c = this.cfg(type);
     await this.ownedItem(c.model, itemId, clientId);
-    return this.delegate(c.model).update({ where: { id: itemId }, data: this.buildData(type, body) });
+    const data = this.buildData(type, body);
+    if (type === 'invoices' && data.amount != null) {
+      const inv = await this.prisma.projectInvoice.findUnique({ where: { id: itemId }, select: { projectId: true } });
+      if (inv) await this.assertInvoiceWithinBudget(inv.projectId, Number(data.amount), itemId);
+    }
+    return this.delegate(c.model).update({ where: { id: itemId }, data });
+  }
+
+  // An invoice can't bill beyond the project budget: total invoiced must stay within
+  // Revised budget (baseline + approved change requests). Excludes the invoice being edited.
+  private async assertInvoiceWithinBudget(projectId: string, amount: number, excludeId?: string) {
+    const [project, crs, invoices] = await Promise.all([
+      this.prisma.project.findUnique({ where: { id: projectId }, select: { budget: true, currency: true } }),
+      this.prisma.projectChangeRequest.findMany({ where: { projectId, status: 'APPROVED' }, select: { budgetImpact: true } }),
+      this.prisma.projectInvoice.findMany({ where: { projectId, ...(excludeId ? { id: { not: excludeId } } : {}) }, select: { amount: true } }),
+    ]);
+    const num = (d: unknown) => Number(d ?? 0);
+    const revised = num(project?.budget) + crs.reduce((s, c) => s + num(c.budgetImpact), 0);
+    const invoiced = invoices.reduce((s, i) => s + num(i.amount), 0);
+    const remaining = revised - invoiced;
+    if (amount > remaining) {
+      const cur = project?.currency ? `${project.currency} ` : '';
+      throw new BadRequestException(`Invoice amount exceeds the remaining budget (${cur}${Math.round(remaining).toLocaleString()} left to invoice)`);
+    }
   }
 
   async remove(type: string, itemId: string, clientId: string) {

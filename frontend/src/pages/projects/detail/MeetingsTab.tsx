@@ -4,6 +4,7 @@ import { Plus, Trash2, CalendarDays, Users, Pencil, X, ClipboardList } from 'luc
 import { toast } from 'sonner';
 import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
+import { DateField } from '@/components/ui/date-field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -117,7 +118,7 @@ export default function MeetingsTab({ project, users }: { project: ProjectDetail
               </div>
               <div>
                 <div className="mb-1 text-sm font-medium">Date</div>
-                <Input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} />
+                <DateField value={form.date} onChange={(v) => setForm((f) => ({ ...f, date: v }))} />
               </div>
             </div>
 

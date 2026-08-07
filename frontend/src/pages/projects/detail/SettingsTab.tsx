@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { DateField } from '@/components/ui/date-field';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -32,6 +33,7 @@ export default function SettingsTab({ project }: { project: ProjectDetail }) {
     name: project.name, key: project.key ?? '', projectCode: project.projectCode ?? '',
     projectSponsor: project.projectSponsor ?? '', department: project.department ?? '',
     budget: str(project.budget), currency: project.currency ?? '', projectType: project.projectType ?? '',
+    startDate: toDate(project.startDate), endDate: toDate(project.endDate),
     goLiveDate: toDate(project.goLiveDate), description: project.description ?? '',
     objective: project.objective ?? '', scope: project.scope ?? '', outOfScope: project.outOfScope ?? '', successCriteria: project.successCriteria ?? '',
   });
@@ -42,6 +44,7 @@ export default function SettingsTab({ project }: { project: ProjectDetail }) {
     mutationFn: () => api.patch(`/api/projects/${project.id}`, {
       name: f.name.trim(), key: f.key.trim() || undefined, projectCode: f.projectCode, projectSponsor: f.projectSponsor,
       department: f.department, budget: f.budget === '' ? undefined : Number(f.budget), currency: f.currency, projectType: f.projectType,
+      startDate: f.startDate || undefined, endDate: f.endDate || undefined,
       goLiveDate: f.goLiveDate || undefined, description: f.description, objective: f.objective, scope: f.scope, outOfScope: f.outOfScope, successCriteria: f.successCriteria,
     }),
     onSuccess: () => { invalidate(); toast.success('Saved'); },
@@ -94,7 +97,9 @@ export default function SettingsTab({ project }: { project: ProjectDetail }) {
             <Field label="Project type"><Input value={f.projectType} onChange={(e) => set({ projectType: e.target.value })} placeholder="Implementation" /></Field>
             <Field label="Budget"><Input type="number" value={f.budget} onChange={(e) => set({ budget: e.target.value })} /></Field>
             <Field label="Currency"><Input value={f.currency} onChange={(e) => set({ currency: e.target.value })} placeholder="USD" /></Field>
-            <Field label="Go-live date"><Input type="date" value={f.goLiveDate} onChange={(e) => set({ goLiveDate: e.target.value })} /></Field>
+            <Field label="Start date"><DateField value={f.startDate} onChange={(v) => set({ startDate: v })} max={f.endDate || undefined} /></Field>
+            <Field label="End date"><DateField value={f.endDate} onChange={(v) => set({ endDate: v })} min={f.startDate || undefined} /></Field>
+            <Field label="Go-live date"><DateField value={f.goLiveDate} onChange={(v) => set({ goLiveDate: v })} /></Field>
           </div>
           <Field label="Description"><Textarea rows={2} value={f.description} onChange={(e) => set({ description: e.target.value })} /></Field>
           <div className="grid grid-cols-2 gap-3">
@@ -103,6 +108,7 @@ export default function SettingsTab({ project }: { project: ProjectDetail }) {
             <Field label="Scope"><Textarea rows={2} value={f.scope} onChange={(e) => set({ scope: e.target.value })} /></Field>
             <Field label="Out of scope"><Textarea rows={2} value={f.outOfScope} onChange={(e) => set({ outOfScope: e.target.value })} /></Field>
           </div>
+          <p className="text-xs text-muted-foreground">Changing the Start/End widens or tightens the timeline for the whole WBS — any phase, task, sub-task or activity that would fall outside the new window is pulled back to the nearest edge.</p>
           <Button disabled={saveGeneral.isPending} onClick={() => saveGeneral.mutate()}>
             {saveGeneral.isPending ? 'Saving...' : 'Save changes'}
           </Button>

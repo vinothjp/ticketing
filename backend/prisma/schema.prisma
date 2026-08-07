@@ -771,12 +771,15 @@ model ProjectTimesheet {
   activity       String?
   hours          Decimal  @default(0)
   workPerformed  String?
-  status         String   @default("SUBMITTED")       // SUBMITTED | APPROVED | REJECTED
+  status         String   @default("SUBMITTED")       // DRAFT | SUBMITTED | APPROVED | REJECTED
+  documentNumber String?                                // Excel "Document Number" (per consultant/week sheet)
+  documentDate   DateTime?                              // Excel "Document Date" (= week start)
   createdBy      String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   @@index([projectId, date])
+  @@index([userId, date])
 }
 
 // An agile sprint: a time-boxed set of tasks pulled from the backlog.

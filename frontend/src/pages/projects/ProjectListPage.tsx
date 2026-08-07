@@ -8,6 +8,7 @@ import { Plus, Search, ArrowUp, ArrowDown, ArrowUpDown, ChevronLeft, ChevronRigh
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
+import { DateField } from '@/components/ui/date-field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -31,6 +32,8 @@ const createSchema = z.object({
   priority: z.string().optional(),
   managerUserId: z.string().optional(),
   customerCompanyId: z.string().optional(),
+  budget: z.string().optional(),
+  currency: z.string().optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
 });
@@ -81,7 +84,7 @@ export default function ProjectListPage() {
     resolver: zodResolver(createSchema),
     defaultValues: {
       name: '', key: '', description: '', status: 'OPEN',
-      priority: '', managerUserId: '', customerCompanyId: '', startDate: '', endDate: '',
+      priority: '', managerUserId: '', customerCompanyId: '', budget: '', currency: '', startDate: '', endDate: '',
     },
   });
 
@@ -109,6 +112,8 @@ export default function ProjectListPage() {
       priority: values.priority || undefined,
       managerUserId: values.managerUserId || undefined,
       customerCompanyId: values.customerCompanyId || undefined,
+      budget: values.budget ? Number(values.budget) : undefined,
+      currency: values.currency || undefined,
       startDate: values.startDate || undefined,
       endDate: values.endDate || undefined,
     }),
@@ -175,10 +180,11 @@ export default function ProjectListPage() {
       </div>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent>
+        <DialogContent className="flex max-h-[88vh] flex-col sm:max-w-lg">
           <DialogHeader><DialogTitle>Create Project</DialogTitle></DialogHeader>
           <Form {...form}>
-            <form onSubmit={form.handleSubmit((v) => createMutation.mutate(v))} className="space-y-4">
+            <form onSubmit={form.handleSubmit((v) => createMutation.mutate(v))} className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
               <FormField control={form.control} name="name" render={({ field }) => (
                 <FormItem>
                   <FormLabel>Name</FormLabel>
@@ -252,22 +258,39 @@ export default function ProjectListPage() {
                 </FormItem>
               )} />
               <div className="grid grid-cols-2 gap-3">
+                <FormField control={form.control} name="budget" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Budget</FormLabel>
+                    <FormControl><Input type="number" min="0" placeholder="0" {...field} /></FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+                <FormField control={form.control} name="currency" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Currency</FormLabel>
+                    <FormControl><Input placeholder="USD" {...field} /></FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
                 <FormField control={form.control} name="startDate" render={({ field }) => (
                   <FormItem>
                     <FormLabel>Start Date</FormLabel>
-                    <FormControl><Input type="date" {...field} /></FormControl>
+                    <FormControl><DateField value={field.value} onChange={field.onChange} /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
                 <FormField control={form.control} name="endDate" render={({ field }) => (
                   <FormItem>
                     <FormLabel>End Date</FormLabel>
-                    <FormControl><Input type="date" {...field} /></FormControl>
+                    <FormControl><DateField value={field.value} onChange={field.onChange} min={form.watch('startDate') || undefined} /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
               </div>
-              <DialogFooter>
+              </div>
+              <DialogFooter className="pt-3">
                 <Button type="submit" disabled={createMutation.isPending}>
                   {createMutation.isPending ? 'Creating...' : 'Create'}
                 </Button>

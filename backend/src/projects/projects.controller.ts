@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Put, Delete, Body, Param, Query, UseGuards, Request,
+  Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards, Request,
 } from '@nestjs/common';
 import { ProjectsService } from './projects.service';
 import {
@@ -9,7 +9,7 @@ import {
   CreateTaskCommentDto, AddWatcherDto, AddDependencyDto,
   CreateSprintDto, UpdateSprintDto,
   CreateResourceDto, UpdateResourceDto, CreateTimesheetDto, UpdateTimesheetDto,
-  LinkTasksDto,
+  DecideChangeRequestDto,
 } from './dto/project.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
@@ -52,9 +52,9 @@ export class ProjectsController {
     return this.projects.changeRequests(id, req.user.clientId);
   }
 
-  @Put('change-requests/:crId/tasks')
-  linkChangeRequestTasks(@Param('crId') crId: string, @Body() dto: LinkTasksDto, @Request() req: AuthedRequest) {
-    return this.projects.linkChangeRequestTasks(crId, dto.taskIds, req.user.clientId);
+  @Patch('change-requests/:crId/decision')
+  decideChangeRequest(@Param('crId') crId: string, @Body() dto: DecideChangeRequestDto, @Request() req: AuthedRequest) {
+    return this.projects.decideChangeRequest(crId, dto.status, req.user.clientId, req.user);
   }
 
   @Get(':id')

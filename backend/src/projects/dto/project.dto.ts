@@ -18,6 +18,8 @@ export class CreateProjectDto {
   @IsOptional() @IsIn(PRIORITY) priority?: string;
   @IsOptional() @IsString() managerUserId?: string;
   @IsOptional() @IsString() customerCompanyId?: string;
+  @IsOptional() @IsNumber() budget?: number;
+  @IsOptional() @IsString() currency?: string;
   @IsOptional() @IsDateString() startDate?: string;
   @IsOptional() @IsDateString() endDate?: string;
   @IsOptional() @IsObject() features?: Record<string, any>;
@@ -48,9 +50,9 @@ export class UpdateProjectDto {
   @IsOptional() @IsString() successCriteria?: string;
 }
 
-// Body for linking WBS tasks to a change request.
-export class LinkTasksDto {
-  @IsArray() @IsString({ each: true }) taskIds!: string[];
+// Body for approving / rejecting / submitting a change request.
+export class DecideChangeRequestDto {
+  @IsIn(['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED']) status!: string;
 }
 
 // Shared WBS task fields (create + update).
@@ -152,7 +154,7 @@ export class CreateResourceDto {
 export class UpdateResourceDto extends CreateResourceDto {}
 
 // ---- Timesheets ----
-const TIMESHEET_STATUS = ['SUBMITTED', 'APPROVED', 'REJECTED'];
+const TIMESHEET_STATUS = ['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED'];
 export class CreateTimesheetDto {
   @IsDateString() date!: string;
   @IsNumber() @Min(0) hours!: number;

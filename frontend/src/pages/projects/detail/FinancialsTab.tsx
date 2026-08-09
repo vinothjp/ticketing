@@ -5,6 +5,7 @@ import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip';
 import RegisterSection, { type FieldCfg, type ColCfg } from './RegisterSection';
 import { type ProjectDetail } from '../projectMeta';
 import { attachmentTypesFor } from '../../../lib/uploads';
@@ -31,27 +32,38 @@ const expenseCols: ColCfg[] = [
   { key: 'category', label: 'Category' }, { key: 'description', label: 'Description' },
   { key: 'amount', label: 'Amount', kind: 'money', align: 'right' }, { key: 'date', label: 'Date', kind: 'date' },
 ];
+// Invoice status is read-only and derived: Paid once the full amount is paid, else Pending.
+const invoiceStatus = (row: Record<string, any>) => (Number(row.amount) > 0 && Number(row.amountPaid) >= Number(row.amount) ? 'Paid' : 'Pending');
 const invoiceFields: FieldCfg[] = [
   { key: 'invoiceNumber', label: 'Invoice #', type: 'text' },
   { key: 'invoiceDate', label: 'Date', type: 'date' },
-  { key: 'amount', label: 'Amount', type: 'number' },
-  { key: 'amountPaid', label: 'Amount paid', type: 'number' },
+  { key: 'amount', label: 'Invoice amount', type: 'number' },
+  { key: 'amountPaid', label: 'Amount to be paid', type: 'number' },
   { key: 'type', label: 'Type', type: 'select', options: ['Fixed Price', 'Time & Material', 'AMC', 'Internal'] },
-  { key: 'status', label: 'Status', type: 'select', options: ['DRAFT', 'SENT', 'PAID'] },
 ];
 const invoiceCols: ColCfg[] = [
-  { key: 'invoiceNumber', label: 'Invoice #' }, { key: 'type', label: 'Type' },
+  { key: 'invoiceNumber', label: 'Invoice #' }, { key: 'invoiceDate', label: 'Date', kind: 'date' }, { key: 'type', label: 'Type' },
   { key: 'amount', label: 'Amount', kind: 'money', align: 'right' }, { key: 'amountPaid', label: 'Paid', kind: 'money', align: 'right' },
-  { key: 'invoiceDate', label: 'Date', kind: 'date' }, { key: 'status', label: 'Status', kind: 'badge' },
+  { key: 'outstanding', label: 'Outstanding', kind: 'money', align: 'right', compute: (row) => (Number(row.amount) || 0) - (Number(row.amountPaid) || 0) },
+  { key: 'status', label: 'Status', kind: 'badge', compute: invoiceStatus },
 ];
 
-function Kpi({ label, value, tone }: { label: string; value: string; tone?: 'good' | 'bad' | 'muted' }) {
+function Kpi({ label, value, tone, hint }: { label: string; value: string; tone?: 'good' | 'bad' | 'muted'; hint?: string }) {
   const color = tone === 'good' ? 'text-success' : tone === 'bad' ? 'text-destructive' : 'text-foreground';
   return (
     <Card>
       <CardContent className="py-4">
         <div className={`text-xl font-bold ${color}`}>{value}</div>
-        <div className="text-xs text-muted-foreground">{label}</div>
+        {hint ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="w-fit cursor-help text-xs text-muted-foreground underline decoration-dotted decoration-muted-foreground/40 underline-offset-2">{label}</span>
+            </TooltipTrigger>
+            <TooltipContent>{hint}</TooltipContent>
+          </Tooltip>
+        ) : (
+          <div className="text-xs text-muted-foreground">{label}</div>
+        )}
       </CardContent>
     </Card>
   );
@@ -68,18 +80,35 @@ export default function FinancialsTab({ project }: { project: ProjectDetail }) {
     <div className="space-y-6">
       {f && (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Kpi label="Revenue" value={money(f.revenue)} />
-            <Kpi label="Total cost" value={money(f.totalCost)} />
-            <Kpi label="Gross profit" value={money(f.grossProfit)} tone={f.grossProfit >= 0 ? 'good' : 'bad'} />
-            <Kpi label="Gross margin" value={`${f.grossMargin}%`} tone={f.grossMargin >= 0 ? 'good' : 'bad'} />
-            <Kpi label="Original budget" value={money(f.budgetBaseline)} tone="muted" />
-            <Kpi label="Approved changes" value={(f.approvedChanges > 0 ? '+' : '') + money(f.approvedChanges)} tone={f.approvedChanges > 0 ? 'good' : 'muted'} />
-            <Kpi label="Revised budget" value={money(f.revisedBudget)} />
-            <Kpi label="Budget remaining" value={money(f.budgetRemaining)} tone={f.budgetRemaining >= 0 ? 'good' : 'bad'} />
-            <Kpi label="Collected" value={money(f.collected)} />
-            <Kpi label="Outstanding" value={money(f.outstanding)} tone={f.outstanding > 0 ? 'bad' : 'muted'} />
+          <TooltipProvider>
+          <div className="space-y-4">
+            <div>
+              <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Billing</div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <Kpi label="Revenue" value={money(f.revenue)} hint="Σ of every invoice's Amount" />
+                <Kpi label="Collected" value={money(f.collected)} tone="good" hint="Σ of every invoice's Paid" />
+                <Kpi label="Outstanding" value={money(f.outstanding)} tone={f.outstanding > 0 ? 'bad' : 'muted'} hint="Revenue − Collected" />
+              </div>
+            </div>
+            <div>
+              <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Profitability</div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <Kpi label="Total cost" value={money(f.totalCost)} hint="Resource cost + Expenses" />
+                <Kpi label="Gross profit" value={money(f.grossProfit)} tone={f.grossProfit >= 0 ? 'good' : 'bad'} hint="Revenue − Total cost" />
+                <Kpi label="Gross margin" value={`${f.grossMargin}%`} tone={f.grossMargin >= 0 ? 'good' : 'bad'} hint="Gross profit ÷ Revenue" />
+              </div>
+            </div>
+            <div>
+              <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Value</div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <Kpi label="Original value" value={money(f.budgetBaseline)} tone="muted" hint="Project's set budget" />
+                <Kpi label="Approved changes" value={(f.approvedChanges > 0 ? '+' : '') + money(f.approvedChanges)} tone={f.approvedChanges > 0 ? 'good' : 'muted'} hint="Σ of approved change requests" />
+                <Kpi label="Project value" value={money(f.revisedBudget)} hint="Original value + Approved changes" />
+                <Kpi label="Remaining value" value={money(f.budgetRemaining)} tone={f.budgetRemaining >= 0 ? 'good' : 'bad'} hint="Project value − Total cost" />
+              </div>
+            </div>
           </div>
+          </TooltipProvider>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <Card>
@@ -140,8 +169,30 @@ export default function FinancialsTab({ project }: { project: ProjectDetail }) {
         </div>
         {view === 'expenses'
           ? <RegisterSection projectId={project.id} type="expenses" singular="Expense" fields={expenseFields} columns={expenseCols} attachEntityType="expense" acceptTypes={attachmentTypesFor(project.features, 'expense')} exportable />
-          : <RegisterSection projectId={project.id} type="invoices" singular="Invoice" fields={invoiceFields} columns={invoiceCols} attachEntityType="invoice" acceptTypes={attachmentTypesFor(project.features, 'invoice')} exportable
-              budgetGuard={f ? { amountField: 'amount', total: f.revisedBudget, currency: project.currency ?? undefined } : undefined} />}
+          : <div className="space-y-3">
+            {f && (
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5 rounded-md border bg-muted/30 px-4 py-2.5 text-sm">
+                <span className="flex items-baseline gap-1.5"><span className="text-muted-foreground">Project value</span><span className="font-semibold tabular-nums">{money(f.revisedBudget)}</span></span>
+                <span className="text-border">|</span>
+                <span className="flex items-baseline gap-1.5"><span className="text-muted-foreground">Total billed</span><span className="font-semibold tabular-nums">{money(f.revenue)}</span></span>
+                <span className="text-border">|</span>
+                <span className="flex items-baseline gap-1.5"><span className="text-muted-foreground">Paid</span><span className="font-semibold tabular-nums text-success">{money(f.collected)}</span></span>
+                <span className="text-border">|</span>
+                <span className="flex items-baseline gap-1.5"><span className="text-muted-foreground">Unbilled</span><span className={`font-semibold tabular-nums ${f.revisedBudget - f.revenue < 0 ? 'text-destructive' : ''}`}>{money(f.revisedBudget - f.revenue)}</span></span>
+              </div>
+            )}
+            <RegisterSection projectId={project.id} type="invoices" singular="Invoice" fields={invoiceFields} columns={invoiceCols} attachEntityType="invoice" acceptTypes={attachmentTypesFor(project.features, 'invoice')} exportable
+              summaryRows={{
+                currency: project.currency ?? undefined,
+                rows: [
+                  { label: 'Invoice amount', value: (fm) => Number(fm.amount) || 0 },
+                  { label: 'Amount to be paid', value: (fm) => Number(fm.amountPaid) || 0 },
+                  { label: 'Yet to invoice', value: (fm) => (Number(fm.amount) || 0) - (Number(fm.amountPaid) || 0), emphasis: true },
+                  { label: 'Status', badge: (fm) => invoiceStatus(fm) },
+                ],
+              }}
+              validate={(fm) => ((Number(fm.amountPaid) || 0) > (Number(fm.amount) || 0) ? "Amount to be paid can't exceed the invoice amount" : null)} />
+          </div>}
       </div>
     </div>
   );

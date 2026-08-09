@@ -53,9 +53,12 @@ model Client {
   kbArticles   KbArticle[]
   projects     Project[]
   resourceCategories ResourceCategory[]
+  changeRequests ChangeRequest[]
+  changeRequestOptions ChangeRequestOption[]
   ticketSequence Int @default(0)
   kbSequence   Int @default(0)
   projectSequence Int @default(0)
+  crSequence   Int @default(0)
 }
 
 // Knowledge base article. Staff author; customers see published + customer-visible ones.
@@ -911,4 +914,152 @@ model ProjectTaskDependency {
 
   @@unique([predecessorId, successorId])
   @@index([successorId])
+}
+
+// ============================================================================
+// Change Request (CR) module — standalone SAP-style change-request tracking.
+// Self-contained: no relations into Project / CustomerCompany / User / Ticket.
+// Categorical fields store the selected ChangeRequestOption *value* (plain
+// String, no FK); the CR's own option store drives every dropdown.
+// ============================================================================
+
+// Self-contained option store for the CR module's dropdowns (customer, project,
+// module, type, priority, category, status, complexity, dev_status, test_status,
+// doc_title, yes_no, approval, person). Independent of the shared PicklistOption.
+model ChangeRequestOption {
+  id        String   @id @default(uuid())
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  listKey   String
+  value     String
+  label     String
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?
+  updatedBy String?
+
+  @@unique([clientId, listKey, value])
+  @@index([clientId, listKey])
+}
+
+model ChangeRequest {
+  id                   String   @id @default(uuid())
+  clientId             String
+  client               Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  crNumber             String                                    // CR-000001
+
+  // --- General / header (dropdown values from the CR option store) ---
+  customer             String?                                   // listKey: customer
+  projectName          String?                                   // listKey: project
+  moduleName           String?                                   // listKey: module
+  crType               String?                                   // listKey: type
+  priority             String?                                   // listKey: priority
+  crCategory           String?                                   // listKey: category
+  status               String   @default("New")                 // listKey: status
+  requestedBy          String?                                   // listKey: person
+  businessOwner        String?                                   // listKey: person
+  functionalConsultant String?                                   // listKey: person
+  technicalConsultant  String?                                   // listKey: person
+  projectManager       String?                                   // listKey: person
+
+  // --- General / header (typed) ---
+  title                String
+  description          String?
+  featureName          String?                                   // Feature Name (Menu) — free entry
+
+  // --- General / header (dates) ---
+  crDate               DateTime?
+  crStartDate          DateTime?
+  crEndDate            DateTime?
+  targetReleaseDate    DateTime?                                 // >= crEndDate
+  expectedGoLiveDate   DateTime?                                 // >= targetReleaseDate
+
+  // --- Business Requirement (Phase 2, typed) ---
+  requirementDetails   String?
+  objective            String?
+  reasonForCr          String?
+  benefitToCustomer    String?
+
+  // --- Blue Print (Phase 3) ---
+  blueprintName          String?                                 // typed, e.g. "BBP Version1"
+  blueprintVersionNumber String?                                 // typed
+  blueprintPreparedBy    String?                                 // listKey: person
+  blueprintReviewedBy    String?                                 // listKey: person
+  blueprintApprovedBy    String?                                 // listKey: person
+  blueprintApprovalDate  DateTime?
+  blueprintRemarks       String?                                 // typed
+
+  // --- Impact Analysis (Phase 5) ---
+  affectedModule       String?                                   // listKey: module
+  affectedTables       String?                                   // typed
+  impactReports        String?                                   // typed
+  impactInterfaces     String?                                   // typed
+  impactForms          String?                                   // typed
+  impactWorkflow       String?                                   // typed
+  masterData           String?                                   // typed
+  authorizations       String?                                   // typed
+  performance          String?                                   // typed
+  risk                 String?                                   // typed
+  estimatedHours       Decimal?                                  // number
+  complexity           String?                                   // listKey: complexity
+
+  // --- Development Details (Phase 6) ---
+  developer            String?                                   // listKey: person
+  developmentStatus    String?                                   // listKey: dev_status
+  developmentStartDate DateTime?
+  completionDate       DateTime?                                 // >= developmentStartDate
+  transportNumber      String?                                   // typed
+  gitRepository        String?                                   // typed
+  buildNumber          String?                                   // typed
+
+  // --- Testing (Phase 7) ---
+  testCase             String?                                   // typed
+  testingPerson        String?                                   // listKey: person
+  testingStatus        String?                                   // listKey: test_status
+  uatPerformedBy       String?                                   // listKey: person
+  defectCount          Int?
+  retest               String?                                   // listKey: yes_no
+  testApproval         String?                                   // listKey: approval
+
+  // --- Deployment (Phase 8) ---
+  deploymentPlan       String?                                   // typed
+  goLiveChecklist      String?                                   // typed
+  rollbackPlan         String?                                   // typed
+  transportList        String?                                   // typed
+  deploymentDate       DateTime?
+  supportWindow        String?                                   // typed
+
+  // Audit
+  createdBy            String?
+  createdByName        String?
+  updatedBy            String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  attachments          ChangeRequestAttachment[]
+
+  @@unique([clientId, crNumber])
+  @@index([clientId, status])
+}
+
+// Self-contained attachments for a Change Request (upload OR pasted link).
+// Slots are distinguished by entityType: blueprint | supportive | uat.
+// `title` labels a supportive document; files live in /uploads/change-requests.
+model ChangeRequestAttachment {
+  id              String        @id @default(uuid())
+  changeRequestId String
+  changeRequest   ChangeRequest @relation(fields: [changeRequestId], references: [id], onDelete: Cascade)
+  entityType      String                                         // blueprint | supportive | uat
+  title           String?
+  fileName        String?
+  filePath        String?                                        // /uploads/change-requests/…
+  mimeType        String?
+  size            Int?
+  url             String?                                        // external link (when not an uploaded file)
+  uploadedBy      String?
+  uploadedAt      DateTime      @default(now())
+
+  @@index([changeRequestId, entityType])
 }

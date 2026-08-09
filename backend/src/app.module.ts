@@ -25,6 +25,7 @@ import { ResourcesModule } from './resources/resources.module';
 import { TimesheetModule } from './timesheet/timesheet.module';
 import { RegistersModule } from './project-registers/registers.module';
 import { ProjectAttachmentsModule } from './project-attachments/project-attachments.module';
+import { ChangeRequestsModule } from './change-requests/change-requests.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { ProjectAttachmentsModule } from './project-attachments/project-attachme
     TimesheetModule,
     RegistersModule,
     ProjectAttachmentsModule,
+    ChangeRequestsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

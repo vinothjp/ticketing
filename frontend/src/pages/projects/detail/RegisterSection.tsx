@@ -23,21 +23,22 @@ type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'outli
 export function regBadge(v?: string | null): BadgeVariant {
   switch (v) {
     case 'HIGH': case 'URGENT': case 'REJECTED': case 'MISSED': return 'destructive';
-    case 'APPROVED': case 'MET': case 'RESOLVED': case 'CLOSED': case 'MITIGATED': return 'success';
+    case 'APPROVED': case 'MET': case 'RESOLVED': case 'CLOSED': case 'MITIGATED': case 'Paid': return 'success';
     case 'IN_PROGRESS': return 'default';
-    case 'MEDIUM': case 'PENDING': case 'OPEN': case 'SUBMITTED': return 'secondary';
+    case 'MEDIUM': case 'PENDING': case 'OPEN': case 'SUBMITTED': case 'Pending': return 'secondary';
     default: return 'outline';
   }
 }
 
 export type FieldCfg = { key: string; label: string; type: 'text' | 'textarea' | 'number' | 'date' | 'select'; options?: string[]; };
-export type ColCfg = { key: string; label: string; kind?: 'badge' | 'date' | 'money' | 'text' | 'link'; align?: 'right' };
+// `compute` derives the cell value from the whole row (e.g. an invoice's Pending/Paid status).
+export type ColCfg = { key: string; label: string; kind?: 'badge' | 'date' | 'money' | 'text' | 'link'; align?: 'right'; compute?: (row: Record<string, any>) => any };
 
 const toDateInput = (v?: string | null) => (v ? new Date(v).toISOString().slice(0, 10) : '');
 const money = (n: unknown) => (n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 }));
 
 export default function RegisterSection({
-  projectId, type, singular, fields, columns, attachEntityType, acceptTypes, exportable, budgetGuard,
+  projectId, type, singular, fields, columns, attachEntityType, acceptTypes, exportable, summaryRows, validate,
 }: {
   projectId: string;
   type: string;
@@ -47,9 +48,10 @@ export default function RegisterSection({
   attachEntityType?: string;   // when set, each row gets an attachments (upload/link) dialog
   acceptTypes?: string[];      // allowed file extensions for this submodule (from Settings)
   exportable?: boolean;        // when set, show an "Export CSV" button
-  // When set, the dialog shows a budget panel and blocks Save if the amount field exceeds
-  // what's left of the budget (total − already-registered amounts, excluding the edited row).
-  budgetGuard?: { amountField: string; total: number; currency?: string };
+  // Read-only summary panel computed from the live form (e.g. invoice amount / paid / balance / status).
+  summaryRows?: { rows: { label: string; value?: (form: Record<string, any>) => number; badge?: (form: Record<string, any>) => string; emphasis?: boolean }[]; currency?: string };
+  // Returns an error message to show + disable Save when the form is invalid.
+  validate?: (form: Record<string, any>) => string | null;
 }) {
   const qc = useQueryClient();
   const { confirm, ConfirmDialog } = useConfirm();
@@ -69,15 +71,10 @@ export default function RegisterSection({
     queryFn: async () => (await api.get(`/api/projects/${projectId}/registers/${type}`)).data,
   });
 
-  // Budget guard (invoices): how much of the budget is left to register, and whether this amount fits.
-  const gCur = budgetGuard?.currency ? `${budgetGuard.currency} ` : '';
-  const gMoney = (n: number) => `${gCur}${Math.round(n).toLocaleString()}`;
-  const gUsed = budgetGuard
-    ? items.reduce((s, r) => s + Number(r[budgetGuard.amountField] ?? 0), 0) - (editing ? Number(editing[budgetGuard.amountField] ?? 0) : 0)
-    : 0;
-  const gRemaining = budgetGuard ? budgetGuard.total - gUsed : 0;
-  const gAmount = budgetGuard ? Number(form[budgetGuard.amountField]) || 0 : 0;
-  const gOver = !!budgetGuard && gAmount > gRemaining;
+  // Optional read-only summary panel + validation (e.g. invoice amount / paid / balance).
+  const sCur = summaryRows?.currency ? `${summaryRows.currency} ` : '';
+  const sMoney = (n: number) => `${sCur}${Math.round(n).toLocaleString()}`;
+  const validationError = validate ? validate(form) : null;
 
   useEffect(() => {
     if (!open) return;
@@ -116,7 +113,7 @@ export default function RegisterSection({
   });
 
   const cell = (row: Record<string, any>, c: ColCfg) => {
-    const v = row[c.key];
+    const v = c.compute ? c.compute(row) : row[c.key];
     if (c.kind === 'badge') return v ? <Badge variant={regBadge(v)}>{String(v).replace('_', ' ')}</Badge> : '—';
     if (c.kind === 'date') return v ? new Date(v).toLocaleDateString() : '—';
     if (c.kind === 'money') return money(v);
@@ -126,7 +123,7 @@ export default function RegisterSection({
 
   // Raw (non-JSX) value for CSV export.
   const csvValue = (row: Record<string, any>, c: ColCfg) => {
-    const v = row[c.key];
+    const v = c.compute ? c.compute(row) : row[c.key];
     if (v == null) return '';
     if (c.kind === 'date') return new Date(v).toLocaleDateString();
     return v;
@@ -167,15 +164,17 @@ export default function RegisterSection({
               </div>
             ))}
 
-            {budgetGuard && (
+            {summaryRows && (
               <div className="rounded-md border bg-muted/30 p-3 text-sm">
-                <div className="flex justify-between"><span className="text-muted-foreground">Budget</span><span className="tabular-nums">{gMoney(budgetGuard.total)}</span></div>
-                <div className="mt-1 flex justify-between"><span className="text-muted-foreground">Remaining budget</span><span className="tabular-nums">{gMoney(gRemaining)}</span></div>
-                <div className="mt-1 flex justify-between border-t pt-1"><span className="text-muted-foreground">Amount to be paid</span><span className="tabular-nums">{gMoney(gAmount)}</span></div>
-                <div className={`mt-1 flex justify-between font-medium ${gOver ? 'text-destructive' : 'text-success'}`}>
-                  <span>Remaining after</span><span className="tabular-nums">{gMoney(gRemaining - gAmount)}</span>
-                </div>
-                {gOver && <p className="mt-1 text-xs font-medium text-destructive">Exceeds budget — not allowed.</p>}
+                {summaryRows.rows.map((r, i) => (
+                  <div key={r.label} className={`flex items-center justify-between ${i > 0 ? 'mt-1' : ''} ${r.emphasis ? 'border-t pt-1 font-medium' : ''}`}>
+                    <span className={r.emphasis ? '' : 'text-muted-foreground'}>{r.label}</span>
+                    {r.badge
+                      ? <Badge variant={regBadge(r.badge(form))}>{r.badge(form)}</Badge>
+                      : <span className="tabular-nums">{sMoney(r.value ? r.value(form) : 0)}</span>}
+                  </div>
+                ))}
+                {validationError && <p className="mt-1 text-xs font-medium text-destructive">{validationError}</p>}
               </div>
             )}
 
@@ -232,7 +231,7 @@ export default function RegisterSection({
               </div>
             )}
           </div>
-          <DialogFooter><Button disabled={save.isPending || gOver} onClick={() => save.mutate()}>{save.isPending ? 'Saving...' : gOver ? 'Over budget' : 'Save'}</Button></DialogFooter>
+          <DialogFooter><Button disabled={save.isPending || !!validationError} onClick={() => save.mutate()}>{save.isPending ? 'Saving...' : 'Save'}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

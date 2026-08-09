@@ -24,6 +24,7 @@ import {
   Inbox,
   Wallet,
   Clock3,
+  GitPullRequestArrow,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api from '../lib/api';
@@ -62,6 +63,7 @@ const tenantNavGroups: NavGroup[] = [
       { to: '/tickets', label: 'Tickets', icon: Ticket },
       { to: '/knowledge-base', label: 'Knowledge Base', icon: BookOpen },
       { to: '/projects', label: 'Projects', icon: FolderKanban },
+      { to: '/change-requests', label: 'Change Requests', icon: GitPullRequestArrow },
       { to: '/timesheet', label: 'Timesheet', icon: Clock3 },
     ],
   },
@@ -74,6 +76,7 @@ const tenantNavGroups: NavGroup[] = [
       { to: '/admin/customer-companies', label: 'Customer Companies', icon: Building2 },
       { to: '/admin/templates', label: 'Templates', icon: LayoutTemplate },
       { to: '/admin/picklists', label: 'Picklist Options', icon: ListTree },
+      { to: '/change-requests/options', label: 'CR Option Lists', icon: GitPullRequestArrow },
       { to: '/admin/sla', label: 'SLA Policies', icon: Timer },
       { to: '/admin/channels', label: 'Inbound Email', icon: Inbox },
       { to: '/admin/resource-costs', label: 'Resource Costs', icon: Wallet },

@@ -13,6 +13,7 @@ async function bootstrap() {
   mkdirSync(join(process.cwd(), 'uploads/messages'), { recursive: true });
   mkdirSync(join(process.cwd(), 'uploads/kb'), { recursive: true });
   mkdirSync(join(process.cwd(), 'uploads/projects'), { recursive: true });
+  mkdirSync(join(process.cwd(), 'uploads/change-requests'), { recursive: true });
   app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads' });
 
   app.enableCors({

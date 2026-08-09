@@ -9,9 +9,13 @@ import type { QueryClient } from '@tanstack/react-query';
  * `['projects','analytics']`, financials `['projects', id,'financials']`, and
  * registers `['projects', id,'registers', …]`. Other users pick changes up on
  * the next refetch (refetch-on-window-focus).
+ *
+ * `refetchType: 'all'` refetches matching queries even when their tab is not
+ * mounted, so e.g. approving a Change Request on the Register tab immediately
+ * refreshes the Financials dashboard's cache — no stale numbers until a reload.
  */
 export const invalidateProject = (qc: QueryClient) =>
-  qc.invalidateQueries({ queryKey: ['projects'] });
+  qc.invalidateQueries({ queryKey: ['projects'], refetchType: 'all' });
 
 export const PROJECT_STATUSES = ['OPEN', 'IN_PROGRESS', 'ON_HOLD', 'COMPLETED', 'CANCELLED'] as const;
 export const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as const;

@@ -58,7 +58,7 @@ export class RegistersService {
     if (!data.title && !data.name && !data.gate && !data.category && !data.invoiceNumber) {
       throw new BadRequestException('A title/name is required');
     }
-    if (type === 'invoices' && data.amount != null) await this.assertInvoiceWithinBudget(projectId, Number(data.amount));
+    if (type === 'invoices') this.assertInvoicePaidWithinAmount(data.amount, data.amountPaid);
     return this.delegate(c.model).create({
       data: { projectId, ...data, ...(type === 'documents' ? { uploadedBy: actor.id } : { createdBy: actor.id }) },
     });
@@ -68,28 +68,17 @@ export class RegistersService {
     const c = this.cfg(type);
     await this.ownedItem(c.model, itemId, clientId);
     const data = this.buildData(type, body);
-    if (type === 'invoices' && data.amount != null) {
-      const inv = await this.prisma.projectInvoice.findUnique({ where: { id: itemId }, select: { projectId: true } });
-      if (inv) await this.assertInvoiceWithinBudget(inv.projectId, Number(data.amount), itemId);
+    if (type === 'invoices' && (data.amount != null || data.amountPaid != null)) {
+      const inv = await this.prisma.projectInvoice.findUnique({ where: { id: itemId }, select: { amount: true, amountPaid: true } });
+      this.assertInvoicePaidWithinAmount(data.amount ?? inv?.amount, data.amountPaid ?? inv?.amountPaid);
     }
     return this.delegate(c.model).update({ where: { id: itemId }, data });
   }
 
-  // An invoice can't bill beyond the project budget: total invoiced must stay within
-  // Revised budget (baseline + approved change requests). Excludes the invoice being edited.
-  private async assertInvoiceWithinBudget(projectId: string, amount: number, excludeId?: string) {
-    const [project, crs, invoices] = await Promise.all([
-      this.prisma.project.findUnique({ where: { id: projectId }, select: { budget: true, currency: true } }),
-      this.prisma.projectChangeRequest.findMany({ where: { projectId, status: 'APPROVED' }, select: { budgetImpact: true } }),
-      this.prisma.projectInvoice.findMany({ where: { projectId, ...(excludeId ? { id: { not: excludeId } } : {}) }, select: { amount: true } }),
-    ]);
-    const num = (d: unknown) => Number(d ?? 0);
-    const revised = num(project?.budget) + crs.reduce((s, c) => s + num(c.budgetImpact), 0);
-    const invoiced = invoices.reduce((s, i) => s + num(i.amount), 0);
-    const remaining = revised - invoiced;
-    if (amount > remaining) {
-      const cur = project?.currency ? `${project.currency} ` : '';
-      throw new BadRequestException(`Invoice amount exceeds the remaining budget (${cur}${Math.round(remaining).toLocaleString()} left to invoice)`);
+  // Invoice-internal rule: you can't pay more than the invoice total.
+  private assertInvoicePaidWithinAmount(amount: unknown, amountPaid: unknown) {
+    if (Number(amountPaid ?? 0) > Number(amount ?? 0)) {
+      throw new BadRequestException("Amount to be paid can't exceed the invoice amount");
     }
   }
 

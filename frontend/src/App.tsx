@@ -34,6 +34,9 @@ import ProjectDetailPage from './pages/projects/ProjectDetailPage';
 import ProjectAnalyticsPage from './pages/projects/ProjectAnalyticsPage';
 import ResourceCostsPage from './pages/ResourceCostsPage';
 import TimesheetPage from './pages/timesheet/TimesheetPage';
+import ChangeRequestListPage from './pages/change-requests/ChangeRequestListPage';
+import ChangeRequestDetailPage from './pages/change-requests/ChangeRequestDetailPage';
+import ChangeRequestOptionsPage from './pages/change-requests/ChangeRequestOptionsPage';
 
 const queryClient = new QueryClient();
 const isSuperAdmin = (roles: string[]) => roles.includes('SuperAdmin');
@@ -91,6 +94,9 @@ export default function App() {
                         <Route path="/projects/analytics" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectAnalyticsPage /></RoleGate>} />
                         <Route path="/timesheet" element={<RoleGate allow={isStaff} redirectTo="/tickets"><TimesheetPage /></RoleGate>} />
                         <Route path="/projects/:id" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectDetailPage /></RoleGate>} />
+                        <Route path="/change-requests" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ChangeRequestListPage /></RoleGate>} />
+                        <Route path="/change-requests/options" element={<RoleGate allow={isTenantAdmin} redirectTo="/change-requests"><ChangeRequestOptionsPage /></RoleGate>} />
+                        <Route path="/change-requests/:id" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ChangeRequestDetailPage /></RoleGate>} />
                         {/* Admin-only sections — non-admins are redirected to their tickets */}
                         <Route path="/users" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><UsersPage /></RoleGate>} />
                         <Route path="/admin/customer-companies" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><CustomerCompaniesPage /></RoleGate>} />

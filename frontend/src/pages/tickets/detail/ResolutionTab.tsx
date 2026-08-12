@@ -13,7 +13,7 @@ export interface ResolutionTicket {
   reopenedCount?: number | null;
 }
 
-export default function ResolutionTab({ ticket }: { ticket: ResolutionTicket }) {
+export default function ResolutionTab({ ticket, readOnly = false }: { ticket: ResolutionTicket; readOnly?: boolean }) {
   const qc = useQueryClient();
   const [resolution, setResolution] = useState(ticket.resolution ?? '');
 
@@ -39,6 +39,36 @@ export default function ResolutionTab({ ticket }: { ticket: ResolutionTicket }) 
   });
 
   const resolved = !!ticket.resolvedAt;
+
+  // Customers get a read-only view: they can see the resolution (and reopen if
+  // unsatisfied) but cannot author or edit it — that's a staff action.
+  if (readOnly) {
+    return (
+      <div className="max-w-2xl space-y-5">
+        {resolved ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-emerald-500/10 px-4 py-3">
+            <div className="flex items-center gap-2 text-sm text-emerald-700 dark:text-emerald-400">
+              <CheckCircle2 className="size-4" />
+              Resolved on {new Date(ticket.resolvedAt!).toLocaleString()}
+              {(ticket.reopenedCount ?? 0) > 0 && <span className="text-muted-foreground">· reopened {ticket.reopenedCount}×</span>}
+            </div>
+            <Button variant="outline" size="sm" onClick={() => reopen.mutate()} disabled={reopen.isPending}>Reopen</Button>
+          </div>
+        ) : (
+          <div className="rounded-lg bg-muted px-4 py-3 text-sm text-muted-foreground">
+            This ticket has not been resolved yet.
+          </div>
+        )}
+
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium">Resolution notes</label>
+          <div className="min-h-24 whitespace-pre-wrap rounded-md border bg-muted/40 px-3 py-2 text-sm text-foreground">
+            {resolution.trim() || <span className="text-muted-foreground">No resolution notes yet.</span>}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-2xl space-y-5">

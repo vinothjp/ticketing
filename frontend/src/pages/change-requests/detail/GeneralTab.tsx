@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { DateField } from '@/components/ui/date-field';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { OptionSelect } from '../OptionSelect';
 import { dateVal, type ChangeRequest } from '../changeRequestMeta';
 import { Field, Section, useCrSaver } from './section';
@@ -11,6 +14,7 @@ const fromCr = (cr: ChangeRequest) => ({
   title: cr.title ?? '',
   description: cr.description ?? '',
   featureName: cr.featureName ?? '',
+  customerCompanyId: cr.customerCompanyId ?? '',
   customer: cr.customer ?? '',
   projectName: cr.projectName ?? '',
   moduleName: cr.moduleName ?? '',
@@ -33,6 +37,10 @@ const fromCr = (cr: ChangeRequest) => ({
 export default function GeneralTab({ cr }: { cr: ChangeRequest }) {
   const [form, setForm] = useState(() => fromCr(cr));
   const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }));
+  const { data: companies = [] } = useQuery<{ id: string; name: string }[]>({
+    queryKey: ['customer-companies'],
+    queryFn: async () => (await api.get('/api/customer-companies')).data,
+  });
 
   // Re-sync when switching to a different CR record.
   useEffect(() => { setForm(fromCr(cr)); }, [cr.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -42,6 +50,7 @@ export default function GeneralTab({ cr }: { cr: ChangeRequest }) {
     title: form.title.trim(),
     description: form.description,
     featureName: form.featureName,
+    customerCompanyId: form.customerCompanyId || null,
     customer: form.customer,
     projectName: form.projectName,
     moduleName: form.moduleName,
@@ -70,7 +79,17 @@ export default function GeneralTab({ cr }: { cr: ChangeRequest }) {
         <Field label="Description" className="sm:col-span-2">
           <Textarea rows={3} value={form.description} onChange={(e) => set({ description: e.target.value })} />
         </Field>
-        <Field label="Customer"><OptionSelect listKey="customer" value={form.customer} onChange={(v) => set({ customer: v })} /></Field>
+        <Field label="Customer">
+          <Select
+            value={form.customerCompanyId || undefined}
+            onValueChange={(v) => set({ customerCompanyId: v, customer: companies.find((c) => c.id === v)?.name ?? '' })}
+          >
+            <SelectTrigger className="w-full"><SelectValue placeholder="Select a customer company" /></SelectTrigger>
+            <SelectContent>
+              {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </Field>
         <Field label="Project Name"><OptionSelect listKey="project" value={form.projectName} onChange={(v) => set({ projectName: v })} /></Field>
         <Field label="Module Name"><OptionSelect listKey="module" value={form.moduleName} onChange={(v) => set({ moduleName: v })} /></Field>
         <Field label="Feature Name (Menu)"><Input value={form.featureName} onChange={(e) => set({ featureName: e.target.value })} /></Field>

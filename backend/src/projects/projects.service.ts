@@ -326,10 +326,56 @@ export class ProjectsService {
           updatedBy: actor.id,
         },
       });
-      // Seed the 8 default stage-gate milestones (configurable afterwards).
-      await tx.projectMilestone.createMany({
-        data: DEFAULT_MILESTONES.map((name, i) => ({ projectId: project.id, name, sortOrder: i, createdBy: actor.id })),
-      });
+      // If a template was chosen, scaffold its WBS blueprint (milestones + tasks);
+      // otherwise seed the 8 default stage-gate milestones.
+      const template = dto.projectTemplateId
+        ? await tx.projectTemplate.findFirst({ where: { id: dto.projectTemplateId, clientId } })
+        : null;
+
+      if (template) {
+        const bp = (template.blueprint ?? {}) as {
+          milestones?: { name: string; tasks?: { title: string; wbsType?: string; durationDays?: number }[] }[];
+        };
+        // Roll task dates forward from the project start date using durations.
+        let cursor = project.startDate ? new Date(project.startDate) : null;
+        const milestones = bp.milestones ?? [];
+        for (let mi = 0; mi < milestones.length; mi++) {
+          const m = milestones[mi];
+          const milestone = await tx.projectMilestone.create({
+            data: { projectId: project.id, name: m.name, sortOrder: mi, createdBy: actor.id },
+          });
+          const tasks = m.tasks ?? [];
+          let milestoneEnd: Date | null = null;
+          for (let ti = 0; ti < tasks.length; ti++) {
+            const t = tasks[ti];
+            const dur = Math.max(1, t.durationDays ?? 1);
+            const start = cursor ? new Date(cursor) : null;
+            const due = cursor ? new Date(cursor.getTime() + dur * 86400000) : null;
+            await tx.projectTask.create({
+              data: {
+                projectId: project.id,
+                milestoneId: milestone.id,
+                title: t.title,
+                wbsType: t.wbsType ?? 'TASK',
+                durationDays: dur,
+                sortOrder: ti,
+                startDate: start,
+                dueDate: due,
+                createdBy: actor.id,
+              },
+            });
+            if (cursor && due) cursor = new Date(due);
+            milestoneEnd = due;
+          }
+          if (milestoneEnd) {
+            await tx.projectMilestone.update({ where: { id: milestone.id }, data: { targetDate: milestoneEnd } });
+          }
+        }
+      } else {
+        await tx.projectMilestone.createMany({
+          data: DEFAULT_MILESTONES.map((name, i) => ({ projectId: project.id, name, sortOrder: i, createdBy: actor.id })),
+        });
+      }
       return project;
     });
   }
@@ -1186,6 +1232,27 @@ export class ProjectsService {
     const project = await this.prisma.project.findFirst({ where: { id, clientId } });
     if (!project) throw new NotFoundException('Project not found');
     return project;
+  }
+
+  /**
+   * Users of the customer company linked to this project (its admin + employees).
+   * Used to pick customer-side attendees for a project meeting — only people who
+   * belong to the company associated with the project are eligible.
+   */
+  async customerContacts(projectId: string, clientId: string) {
+    const project = await this.getOwned(projectId, clientId);
+    if (!project.customerCompanyId) return [];
+    const users = await this.prisma.user.findMany({
+      where: { customerCompanyId: project.customerCompanyId, isActive: true },
+      include: { userRoles: { include: { role: true } } },
+      orderBy: { username: 'asc' },
+    });
+    return users.map((u) => ({
+      id: u.id,
+      username: u.username,
+      email: u.email,
+      role: u.userRoles.some((ur) => ur.role.name === 'CustomerAdmin') ? 'admin' : 'employee',
+    }));
   }
 
   private async getOwnedTask(taskId: string, clientId: string) {

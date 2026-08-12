@@ -6,6 +6,7 @@ import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto } from './dto/cust
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
 import { RolesGuard } from '../auth/roles.guard';
+import { StaffGuard } from '../auth/staff.guard';
 import { Roles } from '../auth/roles.decorator';
 
 type AuthedRequest = { user: { id: string; clientId: string } };
@@ -15,8 +16,11 @@ type AuthedRequest = { user: { id: string; clientId: string } };
 export class CustomerCompaniesController {
   constructor(private service: CustomerCompaniesService) {}
 
-  // Any authenticated staff member may list companies (needed for the ticket filter).
+  // Any authenticated staff member may list companies (needed for the ticket
+  // filter). StaffGuard blocks customers — a customer must not see the tenant's
+  // other client companies.
   @Get()
+  @UseGuards(StaffGuard)
   list(@Request() req: AuthedRequest) {
     return this.service.list(req.user.clientId);
   }
@@ -37,6 +41,12 @@ export class CustomerCompaniesController {
   @Roles('Admin')
   remove(@Param('id') id: string, @Request() req: AuthedRequest) {
     return this.service.remove(id, req.user.clientId);
+  }
+
+  @Get(':id/products')
+  @Roles('Admin')
+  getProducts(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.service.getProducts(id, req.user.clientId);
   }
 
   @Get(':id/contacts')

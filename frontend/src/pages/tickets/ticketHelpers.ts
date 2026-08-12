@@ -9,7 +9,10 @@ export interface TicketSummary {
   description?: string | null;
   priority?: string | null;
   ticketStatus: string;
+  approvalStatus?: string | null;
+  rejectionReason?: string | null;
   requestorName?: string | null;
+  requestorUserId?: string | null;
   department?: string | null;
   ticketCategory?: string | null;
   dueDate?: string | null;
@@ -18,6 +21,18 @@ export interface TicketSummary {
   template: { id: string; name: string; category?: string | null };
   technicians: TicketTechnicianRow[];
   customerCompany?: { id: string; name: string } | null;
+}
+
+/** Badge for the creation-approval gate. Returns null for NONE/APPROVED (no badge needed). */
+export function getApprovalMeta(status?: string | null): { label: string; className: string } | null {
+  const amber = 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30';
+  if (status === 'PENDING_CUSTOMER')
+    return { label: 'Awaiting manager', className: amber };
+  if (status === 'PENDING')
+    return { label: 'Approval Pending', className: amber };
+  if (status === 'REJECTED')
+    return { label: 'Rejected', className: 'bg-destructive/15 text-destructive border-destructive/30' };
+  return null;
 }
 
 const PRIORITY_META: Record<string, { label: string; code: string; barClass: string; textClass: string }> = {

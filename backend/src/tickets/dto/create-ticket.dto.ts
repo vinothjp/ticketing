@@ -2,6 +2,7 @@ import {
   IsArray,
   IsDateString,
   IsEmail,
+  IsIn,
   IsNotEmpty,
   IsObject,
   IsOptional,
@@ -22,6 +23,11 @@ export class CreateTicketDto {
   @IsOptional() @IsString() priority?: string;
   @IsOptional() @IsString() ticketCategory?: string;
   @IsOptional() @IsString() subCategory?: string;
+
+  // SAP routing (drives auto-assignment).
+  @IsOptional() @IsString() productId?: string;
+  @IsOptional() @IsString() moduleId?: string;
+  @IsOptional() @IsIn(['TECHNICAL', 'FUNCTIONAL']) consultantType?: 'TECHNICAL' | 'FUNCTIONAL';
 
   @IsOptional()
   @IsArray()

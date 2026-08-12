@@ -52,16 +52,15 @@ export class ApprovalsService {
       summary: `Approval requested from ${approver.username}`,
     });
 
-    // Best-effort email notification (no-op if SMTP not configured).
-    try {
-      await this.mailer.sendMail({
+    // Best-effort email notification — fire-and-forget so a slow SMTP send never
+    // blocks the response (which would freeze the "Request approval" dialog).
+    void this.mailer
+      .sendMail({
         to: approver.email,
         subject: `[${ticket.ticketNumber}] Approval requested: ${ticket.subject}`,
         html: `<p>You have an approval request on ticket <b>${ticket.ticketNumber}</b> — ${ticket.subject}.</p>${dto.comment ? `<p>${dto.comment}</p>` : ''}<p>Open the ticket to approve or reject.</p>`,
-      }, clientId);
-    } catch {
-      /* swallow — notification is best-effort */
-    }
+      }, clientId)
+      .catch(() => { /* notification is best-effort */ });
 
     return approval;
   }

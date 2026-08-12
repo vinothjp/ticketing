@@ -12,6 +12,9 @@ export class CreateChangeRequestDto {
   @IsOptional() @IsString() description?: string;
   @IsOptional() @IsString() featureName?: string;
 
+  // Customer company this CR belongs to — its admin approves the CR.
+  @IsOptional() @IsString() customerCompanyId?: string;
+
   // Dropdown values (from the CR option store)
   @IsOptional() @IsString() customer?: string;
   @IsOptional() @IsString() projectName?: string;
@@ -89,7 +92,12 @@ export class CreateChangeRequestDto {
   @IsOptional() @IsString() supportWindow?: string;
 }
 
+export class CrRejectDto {
+  @IsString() @IsNotEmpty() reason!: string;
+}
+
 export class UpdateChangeRequestDto {
+  @IsOptional() @IsString() customerCompanyId?: string;
   @IsOptional() @IsString() @IsNotEmpty() title?: string;
   @IsOptional() @IsString() description?: string;
   @IsOptional() @IsString() featureName?: string;

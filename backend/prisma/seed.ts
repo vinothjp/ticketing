@@ -169,7 +169,7 @@ async function main() {
   // --- Sample agent users (non-admin, Viewer role) — used as ticket technicians/task assignees ---
   const agentPasswordHash = await bcrypt.hash('Admin@123', 12);
   const agentIds: Record<string, string> = {};
-  for (const name of ['agent1', 'agent2', 'agent3', 'agent4', 'agent5']) {
+  for (const name of ['agent1', 'agent2', 'agent3', 'agent4', 'agent5', 'agent6', 'agent7', 'agent8', 'agent9', 'agent10', 'agent11', 'agent12', 'agent13', 'agent14', 'agent15', 'agent16']) {
     const agent = await prisma.user.upsert({
       where: { email: `${name}@acme.example` },
       update: {},
@@ -205,6 +205,7 @@ async function main() {
     { value: 'Approval Pending', label: 'Approval Pending' },
     { value: 'Resolved', label: 'Resolved' },
     { value: 'Closed', label: 'Closed' },
+    { value: 'Rejected', label: 'Rejected' },
   ];
   const departmentOptions = [
     { value: 'it', label: 'IT' },
@@ -388,7 +389,6 @@ async function main() {
         sys('department'),
         cf('Request category', 'SELECT', { group: 'ticket_info', requirement: 'MANDATORY', options: opts('Hardware', 'Software', 'Access') }),
         cf('Item needed', 'TEXT', { placeholder: 'e.g. Dell 27" monitor' }),
-        cf('Justification', 'TEXTAREA', { requirement: 'MANDATORY' }),
         cf('Needed by', 'DATE', { group: 'ticket_info' }),
         sys('priority'),
         sys('description'),
@@ -453,7 +453,6 @@ async function main() {
         cf('User', 'TEXT', { group: 'ticket_info', requirement: 'MANDATORY' }),
         cf('System / application', 'SELECT', { group: 'ticket_info', requirement: 'MANDATORY', options: opts('Email', 'VPN', 'ERP', 'CRM', 'Active Directory') }),
         cf('Access level', 'SELECT', { group: 'ticket_info', options: opts('Read', 'Write', 'Admin') }),
-        cf('Business justification', 'TEXTAREA', { requirement: 'MANDATORY' }),
         cf('Manager approval obtained', 'BOOLEAN'),
         sys('priority'),
       ],
@@ -533,15 +532,23 @@ async function main() {
   const customerRole = await prisma.role.upsert({
     where: { clientId_name: { clientId: client.id, name: 'Customer' } },
     update: {},
-    create: { name: 'Customer', description: 'External customer contact', clientId: client.id },
+    create: { name: 'Customer', description: 'External customer contact (employee)', clientId: client.id },
+  });
+  // A customer company's own admin — manages their employees (self-service) and
+  // sees all of that company's tickets. Employees ('Customer') see only their own.
+  const customerAdminRole = await prisma.role.upsert({
+    where: { clientId_name: { clientId: client.id, name: 'CustomerAdmin' } },
+    update: {},
+    create: { name: 'CustomerAdmin', description: 'Customer company administrator', clientId: client.id },
   });
   const companySpecs = [
     { name: 'Globex Ltd', code: 'GLX', contacts: [
-      { username: 'globex_amy', email: 'amy@globex.example' },
-      { username: 'globex_bob', email: 'bob@globex.example' },
+      { username: 'globex_amy', email: 'amy@globex.example', role: 'admin' as const },
+      { username: 'globex_bob', email: 'bob@globex.example', role: 'employee' as const },
     ] },
     { name: 'Initech Inc', code: 'INI', contacts: [
-      { username: 'initech_ivan', email: 'ivan@initech.example' },
+      { username: 'initech_ivan', email: 'ivan@initech.example', role: 'admin' as const },
+      { username: 'initech_emp', email: 'emp@initech.example', role: 'employee' as const },
     ] },
   ];
   const companyIds: Record<string, string> = {};
@@ -562,12 +569,82 @@ async function main() {
             passwordHash: agentPasswordHash, // Admin@123
             clientId: client.id,
             customerCompanyId: company.id,
-            userRoles: { create: [{ roleId: customerRole.id }] },
+            userRoles: { create: [{ roleId: ct.role === 'admin' ? customerAdminRole.id : customerRole.id }] },
           },
         });
       }
     }
   }
+
+  // --- Predefined project templates (WBS blueprints) ---
+  const projectTemplates = [
+    { name: 'Software Delivery', description: 'Discovery to Go-Live for a software build.', category: 'Software', blueprint: { milestones: [
+      { name: 'Discovery', tasks: [{ title: 'Requirements gathering', wbsType: 'TASK', durationDays: 5 }, { title: 'Stakeholder interviews', wbsType: 'TASK', durationDays: 3 }] },
+      { name: 'Design', tasks: [{ title: 'Solution architecture', wbsType: 'TASK', durationDays: 5 }, { title: 'UI/UX design', wbsType: 'TASK', durationDays: 7 }] },
+      { name: 'Development', tasks: [{ title: 'Backend build', wbsType: 'PHASE', durationDays: 15 }, { title: 'Frontend build', wbsType: 'PHASE', durationDays: 15 }] },
+      { name: 'Testing', tasks: [{ title: 'System testing', wbsType: 'TASK', durationDays: 7 }, { title: 'UAT', wbsType: 'TASK', durationDays: 5 }] },
+      { name: 'Go Live', tasks: [{ title: 'Deployment', wbsType: 'TASK', durationDays: 2 }, { title: 'Hypercare', wbsType: 'TASK', durationDays: 10 }] },
+    ] } },
+    { name: 'ERP Implementation', description: 'Standard ERP rollout phases.', category: 'Implementation', blueprint: { milestones: [
+      { name: 'Requirement', tasks: [{ title: 'Business requirements', wbsType: 'TASK', durationDays: 10 }, { title: 'Gap analysis', wbsType: 'TASK', durationDays: 5 }] },
+      { name: 'Blueprint', tasks: [{ title: 'Process design', wbsType: 'TASK', durationDays: 10 }] },
+      { name: 'Realization', tasks: [{ title: 'Configuration', wbsType: 'PHASE', durationDays: 20 }, { title: 'Custom development', wbsType: 'PHASE', durationDays: 15 }] },
+      { name: 'Testing', tasks: [{ title: 'Integration testing', wbsType: 'TASK', durationDays: 10 }, { title: 'UAT', wbsType: 'TASK', durationDays: 10 }] },
+      { name: 'Go Live', tasks: [{ title: 'Cutover', wbsType: 'TASK', durationDays: 3 }, { title: 'Hypercare', wbsType: 'TASK', durationDays: 14 }] },
+    ] } },
+    { name: 'Marketing Campaign', description: 'Plan, create, launch and review a campaign.', category: 'Marketing', blueprint: { milestones: [
+      { name: 'Planning', tasks: [{ title: 'Campaign brief', wbsType: 'TASK', durationDays: 3 }, { title: 'Budget approval', wbsType: 'TASK', durationDays: 2 }] },
+      { name: 'Creative', tasks: [{ title: 'Content creation', wbsType: 'TASK', durationDays: 7 }, { title: 'Design assets', wbsType: 'TASK', durationDays: 5 }] },
+      { name: 'Launch', tasks: [{ title: 'Go live', wbsType: 'TASK', durationDays: 1 }] },
+      { name: 'Review', tasks: [{ title: 'Performance analysis', wbsType: 'TASK', durationDays: 5 }] },
+    ] } },
+  ];
+  for (let i = 0; i < projectTemplates.length; i++) {
+    const pt = projectTemplates[i];
+    await prisma.projectTemplate.upsert({
+      where: { clientId_name: { clientId: client.id, name: pt.name } },
+      update: {},
+      create: { clientId: client.id, name: pt.name, description: pt.description, category: pt.category, sortOrder: i, blueprint: pt.blueprint },
+    });
+  }
+
+  // --- Products, modules & consultant assignments (ticket auto-routing) ---
+  // Every slot is a distinct specialist — one person per (product, module, track,
+  // rank). A technical consultant isn't functional; a module specialist doesn't
+  // cross modules. 16 distinct consultants: B1 = agent1-4, S/4HANA = agent5-16.
+  const agentByName = async (name: string) => (await prisma.user.findUnique({ where: { username: name } }))!.id;
+  const A = await Promise.all(
+    Array.from({ length: 16 }, (_, i) => `agent${i + 1}`).map(agentByName),
+  ); // A[0]=agent1 … A[15]=agent16
+  const setSlot = async (moduleId: string, track: string, rank: string, userId: string) => {
+    await prisma.moduleConsultant.upsert({
+      where: { moduleId_track_rank: { moduleId, track, rank } },
+      update: { userId }, create: { moduleId, track, rank, userId },
+    });
+  };
+  const upsertProduct = async (name: string, code: string, autoAssign: boolean, sortOrder: number) =>
+    prisma.product.upsert({ where: { clientId_name: { clientId: client.id, name } }, update: {}, create: { clientId: client.id, name, code, autoAssign, sortOrder } });
+  const upsertModule = async (productId: string, name: string, sortOrder: number) => {
+    const existing = await prisma.productModule.findFirst({ where: { productId, name } });
+    return existing ?? prisma.productModule.create({ data: { productId, name, sortOrder } });
+  };
+  // Assign the four slots of a module from four distinct consultants: [techP, techS, funcP, funcS].
+  const fillModule = async (moduleId: string, [tp, ts, fp, fs]: string[]) => {
+    await setSlot(moduleId, 'TECHNICAL', 'PRIMARY', tp); await setSlot(moduleId, 'TECHNICAL', 'SECONDARY', ts);
+    await setSlot(moduleId, 'FUNCTIONAL', 'PRIMARY', fp); await setSlot(moduleId, 'FUNCTIONAL', 'SECONDARY', fs);
+  };
+
+  const b1 = await upsertProduct('SAP Business One', 'B1', true, 0);
+  const b1m = await upsertModule(b1.id, 'Business One', 0);
+  await fillModule(b1m.id, A.slice(0, 4)); // agent1-4
+
+  const s4 = await upsertProduct('SAP S/4HANA', 'S4HANA', true, 1);
+  const s4mods = ['FI (Finance)', 'MM (Materials)', 'SD (Sales)'];
+  for (let i = 0; i < s4mods.length; i++) {
+    const mod = await upsertModule(s4.id, s4mods[i], i);
+    await fillModule(mod.id, A.slice(4 + i * 4, 8 + i * 4)); // FI=agent5-8, MM=agent9-12, SD=agent13-16
+  }
+  await upsertProduct('Others', 'OTHERS', false, 2);
 
   const now = new Date();
   const thisMonth = (day: number, h = 10) => new Date(now.getFullYear(), now.getMonth(), day, h);

@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
+import { CURRENCIES } from '@/lib/currencies';
 import { useConfirm } from '@/hooks/useConfirm';
 import {
   PROJECT_STATUSES, PRIORITIES, labelOf, projectStatusVariant, priorityVariant,
@@ -32,6 +33,7 @@ const createSchema = z.object({
   priority: z.string().optional(),
   managerUserId: z.string().optional(),
   customerCompanyId: z.string().optional(),
+  projectTemplateId: z.string().optional(),
   budget: z.string().optional(),
   currency: z.string().optional(),
   startDate: z.string().optional(),
@@ -84,7 +86,7 @@ export default function ProjectListPage() {
     resolver: zodResolver(createSchema),
     defaultValues: {
       name: '', key: '', description: '', status: 'OPEN',
-      priority: '', managerUserId: '', customerCompanyId: '', budget: '', currency: '', startDate: '', endDate: '',
+      priority: '', managerUserId: '', customerCompanyId: '', projectTemplateId: '', budget: '', currency: 'USD', startDate: '', endDate: '',
     },
   });
 
@@ -100,6 +102,10 @@ export default function ProjectListPage() {
     queryKey: ['customer-companies'],
     queryFn: async () => (await api.get('/api/customer-companies')).data,
   });
+  const { data: projectTemplates = [] } = useQuery<{ id: string; name: string; isActive: boolean }[]>({
+    queryKey: ['project-templates'],
+    queryFn: async () => (await api.get('/api/project-templates')).data,
+  });
 
   useEffect(() => { setPage(1); }, [search, statusFilter]);
 
@@ -112,6 +118,7 @@ export default function ProjectListPage() {
       priority: values.priority || undefined,
       managerUserId: values.managerUserId || undefined,
       customerCompanyId: values.customerCompanyId || undefined,
+      projectTemplateId: values.projectTemplateId || undefined,
       budget: values.budget ? Number(values.budget) : undefined,
       currency: values.currency || undefined,
       startDate: values.startDate || undefined,
@@ -257,6 +264,19 @@ export default function ProjectListPage() {
                   </Select>
                 </FormItem>
               )} />
+              <FormField control={form.control} name="projectTemplateId" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Project template</FormLabel>
+                  <Select value={field.value || NONE} onValueChange={(v) => field.onChange(v === NONE ? '' : v)}>
+                    <FormControl><SelectTrigger className="w-full"><SelectValue placeholder="None (blank project)" /></SelectTrigger></FormControl>
+                    <SelectContent>
+                      <SelectItem value={NONE}>None (blank project)</SelectItem>
+                      {projectTemplates.filter((t) => t.isActive).map((t) => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">Scaffolds the template's milestones and tasks into the new project.</p>
+                </FormItem>
+              )} />
               <div className="grid grid-cols-2 gap-3">
                 <FormField control={form.control} name="budget" render={({ field }) => (
                   <FormItem>
@@ -268,7 +288,12 @@ export default function ProjectListPage() {
                 <FormField control={form.control} name="currency" render={({ field }) => (
                   <FormItem>
                     <FormLabel>Currency</FormLabel>
-                    <FormControl><Input placeholder="USD" {...field} /></FormControl>
+                    <Select value={field.value || 'USD'} onValueChange={field.onChange}>
+                      <FormControl><SelectTrigger className="w-full"><SelectValue placeholder="USD" /></SelectTrigger></FormControl>
+                      <SelectContent>
+                        {CURRENCIES.map((c) => <SelectItem key={c.code} value={c.code}>{c.code} — {c.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
                     <FormMessage />
                   </FormItem>
                 )} />

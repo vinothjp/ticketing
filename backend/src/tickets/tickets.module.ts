@@ -6,9 +6,12 @@ import {
 } from './tickets.controller';
 import { TemplatesModule } from '../templates/templates.module';
 import { ActivityModule } from '../activity/activity.module';
+import { MailModule } from '../mail/mail.module';
+import { ProductsModule } from '../products/products.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [TemplatesModule, ActivityModule],
+  imports: [TemplatesModule, ActivityModule, MailModule, ProductsModule, NotificationsModule],
   providers: [TicketsService],
   controllers: [TicketsController, FieldCatalogController],
   exports: [TicketsService],

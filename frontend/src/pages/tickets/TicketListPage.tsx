@@ -13,7 +13,7 @@ import {
   DropdownMenuCheckboxItem, DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
-import { getPriorityMeta, isTerminalStatus, type TicketSummary } from './ticketHelpers';
+import { getPriorityMeta, isTerminalStatus, getApprovalMeta, type TicketSummary } from './ticketHelpers';
 
 interface TemplateSummary { id: string; name: string; }
 interface CompanyOption { id: string; name: string; }
@@ -28,7 +28,7 @@ interface MyTask {
   ticket: { id: string; ticketNumber: string; subject: string; ticketStatus: string; priority?: string | null };
 }
 
-type ViewKey = 'all' | 'mine' | 'overdue' | 'unassigned' | 'tasks';
+type ViewKey = 'all' | 'mine' | 'overdue' | 'unassigned' | 'tasks' | 'pending';
 type SortKey = 'newest' | 'oldest' | 'priority' | 'due';
 
 const PRIORITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -90,8 +90,8 @@ export default function TicketListPage() {
     queryKey: ['templates'],
     queryFn: async () => (await api.get('/api/templates')).data,
   });
-  // Customer companies for the "filter by customer" control (staff only).
-  const isCustomer = !!user?.roles.includes('Customer') && !isAdmin;
+  // Customer side (employees + their company admin) get the restricted portal.
+  const isCustomer = (!!user?.roles.includes('Customer') || !!user?.roles.includes('CustomerAdmin')) && !isAdmin;
   // Open tasks assigned to the current agent (internal — customers never see tasks).
   const { data: myTasks = [] } = useQuery<MyTask[]>({
     queryKey: ['my-tasks'],
@@ -166,7 +166,7 @@ export default function TicketListPage() {
     { key: 'unassigned', label: 'Unassigned', count: viewCounts.unassigned },
   ];
   // Customers only get their own ticket views — agent/task concepts are hidden.
-  const views = isCustomer ? allViews.filter((v) => v.key === 'all' || v.key === 'overdue') : allViews;
+  const views = isCustomer ? allViews.filter((v) => ['all', 'overdue', 'pending'].includes(v.key)) : allViews;
 
   // Export the currently filtered/sorted tickets to CSV (client-side, no backend needed).
   const exportCsv = () => {
@@ -350,6 +350,11 @@ export default function TicketListPage() {
                       <span className="text-sm font-medium text-primary hover:underline">
                         <span className="text-muted-foreground">#{t.ticketNumber}</span> {t.subject}
                       </span>
+                      {getApprovalMeta(t.approvalStatus) && (
+                        <span className={`ml-2 rounded-full border px-2 py-0.5 text-[11px] font-medium ${getApprovalMeta(t.approvalStatus)!.className}`}>
+                          {getApprovalMeta(t.approvalStatus)!.label}
+                        </span>
+                      )}
                       <div className="pointer-events-none absolute top-full left-0 z-20 mt-1 hidden w-[26rem] max-w-[88vw] rounded-lg border bg-card p-3 text-left shadow-lg group-hover/tt:block">
                         <dl className="space-y-1.5 text-xs">
                           <div className="flex gap-2"><dt className="w-24 shrink-0 font-medium text-muted-foreground">Request ID</dt><dd className="text-foreground">#{t.ticketNumber}</dd></div>

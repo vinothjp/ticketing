@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto } from './dto/customer-company.dto';
 
 export const CUSTOMER_ROLE = 'Customer';
+export const CUSTOMER_ADMIN_ROLE = 'CustomerAdmin';
 
 @Injectable()
 export class CustomerCompaniesService {
@@ -20,6 +21,16 @@ export class CustomerCompaniesService {
     if (existing) return existing.id;
     const created = await this.prisma.role.create({
       data: { name: CUSTOMER_ROLE, description: 'External customer contact', clientId },
+    });
+    return created.id;
+  }
+
+  /** Find-or-create the tenant's "CustomerAdmin" role (a customer company's own admin). */
+  private async customerAdminRoleId(clientId: string) {
+    const existing = await this.prisma.role.findFirst({ where: { clientId, name: CUSTOMER_ADMIN_ROLE } });
+    if (existing) return existing.id;
+    const created = await this.prisma.role.create({
+      data: { name: CUSTOMER_ADMIN_ROLE, description: 'Customer company administrator', clientId },
     });
     return created.id;
   }
@@ -49,10 +60,60 @@ export class CustomerCompaniesService {
     return company;
   }
 
+  // Replace the set of products a company uses (validates ownership).
+  private async setProducts(companyId: string, productIds: string[], clientId: string) {
+    const valid = await this.prisma.product.findMany({ where: { id: { in: productIds }, clientId }, select: { id: true } });
+    await this.prisma.customerCompanyProduct.deleteMany({ where: { customerCompanyId: companyId } });
+    if (valid.length) {
+      await this.prisma.customerCompanyProduct.createMany({
+        data: valid.map((p) => ({ customerCompanyId: companyId, productId: p.id })),
+      });
+    }
+  }
+
+  async getProducts(companyId: string, clientId: string) {
+    await this.getOwned(companyId, clientId);
+    const links = await this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId: companyId } });
+    return links.map((l) => l.productId);
+  }
+
+  /**
+   * Products (with modules, no consultant detail) a viewer may raise tickets for:
+   * a customer sees only their company's products; staff see all active products.
+   */
+  async ticketProducts(clientId: string, customerCompanyId: string | null, isStaff: boolean) {
+    let idFilter: { id: { in: string[] } } | undefined;
+    if (!isStaff) {
+      if (!customerCompanyId) return [];
+      const links = await this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId } });
+      if (links.length === 0) return [];
+      idFilter = { id: { in: links.map((l) => l.productId) } };
+    }
+    return this.prisma.product.findMany({
+      where: { clientId, isActive: true, ...(idFilter ?? {}) },
+      orderBy: [{ sortOrder: 'asc' }],
+      select: { id: true, name: true, code: true, autoAssign: true, modules: { select: { id: true, name: true }, orderBy: [{ sortOrder: 'asc' }] } },
+    });
+  }
+
   async create(dto: CreateCompanyDto, clientId: string, actorId: string) {
     const dup = await this.prisma.customerCompany.findFirst({ where: { clientId, name: dto.name } });
     if (dup) throw new ConflictException('A customer company with this name already exists');
-    return this.prisma.customerCompany.create({
+
+    // If a bootstrap admin is supplied, all three fields are required and the
+    // login must not clash with an existing user.
+    const wantsAdmin = !!(dto.adminUsername || dto.adminEmail || dto.adminPassword);
+    if (wantsAdmin && !(dto.adminUsername && dto.adminEmail && dto.adminPassword)) {
+      throw new BadRequestException('Provide username, email and password for the first admin');
+    }
+    if (wantsAdmin) {
+      const clash = await this.prisma.user.findFirst({
+        where: { OR: [{ username: dto.adminUsername! }, { email: dto.adminEmail! }] },
+      });
+      if (clash) throw new ConflictException('Admin username or email already exists');
+    }
+
+    const company = await this.prisma.customerCompany.create({
       data: {
         clientId,
         name: dto.name,
@@ -64,6 +125,26 @@ export class CustomerCompaniesService {
         updatedBy: actorId,
       },
     });
+
+    if (wantsAdmin) {
+      const roleId = await this.customerAdminRoleId(clientId);
+      const passwordHash = await bcrypt.hash(dto.adminPassword!, 12);
+      await this.prisma.user.create({
+        data: {
+          username: dto.adminUsername!,
+          email: dto.adminEmail!,
+          passwordHash,
+          clientId,
+          customerCompanyId: company.id,
+          createdBy: actorId,
+          updatedBy: actorId,
+          userRoles: { create: [{ roleId, createdBy: actorId }] },
+        },
+      });
+    }
+
+    if (dto.productIds) await this.setProducts(company.id, dto.productIds, clientId);
+    return company;
   }
 
   async update(id: string, dto: UpdateCompanyDto, clientId: string, actorId: string) {
@@ -74,10 +155,13 @@ export class CustomerCompaniesService {
       });
       if (dup) throw new ConflictException('A customer company with this name already exists');
     }
-    return this.prisma.customerCompany.update({
+    const { productIds, ...rest } = dto;
+    const company = await this.prisma.customerCompany.update({
       where: { id },
-      data: { ...dto, updatedBy: actorId },
+      data: { ...rest, updatedBy: actorId },
     });
+    if (productIds) await this.setProducts(id, productIds, clientId);
+    return company;
   }
 
   async remove(id: string, clientId: string) {

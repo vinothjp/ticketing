@@ -78,11 +78,25 @@ export interface ChangeRequestSummary {
   crType?: string | null;
   priority?: string | null;
   status: string;
+  approvalStatus?: string | null;
   crDate?: string | null;
   createdAt: string;
 }
 
+// Customer-approval state shown on the provider's CR list.
+export function crApprovalMeta(s?: string | null): { label: string; cls: string } {
+  switch (s) {
+    case 'PENDING': return { label: 'Awaiting customer', cls: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30' };
+    case 'APPROVED': return { label: 'Approved', cls: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30' };
+    case 'REJECTED': return { label: 'Rejected', cls: 'bg-destructive/15 text-destructive border-destructive/30' };
+    default: return { label: 'Not sent', cls: 'bg-muted text-muted-foreground border-border' };
+  }
+}
+
 export interface ChangeRequest extends ChangeRequestSummary {
+  customerCompanyId?: string | null;
+  approvalStatus?: string | null;
+  approvalReason?: string | null;
   description?: string | null;
   featureName?: string | null;
   moduleName?: string | null;

@@ -20,6 +20,7 @@ import { invalidateProject, type ProjectDetail, type UserOption } from '../proje
 
 interface ActionItem { text: string; owner?: string; done?: boolean }
 interface Meeting { id: string; title: string; date?: string | null; attendees?: string | null; notes?: string | null; actionItems: ActionItem[] }
+interface CustomerContact { id: string; username: string; email: string; role: 'admin' | 'employee' }
 
 const NONE = '__none__';
 const toDate = (v?: string | null) => (v ? new Date(v).toISOString().slice(0, 10) : '');
@@ -48,6 +49,14 @@ export default function MeetingsTab({ project, users }: { project: ProjectDetail
   const { data: meetings = [] } = useQuery<Meeting[]>({
     queryKey: key,
     queryFn: async () => (await api.get(`/api/projects/${project.id}/registers/meetings`)).data,
+  });
+
+  // Customer-company people (admin + employees) linked to this project — eligible
+  // to be invited alongside the internal team. Empty when no company is linked.
+  const { data: customerContacts = [] } = useQuery<CustomerContact[]>({
+    queryKey: ['projects', project.id, 'customer-contacts'],
+    queryFn: async () => (await api.get(`/api/projects/${project.id}/customer-contacts`)).data,
+    enabled: !!project.customerCompanyId,
   });
 
   const usernameById = useMemo(() => new Map(users.map((u) => [u.id, u.username])), [users]);
@@ -131,8 +140,8 @@ export default function MeetingsTab({ project, users }: { project: ProjectDetail
                     {form.attendees.length ? `${form.attendees.length} selected` : 'Select attendees'}
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent className="max-h-64 w-64 overflow-y-auto">
-                  <DropdownMenuLabel>Employees</DropdownMenuLabel>
+                <DropdownMenuContent className="max-h-64 w-72 overflow-y-auto">
+                  <DropdownMenuLabel>Team (internal)</DropdownMenuLabel>
                   <DropdownMenuSeparator />
                   {users.map((u) => (
                     <DropdownMenuCheckboxItem
@@ -144,8 +153,34 @@ export default function MeetingsTab({ project, users }: { project: ProjectDetail
                       {u.username}
                     </DropdownMenuCheckboxItem>
                   ))}
+                  {/* Customer-side attendees — only the company linked to this project. */}
+                  {customerContacts.length > 0 && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuLabel>Customer — {project.customerCompany?.name ?? 'company'}</DropdownMenuLabel>
+                      {customerContacts.map((c) => (
+                        <DropdownMenuCheckboxItem
+                          key={c.id}
+                          checked={form.attendees.includes(c.username)}
+                          onCheckedChange={() => toggleAttendee(c.username)}
+                          onSelect={(e) => e.preventDefault()}
+                        >
+                          {c.username}
+                          <span className="ml-1 text-xs text-muted-foreground">({c.role})</span>
+                        </DropdownMenuCheckboxItem>
+                      ))}
+                    </>
+                  )}
+                  {users.length === 0 && customerContacts.length === 0 && (
+                    <div className="px-2 py-1.5 text-xs text-muted-foreground">No one available to invite.</div>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
+              {!project.customerCompanyId && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Link a customer company in project Settings to invite its admin or employees.
+                </p>
+              )}
               {form.attendees.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {form.attendees.map((a) => (

@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { CURRENCIES, convertAmount, formatMoney } from '@/lib/currencies';
 import { DateField } from '@/components/ui/date-field';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
@@ -19,7 +21,6 @@ const FEATURES: { key: string; label: string; desc: string; default: boolean }[]
   { key: 'cascadingDates', label: 'Cascading dates', desc: 'Push later tasks forward automatically when a task is extended.', default: true },
 ];
 
-const str = (v: unknown) => (v == null ? '' : String(v));
 const toDate = (v?: string | null) => (v ? new Date(v).toISOString().slice(0, 10) : '');
 
 // Module-scope so inputs keep a stable identity (no focus loss on keystroke).
@@ -27,12 +28,22 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   return <div><div className="mb-1 text-sm">{label}</div>{children}</div>;
 }
 
+const NO_COMPANY = '__none__';
+
 export default function SettingsTab({ project }: { project: ProjectDetail }) {
   const qc = useQueryClient();
+  // Customer companies to link this project to (drives the meeting attendee list).
+  const { data: companies = [] } = useQuery<{ id: string; name: string }[]>({
+    queryKey: ['customer-companies'],
+    queryFn: async () => (await api.get('/api/customer-companies')).data,
+  });
   const [f, setF] = useState({
     name: project.name, key: project.key ?? '', projectCode: project.projectCode ?? '',
     projectSponsor: project.projectSponsor ?? '', department: project.department ?? '',
-    budget: str(project.budget), currency: project.currency ?? '', projectType: project.projectType ?? '',
+    customerCompanyId: project.customerCompanyId ?? '',
+    // project.budget is a Prisma Decimal serialized as a string — coerce to a real number.
+    budget: project.budget == null ? null : Number(project.budget),
+    currency: project.currency || 'USD', projectType: project.projectType ?? '',
     startDate: toDate(project.startDate), endDate: toDate(project.endDate),
     goLiveDate: toDate(project.goLiveDate), description: project.description ?? '',
     objective: project.objective ?? '', scope: project.scope ?? '', outOfScope: project.outOfScope ?? '', successCriteria: project.successCriteria ?? '',
@@ -43,7 +54,7 @@ export default function SettingsTab({ project }: { project: ProjectDetail }) {
   const saveGeneral = useMutation({
     mutationFn: () => api.patch(`/api/projects/${project.id}`, {
       name: f.name.trim(), key: f.key.trim() || undefined, projectCode: f.projectCode, projectSponsor: f.projectSponsor,
-      department: f.department, budget: f.budget === '' ? undefined : Number(f.budget), currency: f.currency, projectType: f.projectType,
+      department: f.department, customerCompanyId: f.customerCompanyId || null, budget: f.budget ?? undefined, currency: f.currency, projectType: f.projectType,
       startDate: f.startDate || undefined, endDate: f.endDate || undefined,
       goLiveDate: f.goLiveDate || undefined, description: f.description, objective: f.objective, scope: f.scope, outOfScope: f.outOfScope, successCriteria: f.successCriteria,
     }),
@@ -94,9 +105,43 @@ export default function SettingsTab({ project }: { project: ProjectDetail }) {
             <Field label="Project code"><Input value={f.projectCode} onChange={(e) => set({ projectCode: e.target.value })} /></Field>
             <Field label="Sponsor"><Input value={f.projectSponsor} onChange={(e) => set({ projectSponsor: e.target.value })} /></Field>
             <Field label="Department"><Input value={f.department} onChange={(e) => set({ department: e.target.value })} /></Field>
+            <Field label="Customer company">
+              <Select
+                value={f.customerCompanyId || NO_COMPANY}
+                onValueChange={(v) => set({ customerCompanyId: v === NO_COMPANY ? '' : v })}
+              >
+                <SelectTrigger className="w-full"><SelectValue placeholder="None" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_COMPANY}>None</SelectItem>
+                  {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </Field>
             <Field label="Project type"><Input value={f.projectType} onChange={(e) => set({ projectType: e.target.value })} placeholder="Implementation" /></Field>
-            <Field label="Budget"><Input type="number" value={f.budget} onChange={(e) => set({ budget: e.target.value })} /></Field>
-            <Field label="Currency"><Input value={f.currency} onChange={(e) => set({ currency: e.target.value })} placeholder="USD" /></Field>
+            {/* Budget is set at project creation; here it's read-only and re-expressed
+                whenever the currency changes below. */}
+            <Field label="Budget">
+              <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm text-foreground">
+                {formatMoney(f.budget, f.currency)}
+              </div>
+            </Field>
+            <Field label="Currency">
+              <Select
+                value={f.currency}
+                onValueChange={(next) =>
+                  setF((s) => ({
+                    ...s,
+                    budget: s.budget == null ? s.budget : convertAmount(s.budget, s.currency, next),
+                    currency: next,
+                  }))
+                }
+              >
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {CURRENCIES.map((c) => <SelectItem key={c.code} value={c.code}>{c.code} — {c.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </Field>
             <Field label="Start date"><DateField value={f.startDate} onChange={(v) => set({ startDate: v })} max={f.endDate || undefined} /></Field>
             <Field label="End date"><DateField value={f.endDate} onChange={(v) => set({ endDate: v })} min={f.startDate || undefined} /></Field>
             <Field label="Go-live date"><DateField value={f.goLiveDate} onChange={(v) => set({ goLiveDate: v })} /></Field>

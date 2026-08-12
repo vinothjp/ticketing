@@ -6,21 +6,17 @@ import { toast } from 'sonner';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { useConfirm } from '@/hooks/useConfirm';
 import { cn } from '@/lib/utils';
-import { OptionSelect } from './OptionSelect';
 import {
-  crStatusVariant, crPriorityVariant, fmtDate, crOptionsQuery,
+  crStatusVariant, crPriorityVariant, crApprovalMeta, fmtDate, crOptionsQuery,
   type ChangeRequestSummary, type CrOption,
 } from './changeRequestMeta';
 
 const PAGE_SIZE = 10;
-const emptyDraft = { title: '', description: '', customer: '', projectName: '', priority: '', crType: '' };
 
 // A clickable summary tile that toggles the status filter.
 function StatCard({ label, value, active, onClick }: { label: string; value: number; active: boolean; onClick: () => void }) {
@@ -43,8 +39,6 @@ export default function ChangeRequestListPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const { confirm, ConfirmDialog } = useConfirm();
-  const [createOpen, setCreateOpen] = useState(false);
-  const [draft, setDraft] = useState(emptyDraft);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [priorityFilter, setPriorityFilter] = useState('all');
@@ -58,25 +52,6 @@ export default function ChangeRequestListPage() {
   const { data: priorityOpts = [] } = useQuery<CrOption[]>(crOptionsQuery('priority'));
 
   useEffect(() => { setPage(1); }, [search, statusFilter, priorityFilter]);
-
-  const createMutation = useMutation({
-    mutationFn: () => api.post('/api/change-requests', {
-      title: draft.title.trim(),
-      description: draft.description || undefined,
-      customer: draft.customer || undefined,
-      projectName: draft.projectName || undefined,
-      priority: draft.priority || undefined,
-      crType: draft.crType || undefined,
-    }),
-    onSuccess: (res) => {
-      qc.invalidateQueries({ queryKey: ['change-requests'] });
-      setCreateOpen(false);
-      setDraft(emptyDraft);
-      toast.success('Change request created');
-      navigate(`/change-requests/${res.data.id}`);
-    },
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error creating change request'),
-  });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/api/change-requests/${id}`),
@@ -115,49 +90,10 @@ export default function ChangeRequestListPage() {
       {ConfirmDialog}
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-bold text-foreground">Change Requests</h1>
-        <Button onClick={() => setCreateOpen(true)}>
+        <Button onClick={() => navigate('/change-requests/new')}>
           <Plus className="size-4" /> New Change Request
         </Button>
       </div>
-
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="flex max-h-[88vh] flex-col sm:max-w-lg">
-          <DialogHeader><DialogTitle>New Change Request</DialogTitle></DialogHeader>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">Title</label>
-              <Input value={draft.title} onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))} placeholder="Short summary of the change" />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">Description</label>
-              <Textarea rows={3} value={draft.description} onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))} />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Customer</label>
-                <OptionSelect listKey="customer" value={draft.customer} onChange={(v) => setDraft((d) => ({ ...d, customer: v }))} />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Project</label>
-                <OptionSelect listKey="project" value={draft.projectName} onChange={(v) => setDraft((d) => ({ ...d, projectName: v }))} />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Priority</label>
-                <OptionSelect listKey="priority" value={draft.priority} onChange={(v) => setDraft((d) => ({ ...d, priority: v }))} />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">CR Type</label>
-                <OptionSelect listKey="type" value={draft.crType} onChange={(v) => setDraft((d) => ({ ...d, crType: v }))} />
-              </div>
-            </div>
-          </div>
-          <DialogFooter className="pt-3">
-            <Button disabled={!draft.title.trim() || createMutation.isPending} onClick={() => createMutation.mutate()}>
-              {createMutation.isPending ? 'Creating...' : 'Create'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {crs.length > 0 && (
         <div className="mb-4 flex flex-wrap gap-2">
@@ -203,7 +139,7 @@ export default function ChangeRequestListPage() {
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
       ) : (
-        <div className="overflow-x-auto border-t">
+        <div className="border-t">
           <Table>
             <TableHeader>
               <TableRow>
@@ -223,7 +159,12 @@ export default function ChangeRequestListPage() {
                   <TableCell colSpan={8} className="text-center text-muted-foreground">No change requests match your filters.</TableCell>
                 </TableRow>
               )}
-              {paged.map((c) => (
+              {paged.map((c) => {
+                // While a CR is awaiting/rejected by the customer, that's the one
+                // status that matters — it replaces the workflow status entirely.
+                const appr = c.approvalStatus === 'PENDING' || c.approvalStatus === 'REJECTED'
+                  ? crApprovalMeta(c.approvalStatus) : null;
+                return (
                 <TableRow key={c.id} className="cursor-pointer" onClick={() => navigate(`/change-requests/${c.id}`)}>
                   <TableCell className="text-xs text-muted-foreground">{c.crNumber}</TableCell>
                   <TableCell className="font-medium">{c.title}</TableCell>
@@ -232,7 +173,15 @@ export default function ChangeRequestListPage() {
                   <TableCell>
                     {c.priority ? <Badge variant={crPriorityVariant(c.priority)}>{c.priority}</Badge> : <span className="text-muted-foreground">—</span>}
                   </TableCell>
-                  <TableCell><Badge variant={crStatusVariant(c.status)}>{c.status}</Badge></TableCell>
+                  <TableCell>
+                    {appr ? (
+                      <span className={`inline-block whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium ${appr.cls}`}>
+                        {appr.label}
+                      </span>
+                    ) : (
+                      <Badge variant={crStatusVariant(c.status)}>{c.status}</Badge>
+                    )}
+                  </TableCell>
                   <TableCell className="text-xs text-muted-foreground">{fmtDate(c.crDate)}</TableCell>
                   <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                     <Button
@@ -244,7 +193,8 @@ export default function ChangeRequestListPage() {
                     </Button>
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
 

@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
@@ -7,6 +8,9 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TemplatesService } from '../templates/templates.service';
 import { ActivityService } from '../activity/activity.service';
+import { MailerService } from '../mail/mailer.service';
+import { ProductsService } from '../products/products.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 
@@ -38,21 +42,33 @@ function isEmpty(value: unknown) {
 /** The authenticated user viewing/acting on tickets. Admins see all; others only their assigned tickets. */
 export type TicketViewer = { id: string; roles: string[]; customerCompanyId?: string | null };
 const isAdmin = (viewer: TicketViewer) => viewer.roles.includes('Admin');
-const isCustomer = (viewer: TicketViewer) => viewer.roles.includes('Customer');
+// Customer side = a company's own admin + its employees.
+const isCustomerAdmin = (viewer: TicketViewer) => viewer.roles.includes('CustomerAdmin');
+const isCustomerSide = (viewer: TicketViewer) =>
+  viewer.roles.includes('Customer') || viewer.roles.includes('CustomerAdmin');
+// An employee is a customer-side user who is NOT their company's admin.
+const isCustomerEmployee = (viewer: TicketViewer) => isCustomerSide(viewer) && !isCustomerAdmin(viewer);
 
 @Injectable()
 export class TicketsService {
+  private readonly logger = new Logger(TicketsService.name);
+
   constructor(
     private prisma: PrismaService,
     private templatesService: TemplatesService,
     private activity: ActivityService,
+    private mailer: MailerService,
+    private products: ProductsService,
+    private notifications: NotificationsService,
   ) {}
 
   async create(dto: CreateTicketDto, clientId: string, actorId: string, viewer?: TicketViewer) {
-    // A customer contact can only ever raise a ticket under their own company,
-    // and can't self-assign technicians — force those server-side.
+    // No approval gate — a customer ticket becomes active immediately and is
+    // auto-routed to a consultant. A customer can only raise a ticket under their
+    // own company and can't self-assign technicians (forced server-side).
+    const isCustomerTicket = viewer ? isCustomerSide(viewer) : false;
     let requestorDefaults: { name?: string; email?: string; companyId?: string } = {};
-    if (viewer && isCustomer(viewer)) {
+    if (viewer && isCustomerSide(viewer)) {
       // A customer must belong to a company; otherwise the ticket would be
       // orphaned (no company) and invisible even to its own creator.
       if (!viewer.customerCompanyId) {
@@ -145,6 +161,10 @@ export class TicketsService {
           ticketNumber,
           templateId: template.id,
           ticketStatus,
+          approvalStatus: 'NONE',
+          productId: dto.productId,
+          moduleId: dto.moduleId,
+          consultantType: dto.consultantType,
           requestorName: dto.requestorName ?? requestorDefaults.name,
           requestorEmail: dto.requestorEmail ?? requestorDefaults.email,
           requestorUserId: (dto as { requestorUserId?: string }).requestorUserId,
@@ -180,7 +200,84 @@ export class TicketsService {
       type: 'CREATED',
       summary: 'Ticket created',
     });
-    return ticket;
+
+    // Auto-route a customer ticket to the module's consultant (primary, or the
+    // secondary when the primary already has an open ticket). "Others"/no module
+    // stays unassigned for an admin to pick.
+    let assignedConsultantId: string | null = null;
+    if (isCustomerTicket && dto.productId && dto.moduleId && dto.consultantType) {
+      const product = await this.prisma.product.findFirst({ where: { id: dto.productId, clientId } });
+      if (product?.autoAssign) {
+        assignedConsultantId = await this.products.resolveConsultant(
+          clientId,
+          dto.moduleId,
+          dto.consultantType === 'TECHNICAL' ? 'TECHNICAL' : 'FUNCTIONAL',
+        );
+        if (assignedConsultantId) {
+          await this.prisma.ticketTechnician.create({ data: { ticketId: ticket.id, userId: assignedConsultantId } });
+          const c = await this.prisma.user.findUnique({ where: { id: assignedConsultantId }, select: { username: true } });
+          await this.activity.log({
+            ticketId: ticket.id,
+            actorUserId: actorId,
+            type: 'ASSIGNED',
+            summary: `Auto-assigned to ${c?.username ?? 'consultant'}`,
+            meta: { userId: assignedConsultantId, auto: true },
+          });
+        }
+      }
+    }
+
+    // In-app notifications for a customer-created ticket: acknowledge the creator,
+    // alert every provider admin, and alert the assigned consultant.
+    if (isCustomerTicket && viewer) {
+      await this.emitTicketNotifications({
+        clientId,
+        ticketId: ticket.id,
+        ticketNumber: ticket.ticketNumber,
+        subject: ticket.subject,
+        creatorUserId: viewer.id,
+        assignedConsultantId,
+      });
+    }
+
+    return this.prisma.ticket.findUnique({ where: { id: ticket.id }, include: { technicians: { include: { user: { select: { id: true, username: true } } } }, template: true } });
+  }
+
+  private async emitTicketNotifications(p: {
+    clientId: string;
+    ticketId: string;
+    ticketNumber: string;
+    subject: string;
+    creatorUserId: string;
+    assignedConsultantId: string | null;
+  }) {
+    const label = `${p.ticketNumber} — ${p.subject}`;
+    try {
+      // Acknowledge the customer who raised it.
+      await this.notifications.notify({
+        clientId: p.clientId, userId: p.creatorUserId, type: 'TICKET_ACK', ticketId: p.ticketId,
+        title: 'Ticket received',
+        body: `We've received your ticket ${p.ticketNumber} and will get back to you shortly.`,
+      });
+      // Alert every provider admin.
+      const admins = await this.prisma.user.findMany({
+        where: { clientId: p.clientId, isActive: true, userRoles: { some: { role: { name: 'Admin' } } } },
+        select: { id: true },
+      });
+      await this.notifications.notifyMany(admins.map((a) => a.id), {
+        clientId: p.clientId, type: 'TICKET_CREATED', ticketId: p.ticketId,
+        title: 'New ticket created', body: `New ticket ${label}`,
+      });
+      // Alert the assigned consultant.
+      if (p.assignedConsultantId) {
+        await this.notifications.notify({
+          clientId: p.clientId, userId: p.assignedConsultantId, type: 'TICKET_ASSIGNED', ticketId: p.ticketId,
+          title: 'Ticket assigned to you', body: `You've been assigned ${label}`,
+        });
+      }
+    } catch (err) {
+      this.logger.error('Failed to emit ticket notifications', err instanceof Error ? err.stack : String(err));
+    }
   }
 
   findAll(clientId: string, viewer: TicketViewer) {
@@ -188,12 +285,19 @@ export class TicketsService {
       // Non-admins see tickets assigned to them, plus any they've been asked to approve.
       where: {
         clientId,
-        ...(isCustomer(viewer)
-          ? // A customer contact only sees their own company's tickets.
+        ...(isCustomerAdmin(viewer)
+          ? // A customer company admin sees all of their company's tickets.
             { customerCompanyId: viewer.customerCompanyId ?? '__none__' }
+          : isCustomerEmployee(viewer)
+          ? // An employee sees only the tickets they raised.
+            { customerCompanyId: viewer.customerCompanyId ?? '__none__', requestorUserId: viewer.id }
           : isAdmin(viewer)
-          ? {}
+          ? // Admin sees everything except tickets still inside the customer's
+            // own approval stage (not yet forwarded to us).
+            { approvalStatus: { not: 'PENDING_CUSTOMER' } }
           : {
+              // Agents never see tickets still awaiting approval.
+              approvalStatus: { in: ['NONE', 'APPROVED'] },
               OR: [
                 { technicians: { some: { userId: viewer.id } } },
                 { approvals: { some: { approverUserId: viewer.id } } },
@@ -227,9 +331,23 @@ export class TicketsService {
       },
     });
     if (!ticket) throw new NotFoundException('Ticket not found');
-    // A customer contact may only access tickets belonging to their own company.
-    if (viewer && isCustomer(viewer)) {
-      if (!viewer.customerCompanyId || ticket.customerCompanyId !== viewer.customerCompanyId) {
+    // Enrich with SAP product/module names for display (scalar IDs → names).
+    const [product, module] = await Promise.all([
+      ticket.productId ? this.prisma.product.findUnique({ where: { id: ticket.productId }, select: { name: true, code: true } }) : null,
+      ticket.moduleId ? this.prisma.productModule.findUnique({ where: { id: ticket.moduleId }, select: { name: true } }) : null,
+    ]);
+    Object.assign(ticket, {
+      productName: product?.name ?? null,
+      productCode: product?.code ?? null,
+      moduleName: module?.name ?? null,
+    });
+    // Customer side: must be the same company; an employee is further limited to
+    // the tickets they raised, while the company admin sees all of them.
+    if (viewer && isCustomerSide(viewer)) {
+      const sameCompany =
+        !!viewer.customerCompanyId && ticket.customerCompanyId === viewer.customerCompanyId;
+      if (!sameCompany) throw new NotFoundException('Ticket not found');
+      if (isCustomerEmployee(viewer) && ticket.requestorUserId !== viewer.id) {
         throw new NotFoundException('Ticket not found');
       }
       return ticket;
@@ -355,7 +473,15 @@ export class TicketsService {
     actorId: string,
     viewer: TicketViewer,
   ) {
-    await this.findOne(id, clientId, viewer);
+    // A ticket may have at most one agent assigned.
+    if (userIds.length > 1) {
+      throw new BadRequestException('Only one agent can be assigned to a ticket');
+    }
+    const ticket = await this.findOne(id, clientId, viewer);
+    // Can't assign an agent to a ticket that hasn't cleared approval yet.
+    if (ticket.approvalStatus !== 'NONE' && ticket.approvalStatus !== 'APPROVED') {
+      throw new BadRequestException('This ticket is awaiting approval and cannot be assigned yet');
+    }
 
     const ownedUsers = await this.prisma.user.count({
       where: { id: { in: userIds }, clientId },
@@ -476,6 +602,178 @@ export class TicketsService {
       summary: 'Ticket reopened',
     });
     return updated;
+  }
+
+  // ---- Creation-approval gate (Admin approves/rejects customer tickets) ----
+
+  async approve(id: string, clientId: string, actorId: string, viewer: TicketViewer) {
+    const ticket = await this.findOne(id, clientId, viewer);
+    if (ticket.approvalStatus !== 'PENDING') {
+      throw new BadRequestException('Only tickets awaiting approval can be approved');
+    }
+    const initial =
+      (
+        await this.prisma.picklistOption.findFirst({
+          where: { clientId, listKey: 'ticketStatus', isActive: true },
+          orderBy: { sortOrder: 'asc' },
+        })
+      )?.value ?? 'Open';
+    const updated = await this.prisma.ticket.update({
+      where: { id },
+      data: {
+        approvalStatus: 'APPROVED',
+        approvedById: actorId,
+        approvedAt: new Date(),
+        // Now a real, assignable ticket — move it to the default open status.
+        ticketStatus: initial,
+        updatedBy: actorId,
+      },
+    });
+    await this.activity.log({
+      ticketId: id,
+      actorUserId: actorId,
+      type: 'APPROVED',
+      summary: 'Ticket approved',
+    });
+    return updated;
+  }
+
+  async reject(
+    id: string,
+    clientId: string,
+    dto: { reason?: string },
+    actorId: string,
+    viewer: TicketViewer,
+  ) {
+    const ticket = await this.findOne(id, clientId, viewer);
+    if (ticket.approvalStatus !== 'PENDING') {
+      throw new BadRequestException('Only tickets awaiting approval can be rejected');
+    }
+    const reason = dto.reason?.trim();
+    if (!reason) {
+      throw new BadRequestException('A rejection reason is required');
+    }
+    const updated = await this.prisma.ticket.update({
+      where: { id },
+      data: {
+        approvalStatus: 'REJECTED',
+        rejectionReason: reason,
+        rejectedById: actorId,
+        rejectedAt: new Date(),
+        ticketStatus: 'Rejected',
+        updatedBy: actorId,
+      },
+    });
+    await this.activity.log({
+      ticketId: id,
+      actorUserId: actorId,
+      type: 'REJECTED',
+      summary: 'Ticket request rejected',
+      meta: { reason },
+    });
+    await this.notifyRejection(updated, clientId);
+    return updated;
+  }
+
+  // ---- Stage 1: customer company admin approves/rejects an employee ticket ----
+
+  async customerApprove(id: string, clientId: string, actorId: string, viewer: TicketViewer) {
+    const ticket = await this.findOne(id, clientId, viewer);
+    if (ticket.approvalStatus !== 'PENDING_CUSTOMER') {
+      throw new BadRequestException('Only tickets awaiting your approval can be approved');
+    }
+    // Forward it on to the provider's Admin for the final approval.
+    const updated = await this.prisma.ticket.update({
+      where: { id },
+      data: { approvalStatus: 'PENDING', updatedBy: actorId },
+    });
+    await this.activity.log({
+      ticketId: id,
+      actorUserId: actorId,
+      type: 'CUSTOMER_APPROVED',
+      summary: 'Approved by company admin — sent for provider approval',
+    });
+    return updated;
+  }
+
+  async customerReject(
+    id: string,
+    clientId: string,
+    dto: { reason?: string },
+    actorId: string,
+    viewer: TicketViewer,
+  ) {
+    const ticket = await this.findOne(id, clientId, viewer);
+    if (ticket.approvalStatus !== 'PENDING_CUSTOMER') {
+      throw new BadRequestException('Only tickets awaiting your approval can be rejected');
+    }
+    const reason = dto.reason?.trim();
+    if (!reason) {
+      throw new BadRequestException('A rejection reason is required');
+    }
+    const updated = await this.prisma.ticket.update({
+      where: { id },
+      data: {
+        approvalStatus: 'REJECTED',
+        rejectionReason: reason,
+        rejectedById: actorId,
+        rejectedAt: new Date(),
+        ticketStatus: 'Rejected',
+        updatedBy: actorId,
+      },
+    });
+    await this.activity.log({
+      ticketId: id,
+      actorUserId: actorId,
+      type: 'REJECTED',
+      summary: 'Ticket rejected by company admin',
+      meta: { reason },
+    });
+    await this.notifyRejection(updated, clientId);
+    return updated;
+  }
+
+  /** Best-effort email to the requestor with the rejection reason. Never throws. */
+  private async notifyRejection(
+    ticket: { ticketNumber: string; subject: string; requestorEmail: string | null; requestorName: string | null; rejectionReason: string | null },
+    clientId: string,
+  ) {
+    try {
+      if (!ticket.requestorEmail) return;
+      if (!(await this.mailer.isConfigured(clientId))) {
+        this.logger.warn(
+          `SMTP not configured — rejection email for ${ticket.ticketNumber} not sent`,
+        );
+        return;
+      }
+      const html = `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 480px; margin: 0 auto;">
+          <div style="background:#b91c1c; padding:24px; border-radius:12px 12px 0 0; text-align:center;">
+            <h1 style="color:#fff; margin:0; font-size:18px;">Ticket request not approved</h1>
+          </div>
+          <div style="background:#fff; padding:28px; border:1px solid #e5e7eb; border-top:none; border-radius:0 0 12px 12px;">
+            <p style="color:#374151; font-size:14px;">Hi ${ticket.requestorName ?? 'there'},</p>
+            <p style="color:#374151; font-size:14px;">Your ticket <strong>${ticket.ticketNumber}</strong> — “${ticket.subject}” — was reviewed and <strong>not approved</strong>.</p>
+            <p style="color:#374151; font-size:14px;"><strong>Reason:</strong></p>
+            <div style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:12px; color:#374151; font-size:14px; white-space:pre-wrap;">${ticket.rejectionReason ?? ''}</div>
+            <p style="color:#6b7280; font-size:12px; margin-top:20px;">You can raise a new ticket with the requested changes.</p>
+          </div>
+        </div>`;
+      await this.mailer.sendMail(
+        {
+          to: ticket.requestorEmail,
+          subject: `Your ticket ${ticket.ticketNumber} was not approved`,
+          html,
+          text: `Your ticket ${ticket.ticketNumber} ("${ticket.subject}") was not approved.\n\nReason: ${ticket.rejectionReason ?? ''}`,
+        },
+        clientId,
+      );
+    } catch (err) {
+      this.logger.error(
+        `Failed to send rejection email for ${ticket.ticketNumber}`,
+        err instanceof Error ? err.stack : String(err),
+      );
+    }
   }
 
   async addAttachments(

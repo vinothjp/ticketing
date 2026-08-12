@@ -5,6 +5,7 @@ import { TasksService } from './tasks.service';
 import { CreateTaskDto, UpdateTaskDto } from './dto/task.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
+import { StaffGuard } from '../auth/staff.guard';
 
 type AuthedRequest = { user: { id: string; clientId: string; roles: string[] } };
 
@@ -19,11 +20,13 @@ export class TasksController {
   }
 
   @Post()
+  @UseGuards(StaffGuard)
   create(@Param('ticketId') ticketId: string, @Body() dto: CreateTaskDto, @Request() req: AuthedRequest) {
     return this.tasksService.create(ticketId, req.user.clientId, dto, req.user.id, req.user);
   }
 
   @Patch(':taskId')
+  @UseGuards(StaffGuard)
   update(
     @Param('ticketId') ticketId: string,
     @Param('taskId') taskId: string,
@@ -34,6 +37,7 @@ export class TasksController {
   }
 
   @Delete(':taskId')
+  @UseGuards(StaffGuard)
   remove(
     @Param('ticketId') ticketId: string,
     @Param('taskId') taskId: string,

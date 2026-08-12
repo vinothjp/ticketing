@@ -46,6 +46,12 @@ export class ProjectsController {
     return this.projects.financials(id, req.user.clientId);
   }
 
+  // Customer-company people eligible to be invited to this project's meetings.
+  @Get(':id/customer-contacts')
+  customerContacts(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.projects.customerContacts(id, req.user.clientId);
+  }
+
   // ---- Change requests (budget change control) ----
   @Get(':id/change-requests')
   changeRequests(@Param('id') id: string, @Request() req: AuthedRequest) {

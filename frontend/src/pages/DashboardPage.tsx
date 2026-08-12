@@ -33,8 +33,9 @@ const STATUS_LABELS: Record<string, string> = { Open: 'Open tickets' };
 export default function DashboardPage() {
   const { user } = useAuth();
   const isAdmin = !!user?.roles.includes('Admin');
+  const isCustomerAdmin = !!user?.roles.includes('CustomerAdmin');
   // Tasks are internal (agent-to-agent); customers never see them.
-  const isCustomer = !!user?.roles.includes('Customer') && !isAdmin;
+  const isCustomer = (!!user?.roles.includes('Customer') || isCustomerAdmin) && !isAdmin;
 
   // Month filter — defaults to the current month; last 12 months available.
   const [month, setMonth] = useState(monthKey(new Date()));
@@ -93,7 +94,9 @@ export default function DashboardPage() {
     const counts: Record<string, number> = {};
     for (const t of scoped) counts[t.ticketStatus] = (counts[t.ticketStatus] ?? 0) + 1;
     const base = ['Open', 'Resolved', 'Closed'];
-    const hidden = new Set(['New']);
+    // 'Approval Pending' is surfaced as a small "needs approval" flag by the
+    // heading instead of a full status card.
+    const hidden = new Set(['New', 'Approval Pending']);
     const extras = [
       ...STATUS_ORDER.filter((s) => counts[s] && !base.includes(s) && !hidden.has(s)),
       ...Object.keys(counts).filter((s) => !STATUS_ORDER.includes(s) && !base.includes(s) && !hidden.has(s)),
@@ -106,6 +109,7 @@ export default function DashboardPage() {
     () => scoped.filter((t) => !isTerminalStatus(t.ticketStatus) && t.dueDate && new Date(t.dueDate) < new Date()).length,
     [scoped],
   );
+
 
   const stats = useMemo(() => {
     const open = scoped.filter((t) => !isTerminalStatus(t.ticketStatus));

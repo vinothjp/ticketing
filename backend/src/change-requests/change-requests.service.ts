@@ -2,9 +2,11 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CrOptionsService } from './cr-options.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CreateChangeRequestDto, UpdateChangeRequestDto } from './dto/change-request.dto';
 
 type Actor = { id: string; username?: string; roles?: string[] };
+type CustomerActor = { id: string; clientId: string; customerCompanyId: string };
 
 const toDate = (v?: string | null) => (v ? new Date(v) : null);
 const trimOrNull = (v?: string | null) => (v && v.trim() ? v.trim() : null);
@@ -14,6 +16,7 @@ export class ChangeRequestsService {
   constructor(
     private prisma: PrismaService,
     private options: CrOptionsService,
+    private notifications: NotificationsService,
   ) {}
 
   async list(clientId: string, opts: { search?: string; status?: string; priority?: string }) {
@@ -37,6 +40,99 @@ export class ChangeRequestsService {
     const cr = await this.prisma.changeRequest.findFirst({ where: { id, clientId } });
     if (!cr) throw new NotFoundException('Change request not found');
     return cr;
+  }
+
+  // ---- Customer-admin approval workflow -----------------------------------
+
+  /** Provider sends a CR to its linked company's admin for approval. */
+  async sendForApproval(id: string, clientId: string, actor: Actor) {
+    const cr = await this.findOne(id, clientId);
+    if (!cr.customerCompanyId) {
+      throw new BadRequestException('Link a customer company before sending this CR for approval');
+    }
+    if (cr.approvalStatus === 'PENDING') throw new BadRequestException('Already sent for approval');
+    if (cr.approvalStatus === 'APPROVED') throw new BadRequestException('This CR has already been approved by the customer');
+    // A customer can't review an empty CR — require the core business content first.
+    const missing: string[] = [];
+    if (!cr.description?.trim()) missing.push('Description');
+    if (!cr.objective?.trim()) missing.push('Objective');
+    if (!cr.reasonForCr?.trim()) missing.push('Reason for the change');
+    if (missing.length) {
+      throw new BadRequestException(`Fill these in before sending for approval: ${missing.join(', ')}`);
+    }
+    const updated = await this.prisma.changeRequest.update({
+      where: { id },
+      data: { approvalStatus: 'PENDING', approvalReason: null, decidedById: null, decidedAt: null, updatedBy: actor.id },
+    });
+    const admins = await this.prisma.user.findMany({
+      where: {
+        clientId, isActive: true, customerCompanyId: cr.customerCompanyId,
+        userRoles: { some: { role: { name: 'CustomerAdmin' } } },
+      },
+      select: { id: true },
+    });
+    await this.notifications.notifyMany(admins.map((a) => a.id), {
+      clientId, type: 'CR_APPROVAL', title: 'Change request needs your approval',
+      body: `${cr.crNumber} — ${cr.title}`,
+    });
+    return updated;
+  }
+
+  /** CRs a customer company admin can see (those sent to them). */
+  listForCustomer(clientId: string, customerCompanyId: string) {
+    return this.prisma.changeRequest.findMany({
+      where: { clientId, customerCompanyId, approvalStatus: { in: ['PENDING', 'APPROVED', 'REJECTED'] } },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  private async findOwnedByCustomer(id: string, actor: CustomerActor) {
+    const cr = await this.prisma.changeRequest.findFirst({
+      where: { id, clientId: actor.clientId, customerCompanyId: actor.customerCompanyId },
+    });
+    if (!cr || cr.approvalStatus === 'NONE') throw new NotFoundException('Change request not found');
+    return cr;
+  }
+
+  async findOneForCustomer(id: string, actor: CustomerActor) {
+    return this.findOwnedByCustomer(id, actor);
+  }
+
+  async customerApprove(id: string, actor: CustomerActor) {
+    const cr = await this.findOwnedByCustomer(id, actor);
+    if (cr.approvalStatus !== 'PENDING') throw new BadRequestException('This CR is not awaiting your approval');
+    // Approval advances the workflow status too, so the CR reads as "Approved"
+    // everywhere (list, stat cards) and the provider can move it on to delivery.
+    const updated = await this.prisma.changeRequest.update({
+      where: { id }, data: { approvalStatus: 'APPROVED', status: 'Approved', decidedById: actor.id, decidedAt: new Date() },
+    });
+    await this.notifyDecision(cr, 'approved');
+    return updated;
+  }
+
+  async customerReject(id: string, dto: { reason?: string }, actor: CustomerActor) {
+    const cr = await this.findOwnedByCustomer(id, actor);
+    if (cr.approvalStatus !== 'PENDING') throw new BadRequestException('This CR is not awaiting your approval');
+    const reason = dto.reason?.trim();
+    if (!reason) throw new BadRequestException('A rejection reason is required');
+    const updated = await this.prisma.changeRequest.update({
+      where: { id }, data: { approvalStatus: 'REJECTED', approvalReason: reason, decidedById: actor.id, decidedAt: new Date() },
+    });
+    await this.notifyDecision(cr, 'rejected', reason);
+    return updated;
+  }
+
+  private async notifyDecision(
+    cr: { crNumber: string; title: string; createdBy: string | null; clientId: string },
+    verb: 'approved' | 'rejected',
+    reason?: string,
+  ) {
+    if (!cr.createdBy) return;
+    await this.notifications.notify({
+      clientId: cr.clientId, userId: cr.createdBy, type: 'CR_DECISION',
+      title: `Change request ${verb}`,
+      body: `${cr.crNumber} — ${cr.title}${reason ? ` · ${reason}` : ''}`,
+    });
   }
 
   // Target Release Date >= CR End Date; Expected Go Live >= Target Release Date.
@@ -77,6 +173,7 @@ export class ChangeRequestsService {
           title: dto.title.trim(),
           description: trimOrNull(dto.description),
           featureName: trimOrNull(dto.featureName),
+          customerCompanyId: trimOrNull(dto.customerCompanyId),
           customer: trimOrNull(dto.customer),
           projectName: trimOrNull(dto.projectName),
           moduleName: trimOrNull(dto.moduleName),
@@ -89,6 +186,12 @@ export class ChangeRequestsService {
           functionalConsultant: trimOrNull(dto.functionalConsultant),
           technicalConsultant: trimOrNull(dto.technicalConsultant),
           projectManager: trimOrNull(dto.projectManager),
+          // Business Requirement fields — needed so a CR is complete enough to
+          // send for customer approval straight from the create form.
+          requirementDetails: trimOrNull(dto.requirementDetails),
+          objective: trimOrNull(dto.objective),
+          reasonForCr: trimOrNull(dto.reasonForCr),
+          benefitToCustomer: trimOrNull(dto.benefitToCustomer),
           crDate: toDate(dto.crDate) ?? new Date(),
           crStartDate: dates.crStartDate,
           crEndDate: dates.crEndDate,
@@ -126,6 +229,7 @@ export class ChangeRequestsService {
     if (has('title')) data.title = dto.title!.trim();
     if (has('description')) data.description = trimOrNull(dto.description);
     if (has('featureName')) data.featureName = trimOrNull(dto.featureName);
+    if (has('customerCompanyId')) data.customerCompanyId = trimOrNull(dto.customerCompanyId);
     if (has('customer')) data.customer = trimOrNull(dto.customer);
     if (has('projectName')) data.projectName = trimOrNull(dto.projectName);
     if (has('moduleName')) data.moduleName = trimOrNull(dto.moduleName);

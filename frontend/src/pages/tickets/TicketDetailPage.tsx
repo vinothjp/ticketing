@@ -9,10 +9,11 @@ import { assetUrl } from '@/lib/assetUrl';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { getPriorityMeta, formatCountdown, type TicketTechnicianRow } from './ticketHelpers';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Textarea } from '@/components/ui/textarea';
+import { getPriorityMeta, formatCountdown, getApprovalMeta, type TicketTechnicianRow } from './ticketHelpers';
 import type { MergedTemplateField } from './DynamicTicketField';
 import HistoryTab from './detail/HistoryTab';
 import ResolutionTab from './detail/ResolutionTab';
@@ -27,6 +28,13 @@ interface TicketDetail {
   description: string;
   priority?: string | null;
   ticketStatus: string;
+  approvalStatus?: string | null;
+  productName?: string | null;
+  productCode?: string | null;
+  moduleName?: string | null;
+  consultantType?: string | null;
+  rejectionReason?: string | null;
+  requestorUserId?: string | null;
   ticketCategory?: string | null;
   subCategory?: string | null;
   department?: string | null;
@@ -86,6 +94,12 @@ export default function TicketDetailPage() {
   const { id } = useParams<{ id: string }>();
   const qc = useQueryClient();
   const [tab, setTab] = useState('details');
+  const { user } = useAuth();
+  const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer');
+  const isTenantAdmin = !!user?.roles.includes('Admin');
+  const isCustomerAdmin = !!user?.roles.includes('CustomerAdmin');
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
 
   const { data: ticket, isLoading } = useQuery<TicketDetail>({
     queryKey: ['tickets', id],
@@ -110,6 +124,7 @@ export default function TicketDetailPage() {
   const { data: users = [] } = useQuery<UserOption[]>({
     queryKey: ['users'],
     queryFn: async () => (await api.get('/api/users')).data,
+    enabled: isStaff, // customers never assign technicians, so don't fetch staff list
   });
 
   const updateMutation = useMutation({
@@ -127,12 +142,42 @@ export default function TicketDetailPage() {
       qc.invalidateQueries({ queryKey: ['tickets', id] });
       qc.invalidateQueries({ queryKey: ['tickets'] });
     },
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error assigning technicians'),
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error assigning agent'),
   });
 
+  const invalidateTicket = () => {
+    qc.invalidateQueries({ queryKey: ['tickets', id] });
+    qc.invalidateQueries({ queryKey: ['tickets'] });
+    qc.invalidateQueries({ queryKey: ['ticket-activity', id] });
+  };
+  const approveMutation = useMutation({
+    mutationFn: () => api.post(`/api/tickets/${id}/approve`),
+    onSuccess: () => { invalidateTicket(); toast.success('Ticket approved'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error approving ticket'),
+  });
+  const rejectMutation = useMutation({
+    mutationFn: (reason: string) => api.post(`/api/tickets/${id}/reject`, { reason }),
+    onSuccess: () => { invalidateTicket(); setRejectOpen(false); setRejectReason(''); toast.success('Ticket rejected'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error rejecting ticket'),
+  });
+  // Stage 1: the customer company admin approves/rejects their employee's ticket.
+  const custApproveMutation = useMutation({
+    mutationFn: () => api.post(`/api/tickets/${id}/customer-approve`),
+    onSuccess: () => { invalidateTicket(); toast.success('Approved — sent for provider approval'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error approving ticket'),
+  });
+  const custRejectMutation = useMutation({
+    mutationFn: (reason: string) => api.post(`/api/tickets/${id}/customer-reject`, { reason }),
+    onSuccess: () => { invalidateTicket(); setRejectOpen(false); setRejectReason(''); toast.success('Ticket rejected'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error rejecting ticket'),
+  });
+  // The Reject dialog serves whichever stage applies to this viewer.
+  const submitReject = (reason: string) => {
+    if (isCustomerAdmin && ticket?.approvalStatus === 'PENDING_CUSTOMER') custRejectMutation.mutate(reason);
+    else rejectMutation.mutate(reason);
+  };
+
   // Project association (staff only).
-  const { user } = useAuth();
-  const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer');
   const { data: projectOptions = [] } = useQuery<{ id: string; name: string; projectNumber: string }[]>({
     queryKey: ['projects'],
     queryFn: async () => (await api.get('/api/projects')).data,
@@ -171,11 +216,72 @@ export default function TicketDetailPage() {
           <span className="text-sm text-muted-foreground">#{ticket.ticketNumber}</span>
           <h1 className="text-xl font-bold text-foreground">{ticket.subject}</h1>
           <Badge variant={priority.code === 'P1' ? 'destructive' : 'secondary'}>{priority.label}</Badge>
+          {getApprovalMeta(ticket.approvalStatus) && (
+            <span className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${getApprovalMeta(ticket.approvalStatus)!.className}`}>
+              {getApprovalMeta(ticket.approvalStatus)!.label}
+            </span>
+          )}
         </div>
         <div className="flex gap-2">
           <Button onClick={() => setTab('conversation')}>Reply</Button>
         </div>
       </div>
+
+      {/* Stage 1: the customer company admin reviews their employee's ticket. */}
+      {isCustomerAdmin && ticket.approvalStatus === 'PENDING_CUSTOMER' && (
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+          <div className="text-sm text-amber-700 dark:text-amber-300">
+            A team member raised this ticket. Approve to send it on for provider approval, or reject it.
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setRejectOpen(true)}>Reject</Button>
+            <Button size="sm" onClick={() => custApproveMutation.mutate()} disabled={custApproveMutation.isPending}>Approve</Button>
+          </div>
+        </div>
+      )}
+      {/* Stage 2: tenant Admin approves/rejects a customer-submitted ticket. */}
+      {isTenantAdmin && ticket.approvalStatus === 'PENDING' && (
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+          <div className="text-sm text-amber-700 dark:text-amber-300">
+            This ticket was submitted by a customer and is awaiting your approval.
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setRejectOpen(true)}>Reject</Button>
+            <Button size="sm" onClick={() => approveMutation.mutate()} disabled={approveMutation.isPending}>Approve</Button>
+          </div>
+        </div>
+      )}
+      {ticket.approvalStatus === 'REJECTED' && (
+        <div className="mb-5 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3">
+          <div className="text-sm font-medium text-destructive">This ticket request was rejected.</div>
+          {ticket.rejectionReason && (
+            <div className="mt-1 text-sm text-foreground whitespace-pre-wrap"><span className="text-muted-foreground">Reason: </span>{ticket.rejectionReason}</div>
+          )}
+        </div>
+      )}
+
+      <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Reject ticket request</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">The customer will be notified by email with this reason.</p>
+          <Textarea
+            rows={4}
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="Why is this request being rejected?"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRejectOpen(false)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={!rejectReason.trim() || rejectMutation.isPending || custRejectMutation.isPending}
+              onClick={() => submitReject(rejectReason.trim())}
+            >
+              Reject &amp; notify
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
         <Tabs value={tab} onValueChange={setTab}>
@@ -183,8 +289,9 @@ export default function TicketDetailPage() {
             <TabsTrigger value="details">Details</TabsTrigger>
             <TabsTrigger value="conversation">Conversation</TabsTrigger>
             <TabsTrigger value="resolution">Resolution</TabsTrigger>
-            <TabsTrigger value="tasks">Tasks</TabsTrigger>
-            <TabsTrigger value="approvals">Approvals</TabsTrigger>
+            {/* Tasks & Approvals are internal staff workflows — hidden from customers. */}
+            {isStaff && <TabsTrigger value="tasks">Tasks</TabsTrigger>}
+            {isStaff && <TabsTrigger value="approvals">Approvals</TabsTrigger>}
             <TabsTrigger value="history">History</TabsTrigger>
           </TabsList>
 
@@ -223,6 +330,30 @@ export default function TicketDetailPage() {
               </CardContent>
             </Card>
 
+            {(ticket.productName || ticket.moduleName || ticket.consultantType) && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">Product &amp; routing</CardTitle>
+                </CardHeader>
+                <CardContent className="grid grid-cols-1 gap-4 pb-4 sm:grid-cols-3">
+                  <div>
+                    <div className="text-xs text-muted-foreground">Product</div>
+                    <div className="text-sm text-foreground">{ticket.productName ?? '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Module</div>
+                    <div className="text-sm text-foreground">{ticket.moduleName ?? '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Type</div>
+                    <div className="text-sm text-foreground">
+                      {ticket.consultantType ? ticket.consultantType.charAt(0) + ticket.consultantType.slice(1).toLowerCase() : '—'}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             {templateFieldRows.length > 0 && (
               <Card>
                 <CardHeader>
@@ -244,7 +375,7 @@ export default function TicketDetailPage() {
             <ConversationTab ticketId={ticket.id} />
           </TabsContent>
           <TabsContent value="resolution" className="pt-4">
-            <ResolutionTab ticket={ticket} />
+            <ResolutionTab ticket={ticket} readOnly={!isStaff} />
           </TabsContent>
           <TabsContent value="tasks" className="pt-4">
             <TasksTab ticketId={ticket.id} />
@@ -275,37 +406,50 @@ export default function TicketDetailPage() {
 
           <Card>
             <CardContent className="space-y-3 py-4 text-sm">
+              {/* Customers see status/priority read-only — only staff may change them. */}
               <div>
                 <div className="mb-1 text-xs text-muted-foreground">Status</div>
-                <Select
-                  value={ticket.ticketStatus}
-                  onValueChange={(v) => {
-                    updateMutation.mutate({ ticketStatus: v });
-                    // On Resolved: jump to the Resolution tab. If a resolution note
-                    // already exists just confirm; otherwise the tab prompts for one.
-                    if (v.toLowerCase() === 'resolved') {
-                      setTab('resolution');
-                      if (ticket.resolution?.trim()) toast.success('Ticket resolved');
-                    }
-                  }}
-                >
-                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {statusOptions.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                {isStaff ? (
+                  <Select
+                    value={ticket.ticketStatus}
+                    onValueChange={(v) => {
+                      updateMutation.mutate({ ticketStatus: v });
+                      // On Resolved: jump to the Resolution tab. If a resolution note
+                      // already exists just confirm; otherwise the tab prompts for one.
+                      if (v.toLowerCase() === 'resolved') {
+                        setTab('resolution');
+                        if (ticket.resolution?.trim()) toast.success('Ticket resolved');
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {statusOptions.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-foreground">
+                    {statusOptions.find((o) => o.value === ticket.ticketStatus)?.label ?? ticket.ticketStatus}
+                  </div>
+                )}
               </div>
               <div>
                 <div className="mb-1 text-xs text-muted-foreground">Priority</div>
-                <Select
-                  value={ticket.priority ?? undefined}
-                  onValueChange={(v) => updateMutation.mutate({ priority: v })}
-                >
-                  <SelectTrigger className="w-full"><SelectValue placeholder="Select..." /></SelectTrigger>
-                  <SelectContent>
-                    {priorityOptions.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                {isStaff ? (
+                  <Select
+                    value={ticket.priority ?? undefined}
+                    onValueChange={(v) => updateMutation.mutate({ priority: v })}
+                  >
+                    <SelectTrigger className="w-full"><SelectValue placeholder="Select..." /></SelectTrigger>
+                    <SelectContent>
+                      {priorityOptions.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-foreground">
+                    {priorityOptions.find((o) => o.value === ticket.priority)?.label ?? ticket.priority ?? '—'}
+                  </div>
+                )}
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Template</span>
@@ -333,23 +477,35 @@ export default function TicketDetailPage() {
           </Card>
 
           <Card>
-            <CardHeader><CardTitle className="text-sm">Assigned to</CardTitle></CardHeader>
+            <CardHeader><CardTitle className="text-sm">Assigned agent</CardTitle></CardHeader>
             <CardContent className="space-y-2 pb-4">
-              {users.length === 0 && <p className="text-sm text-muted-foreground">No users available.</p>}
-              {users.map((u) => {
-                const selected = ticket.technicians.map((t) => t.user.id);
-                return (
-                  <label key={u.id} className="flex items-center gap-2 text-sm">
-                    <Checkbox
-                      checked={selected.includes(u.id)}
-                      onCheckedChange={(checked) =>
-                        assignMutation.mutate(checked ? [...selected, u.id] : selected.filter((uid) => uid !== u.id))
-                      }
-                    />
-                    {u.username}
-                  </label>
-                );
-              })}
+              {isStaff ? (
+                // A ticket has at most one agent. Selecting a name (re)assigns; "Unassigned" clears it.
+                (() => {
+                  const assignedId = ticket.technicians[0]?.user.id ?? 'none';
+                  const pending = ticket.approvalStatus === 'PENDING' || ticket.approvalStatus === 'REJECTED';
+                  if (pending) {
+                    return <p className="text-sm text-muted-foreground">Assignable once the ticket is approved.</p>;
+                  }
+                  return (
+                    <Select
+                      value={assignedId}
+                      onValueChange={(v) => assignMutation.mutate(v === 'none' ? [] : [v])}
+                    >
+                      <SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Unassigned</SelectItem>
+                        {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  );
+                })()
+              ) : (
+                // Customers see who is handling their ticket, but cannot change it.
+                ticket.technicians.length > 0
+                  ? <div className="text-sm text-foreground">{ticket.technicians[0].user.username}</div>
+                  : <p className="text-sm text-muted-foreground">Not yet assigned.</p>
+              )}
             </CardContent>
           </Card>
 

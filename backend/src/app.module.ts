@@ -26,6 +26,10 @@ import { TimesheetModule } from './timesheet/timesheet.module';
 import { RegistersModule } from './project-registers/registers.module';
 import { ProjectAttachmentsModule } from './project-attachments/project-attachments.module';
 import { ChangeRequestsModule } from './change-requests/change-requests.module';
+import { CustomerTeamModule } from './customer-team/customer-team.module';
+import { ProjectTemplatesModule } from './project-templates/project-templates.module';
+import { ProductsModule } from './products/products.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -54,6 +58,10 @@ import { ChangeRequestsModule } from './change-requests/change-requests.module';
     RegistersModule,
     ProjectAttachmentsModule,
     ChangeRequestsModule,
+    CustomerTeamModule,
+    ProjectTemplatesModule,
+    ProductsModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

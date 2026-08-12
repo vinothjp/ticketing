@@ -23,6 +23,8 @@ export class CreateProjectDto {
   @IsOptional() @IsDateString() startDate?: string;
   @IsOptional() @IsDateString() endDate?: string;
   @IsOptional() @IsObject() features?: Record<string, any>;
+  // When set, the project is scaffolded from this template's WBS blueprint.
+  @IsOptional() @IsString() projectTemplateId?: string;
 }
 
 export class UpdateProjectDto {

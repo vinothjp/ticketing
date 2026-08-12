@@ -8,6 +8,7 @@ import { AssignRolesDto } from './dto/assign-roles.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
 import { RolesGuard } from '../auth/roles.guard';
+import { StaffGuard } from '../auth/staff.guard';
 import { Roles } from '../auth/roles.decorator';
 
 type AuthedRequest = { user: { id: string; clientId: string } };
@@ -17,14 +18,17 @@ type AuthedRequest = { user: { id: string; clientId: string } };
 export class UsersController {
   constructor(private usersService: UsersService) {}
 
-  // GET stays open to any authenticated tenant user — the ticket detail/create
-  // screens need the user list to show/assign technicians.
+  // GET is open to any authenticated *staff* member — the ticket detail/create
+  // screens need the user list to show/assign technicians. StaffGuard keeps
+  // external customers out, so the internal staff roster isn't disclosed to them.
   @Get()
+  @UseGuards(StaffGuard)
   findAll(@Request() req: AuthedRequest, @Query('includeCustomers') includeCustomers?: string) {
     return this.usersService.findAll(req.user.clientId, includeCustomers === 'true');
   }
 
   @Get(':id')
+  @UseGuards(StaffGuard)
   findOne(@Param('id') id: string, @Request() req: AuthedRequest) {
     return this.usersService.findOne(id, req.user.clientId);
   }

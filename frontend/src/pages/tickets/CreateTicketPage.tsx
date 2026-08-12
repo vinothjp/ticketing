@@ -26,6 +26,7 @@ interface TemplateData {
 interface PicklistOption { value: string; label: string; parentValue?: string | null; }
 interface UserOption { id: string; username: string; }
 interface CompanyOption { id: string; name: string; }
+interface SapProduct { id: string; name: string; code: string; autoAssign: boolean; modules: { id: string; name: string }[]; }
 interface SlaPolicy { id: string; priority: string; resolutionHours: number; responseHours?: number | null; isActive: boolean; }
 
 const GROUP_LABELS: Record<MergedTemplateField['group'], string> = {
@@ -101,6 +102,21 @@ export default function CreateTicketPage() {
     enabled: !isCustomer,
   });
 
+  // SAP routing: product/module the ticket is about + technical/functional. Drives
+  // auto-assignment. A customer sees only their company's products.
+  const { data: sapProducts = [] } = useQuery<SapProduct[]>({
+    queryKey: ['my-company-products'],
+    queryFn: async () => (await api.get('/api/my-company/products')).data,
+  });
+  const [routing, setRouting] = useState<{ productId: string; moduleId: string; consultantType: string }>({ productId: '', moduleId: '', consultantType: '' });
+  const selProduct = sapProducts.find((p) => p.id === routing.productId);
+  const chooseProduct = (pid: string) => {
+    const p = sapProducts.find((x) => x.id === pid);
+    // B1 has a single module — auto-select it; S/4HANA needs a module choice.
+    const mod = p && p.modules.length === 1 ? p.modules[0].id : '';
+    setRouting({ productId: pid, moduleId: mod, consultantType: '' });
+  };
+
   const { data: templates = [] } = useQuery<TemplateSummary[]>({
     queryKey: ['templates'],
     queryFn: async () => (await api.get('/api/templates')).data,
@@ -147,7 +163,7 @@ export default function CreateTicketPage() {
   const { data: users = [] } = useQuery<UserOption[]>({
     queryKey: ['users'],
     queryFn: async () => (await api.get('/api/users')).data,
-    enabled: needsUsers,
+    enabled: needsUsers && !isCustomer, // staff list is not exposed to customers
   });
 
   const { data: slaPolicies = [] } = useQuery<SlaPolicy[]>({
@@ -188,6 +204,9 @@ export default function CreateTicketPage() {
     mutationFn: async (_mode: 'submit' | 'saveAndNew') => {
       const payload: Record<string, any> = { templateId: selectedTemplateId };
       if (selectedCompanyId) payload.customerCompanyId = selectedCompanyId;
+      if (routing.productId) payload.productId = routing.productId;
+      if (routing.moduleId) payload.moduleId = routing.moduleId;
+      if (routing.consultantType) payload.consultantType = routing.consultantType;
       const customFields: Record<string, any> = {};
       for (const f of visibleFields) {
         if (f.dataType === 'SYSTEM' || f.dataType === 'FILE') continue;
@@ -311,6 +330,50 @@ export default function CreateTicketPage() {
         <p className="text-muted-foreground">Loading template...</p>
       ) : (
         <>
+          {sapProducts.length > 0 && (
+            <section className="mb-8">
+              <h2 className="text-base font-semibold text-foreground">Which product is this about?</h2>
+              <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <div>
+                  <div className="mb-1 text-sm text-muted-foreground">Product</div>
+                  <Select value={routing.productId || undefined} onValueChange={chooseProduct}>
+                    <SelectTrigger className="w-full"><SelectValue placeholder="Select product" /></SelectTrigger>
+                    <SelectContent>
+                      {sapProducts.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {/* Module: needed for products with more than one module (S/4HANA). */}
+                {selProduct && selProduct.modules.length > 1 && (
+                  <div>
+                    <div className="mb-1 text-sm text-muted-foreground">Module</div>
+                    <Select value={routing.moduleId || undefined} onValueChange={(v) => setRouting((r) => ({ ...r, moduleId: v }))}>
+                      <SelectTrigger className="w-full"><SelectValue placeholder="Select module" /></SelectTrigger>
+                      <SelectContent>
+                        {selProduct.modules.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                {/* Type: only for auto-assigned products (not "Others"). */}
+                {selProduct?.autoAssign && (
+                  <div>
+                    <div className="mb-1 text-sm text-muted-foreground">Issue type</div>
+                    <Select value={routing.consultantType || undefined} onValueChange={(v) => setRouting((r) => ({ ...r, consultantType: v }))}>
+                      <SelectTrigger className="w-full"><SelectValue placeholder="Technical / Functional" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="FUNCTIONAL">Functional</SelectItem>
+                        <SelectItem value="TECHNICAL">Technical</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+              {selProduct && !selProduct.autoAssign && (
+                <p className="mt-2 text-xs text-muted-foreground">This product is assigned manually by an admin.</p>
+              )}
+            </section>
+          )}
           {GROUP_ORDER.map((group) => {
             const groupFields = visibleFields.filter((f) => f.group === group);
             if (groupFields.length === 0) return null;

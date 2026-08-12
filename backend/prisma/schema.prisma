@@ -42,6 +42,8 @@ model Client {
   updatedBy    String?
   users        User[]
   roles        Role[]
+  projectTemplates ProjectTemplate[]
+  products     Product[]
   license      License?
   templates    Template[]
   picklistOptions PicklistOption[]
@@ -127,6 +129,7 @@ model CustomerCompany {
   users        User[]
   tickets      Ticket[]
   projects     Project[]
+  products     CustomerCompanyProduct[]
 
   @@unique([clientId, name])
 }
@@ -166,6 +169,8 @@ model User {
   customerCompany   CustomerCompany? @relation(fields: [customerCompanyId], references: [id], onDelete: SetNull)
   userRoles      UserRole[]
   ticketAssignments TicketTechnician[]
+  moduleConsultants ModuleConsultant[]
+  notifications  Notification[]
   projectTaskWatchers ProjectTaskWatcher[]
   projectResources ProjectResource[]
   projectTimesheets ProjectTimesheet[]
@@ -245,6 +250,107 @@ model FormPermission {
   updatedBy String?
 
   @@unique([roleId, formId])
+}
+
+// In-app notification for a user (bell feed). Not email.
+model Notification {
+  id        String   @id @default(uuid())
+  clientId  String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // TICKET_CREATED | TICKET_ASSIGNED | TICKET_ACK
+  title     String
+  body      String?
+  ticketId  String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read])
+  @@index([userId, createdAt])
+}
+
+// Products the provider supports (SAP B1, SAP S/4HANA, Others). Auto-assignment
+// routes a customer ticket to a consultant based on product → module → track.
+model Product {
+  id         String   @id @default(uuid())
+  clientId   String
+  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name       String
+  code       String                              // 'B1' | 'S4HANA' | 'OTHERS'
+  autoAssign Boolean  @default(true)             // Others = false (admin assigns manually)
+  sortOrder  Int      @default(0)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  modules    ProductModule[]
+  companies  CustomerCompanyProduct[]
+
+  @@unique([clientId, name])
+}
+
+// Which products a customer company uses (limits the products they can raise
+// tickets for).
+model CustomerCompanyProduct {
+  id                String   @id @default(uuid())
+  customerCompanyId String
+  customerCompany   CustomerCompany @relation(fields: [customerCompanyId], references: [id], onDelete: Cascade)
+  productId         String
+  product           Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([customerCompanyId, productId])
+  @@index([productId])
+}
+
+// A module within a product. B1 has one "whole-product" module; S/4HANA has many
+// (FI, MM, SD, …); Others has none.
+model ProductModule {
+  id          String   @id @default(uuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name        String
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  consultants ModuleConsultant[]
+
+  @@index([productId])
+}
+
+// The consultant handling a module for a given track (technical/functional) and
+// rank (primary/secondary). Auto-assignment prefers primary, falls back to secondary.
+model ModuleConsultant {
+  id        String   @id @default(uuid())
+  moduleId  String
+  module    ProductModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  track     String   // 'TECHNICAL' | 'FUNCTIONAL'
+  rank      String   // 'PRIMARY' | 'SECONDARY'
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([moduleId, track, rank])
+  @@index([userId])
+}
+
+// A reusable project blueprint (milestones + WBS tasks) applied when creating a
+// project. `blueprint` shape: { milestones: [{ name, tasks: [{ title, wbsType, durationDays }] }] }.
+model ProjectTemplate {
+  id          String   @id @default(uuid())
+  clientId    String
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  category    String?
+  icon        String?
+  color       String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  blueprint   Json     @default("{\"milestones\":[]}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String?
+  updatedBy   String?
+
+  @@unique([clientId, name])
 }
 
 model Template {
@@ -348,6 +454,11 @@ model Ticket {
   customerCompanyId     String?
   department             String?
   requestorContact      String?
+  // SAP routing: which product/module the ticket is about + technical/functional.
+  // Drives auto-assignment to the module's consultant.
+  productId             String?
+  moduleId              String?
+  consultantType        String?      // TECHNICAL | FUNCTIONAL
   priority              String?
   ticketStatus          String
   ticketCategory        String?
@@ -369,6 +480,16 @@ model Ticket {
   resolvedAt            DateTime?
   resolvedById          String?
   reopenedCount         Int          @default(0)
+
+  // Customer-created ticket approval gate.
+  // NONE = staff-created (no gate); PENDING = awaiting tenant-Admin approval;
+  // APPROVED = active (assignable); REJECTED = declined (reason required, emailed).
+  approvalStatus        String       @default("NONE")
+  rejectionReason       String?
+  approvedById          String?
+  approvedAt            DateTime?
+  rejectedById          String?
+  rejectedAt            DateTime?
 
   // Admin-designed custom fields (keyed by TemplateField.fieldKey)
   customFields          Json         @default("{}")
@@ -958,6 +1079,14 @@ model ChangeRequest {
   priority             String?                                   // listKey: priority
   crCategory           String?                                   // listKey: category
   status               String   @default("New")                 // listKey: status
+
+  // Customer-admin approval — a CR is sent to the linked company's admin to approve.
+  customerCompanyId    String?
+  approvalStatus       String   @default("NONE")                // NONE | PENDING | APPROVED | REJECTED
+  approvalReason       String?                                  // rejection reason
+  decidedById          String?
+  decidedAt            DateTime?
+
   requestedBy          String?                                   // listKey: person
   businessOwner        String?                                   // listKey: person
   functionalConsultant String?                                   // listKey: person

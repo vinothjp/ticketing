@@ -35,14 +35,23 @@ import ProjectAnalyticsPage from './pages/projects/ProjectAnalyticsPage';
 import ResourceCostsPage from './pages/ResourceCostsPage';
 import TimesheetPage from './pages/timesheet/TimesheetPage';
 import ChangeRequestListPage from './pages/change-requests/ChangeRequestListPage';
+import ChangeRequestCreatePage from './pages/change-requests/ChangeRequestCreatePage';
 import ChangeRequestDetailPage from './pages/change-requests/ChangeRequestDetailPage';
 import ChangeRequestOptionsPage from './pages/change-requests/ChangeRequestOptionsPage';
+import CustomerChangeRequestsPage from './pages/change-requests/CustomerChangeRequestsPage';
+import CustomerChangeRequestDetailPage from './pages/change-requests/CustomerChangeRequestDetailPage';
+import CustomerTeamPage from './pages/CustomerTeamPage';
+import ProjectTemplatesListPage from './pages/projects/ProjectTemplatesListPage';
+import ProjectTemplateDesignerPage from './pages/projects/ProjectTemplateDesignerPage';
+import ProductsPage from './pages/ProductsPage';
 
 const queryClient = new QueryClient();
 const isSuperAdmin = (roles: string[]) => roles.includes('SuperAdmin');
 const isTenantAdmin = (roles: string[]) => roles.includes('Admin');
 // SMTP settings: admins + agents (Viewer), never customers.
 const isStaff = (roles: string[]) => roles.includes('Admin') || roles.includes('Viewer');
+// A customer company's own admin — self-service team management.
+const isCustomerAdmin = (roles: string[]) => roles.includes('CustomerAdmin');
 
 export default function App() {
   return (
@@ -87,6 +96,9 @@ export default function App() {
                         <Route path="/tickets/:id" element={<TicketDetailPage />} />
                         <Route path="/tickets" element={<TicketListPage />} />
                         <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
+                        <Route path="/my-team" element={<RoleGate allow={isCustomerAdmin} redirectTo="/tickets"><CustomerTeamPage /></RoleGate>} />
+                        <Route path="/my-change-requests" element={<RoleGate allow={isCustomerAdmin} redirectTo="/tickets"><CustomerChangeRequestsPage /></RoleGate>} />
+                        <Route path="/my-change-requests/:id" element={<RoleGate allow={isCustomerAdmin} redirectTo="/tickets"><CustomerChangeRequestDetailPage /></RoleGate>} />
                         <Route path="/knowledge-base/new" element={<RoleGate allow={isStaff} redirectTo="/knowledge-base"><KbArticleEditorPage /></RoleGate>} />
                         <Route path="/knowledge-base/:id" element={<KbArticlePage />} />
                         <Route path="/knowledge-base/:id/edit" element={<RoleGate allow={isStaff} redirectTo="/knowledge-base"><KbArticleEditorPage /></RoleGate>} />
@@ -95,6 +107,7 @@ export default function App() {
                         <Route path="/timesheet" element={<RoleGate allow={isStaff} redirectTo="/tickets"><TimesheetPage /></RoleGate>} />
                         <Route path="/projects/:id" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectDetailPage /></RoleGate>} />
                         <Route path="/change-requests" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ChangeRequestListPage /></RoleGate>} />
+                        <Route path="/change-requests/new" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ChangeRequestCreatePage /></RoleGate>} />
                         <Route path="/change-requests/options" element={<RoleGate allow={isTenantAdmin} redirectTo="/change-requests"><ChangeRequestOptionsPage /></RoleGate>} />
                         <Route path="/change-requests/:id" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ChangeRequestDetailPage /></RoleGate>} />
                         {/* Admin-only sections — non-admins are redirected to their tickets */}
@@ -106,6 +119,10 @@ export default function App() {
                         <Route path="/admin/templates/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><TemplateDesignerPage /></RoleGate>} />
                         <Route path="/admin/templates/:id" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><TemplateDesignerPage /></RoleGate>} />
                         <Route path="/admin/picklists" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><PicklistOptionsPage /></RoleGate>} />
+                        <Route path="/admin/products" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductsPage /></RoleGate>} />
+                        <Route path="/admin/project-templates" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProjectTemplatesListPage /></RoleGate>} />
+                        <Route path="/admin/project-templates/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProjectTemplateDesignerPage /></RoleGate>} />
+                        <Route path="/admin/project-templates/:id" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProjectTemplateDesignerPage /></RoleGate>} />
                         <Route path="/admin/sla" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><SlaPolicyPage /></RoleGate>} />
                         <Route path="/admin/channels" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ChannelsPage /></RoleGate>} />
                         <Route path="/admin/resource-costs" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ResourceCostsPage /></RoleGate>} />

@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsInt, Min, Max, IsEmail } from 'class-validator';
+import { IsOptional, IsString, IsInt, Min, Max, IsEmail, IsArray } from 'class-validator';
 
 export class CreateCompanyDto {
   @IsString() name!: string;
@@ -6,6 +6,13 @@ export class CreateCompanyDto {
   @IsOptional() @IsEmail() contactEmail?: string;
   @IsOptional() @IsInt() @Min(1) @Max(50) maxContacts?: number;
   @IsOptional() @IsString() status?: string;
+  // Products this company uses (limits what they can raise tickets for).
+  @IsOptional() @IsArray() @IsString({ each: true }) productIds?: string[];
+  // Optional bootstrap: seed the company's first CustomerAdmin login. After this
+  // one hand-off, all further user management is done by the customer themselves.
+  @IsOptional() @IsString() adminUsername?: string;
+  @IsOptional() @IsEmail() adminEmail?: string;
+  @IsOptional() @IsString() adminPassword?: string;
 }
 
 export class UpdateCompanyDto {
@@ -14,6 +21,7 @@ export class UpdateCompanyDto {
   @IsOptional() @IsEmail() contactEmail?: string;
   @IsOptional() @IsInt() @Min(1) @Max(50) maxContacts?: number;
   @IsOptional() @IsString() status?: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) productIds?: string[];
 }
 
 export class CreateContactDto {

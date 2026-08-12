@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import NotificationBell from './NotificationBell';
 import {
   LayoutDashboard,
   Users,
@@ -25,6 +26,7 @@ import {
   Wallet,
   Clock3,
   GitPullRequestArrow,
+  Boxes,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api from '../lib/api';
@@ -74,7 +76,9 @@ const tenantNavGroups: NavGroup[] = [
       { to: '/users', label: 'Users', icon: Users },
       { to: '/roles', label: 'Roles', icon: KeyRound },
       { to: '/admin/customer-companies', label: 'Customer Companies', icon: Building2 },
+      { to: '/admin/products', label: 'Products', icon: Boxes },
       { to: '/admin/templates', label: 'Templates', icon: LayoutTemplate },
+      { to: '/admin/project-templates', label: 'Project Templates', icon: FolderKanban },
       { to: '/admin/picklists', label: 'Picklist Options', icon: ListTree },
       { to: '/change-requests/options', label: 'CR Option Lists', icon: GitPullRequestArrow },
       { to: '/admin/sla', label: 'SLA Policies', icon: Timer },
@@ -108,8 +112,9 @@ export default function Layout({ children }: { children: ReactNode }) {
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const isSuperAdmin = !!user?.roles.includes('SuperAdmin');
   const isAdmin = !!user?.roles.includes('Admin');
-  // External customer contacts get a restricted portal — just their tickets.
-  const isCustomer = !!user?.roles.includes('Customer') && !isAdmin;
+  const isCustomerAdmin = !!user?.roles.includes('CustomerAdmin');
+  // Customer side = a company's own admin + its employees. Restricted portal.
+  const isCustomer = (!!user?.roles.includes('Customer') || isCustomerAdmin) && !isAdmin;
   const navGroups = isSuperAdmin
     ? superAdminNavGroups
     : (() => {
@@ -128,8 +133,15 @@ export default function Layout({ children }: { children: ReactNode }) {
               };
             }
             // Customers see Dashboard, Tickets, and the Knowledge Base (self-service) — not Projects.
+            // A customer company admin also gets a Team screen to manage their own people.
             if (group.label === 'Workspace' && isCustomer) {
-              return { ...group, items: group.items.filter((i) => ['/dashboard', '/tickets', '/knowledge-base'].includes(i.to)) };
+              const allowed = ['/dashboard', '/tickets', '/knowledge-base'];
+              const items = group.items.filter((i) => allowed.includes(i.to));
+              if (isCustomerAdmin) {
+                items.push({ to: '/my-change-requests', label: 'Change Requests', icon: GitPullRequestArrow });
+                items.push({ to: '/my-team', label: 'Team', icon: Users });
+              }
+              return { ...group, items };
             }
             return group;
           });
@@ -252,6 +264,8 @@ export default function Layout({ children }: { children: ReactNode }) {
           </div>
 
           <div className="flex-1" />
+
+          <NotificationBell />
 
           <DropdownMenu>
             <DropdownMenuTrigger className="flex shrink-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none hover:bg-accent">

@@ -27,6 +27,7 @@ import {
   Clock3,
   GitPullRequestArrow,
   Boxes,
+  PackagePlus,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api from '../lib/api';
@@ -77,6 +78,7 @@ const tenantNavGroups: NavGroup[] = [
       { to: '/roles', label: 'Roles', icon: KeyRound },
       { to: '/admin/customer-companies', label: 'Customer Companies', icon: Building2 },
       { to: '/admin/products', label: 'Products', icon: Boxes },
+      { to: '/admin/product-requests', label: 'Product Requests', icon: PackagePlus },
       { to: '/admin/templates', label: 'Templates', icon: LayoutTemplate },
       { to: '/admin/project-templates', label: 'Project Templates', icon: FolderKanban },
       { to: '/admin/picklists', label: 'Picklist Options', icon: ListTree },
@@ -138,6 +140,7 @@ export default function Layout({ children }: { children: ReactNode }) {
               const allowed = ['/dashboard', '/tickets', '/knowledge-base'];
               const items = group.items.filter((i) => allowed.includes(i.to));
               if (isCustomerAdmin) {
+                items.push({ to: '/my-products', label: 'Products', icon: Boxes });
                 items.push({ to: '/my-change-requests', label: 'Change Requests', icon: GitPullRequestArrow });
                 items.push({ to: '/my-team', label: 'Team', icon: Users });
               }

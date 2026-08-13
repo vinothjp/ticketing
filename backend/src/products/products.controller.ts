@@ -3,7 +3,7 @@ import {
 } from '@nestjs/common';
 import { ProductsService } from './products.service';
 import {
-  CreateProductDto, UpdateProductDto, CreateModuleDto, UpdateModuleDto, SetConsultantDto,
+  CreateProductDto, UpdateProductDto, CreateModuleDto, UpdateModuleDto, AddConsultantDto,
 } from './dto/product.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
@@ -60,9 +60,21 @@ export class ProductsController {
     return this.service.removeModule(moduleId, req.user.clientId);
   }
 
-  @Put('modules/:moduleId/consultant')
+  @Post('modules/:moduleId/consultants')
   @Roles('Admin')
-  setConsultant(@Param('moduleId') moduleId: string, @Body() dto: SetConsultantDto, @Request() req: AuthedRequest) {
-    return this.service.setConsultant(moduleId, dto, req.user.clientId);
+  addConsultant(@Param('moduleId') moduleId: string, @Body() dto: AddConsultantDto, @Request() req: AuthedRequest) {
+    return this.service.addConsultant(moduleId, dto, req.user.clientId);
+  }
+
+  @Delete('modules/:moduleId/consultants/:consultantId')
+  @Roles('Admin')
+  removeConsultant(@Param('moduleId') moduleId: string, @Param('consultantId') consultantId: string, @Request() req: AuthedRequest) {
+    return this.service.removeConsultant(moduleId, consultantId, req.user.clientId);
+  }
+
+  @Put('modules/:moduleId/consultants/:consultantId/primary')
+  @Roles('Admin')
+  setPrimary(@Param('moduleId') moduleId: string, @Param('consultantId') consultantId: string, @Request() req: AuthedRequest) {
+    return this.service.setPrimary(moduleId, consultantId, req.user.clientId);
   }
 }

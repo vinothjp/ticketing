@@ -11,8 +11,10 @@ import { ActivityService } from '../activity/activity.service';
 import { MailerService } from '../mail/mailer.service';
 import { ProductsService } from '../products/products.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { SupportHoursService } from '../customer-companies/support-hours.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
+import { CreateWorklogDto } from './dto/worklog.dto';
 
 const FIELD_KEY_TO_DTO_PROP: Record<string, keyof CreateTicketDto> = {
   requestorName: 'requestorName',
@@ -60,6 +62,7 @@ export class TicketsService {
     private mailer: MailerService,
     private products: ProductsService,
     private notifications: NotificationsService,
+    private supportHours: SupportHoursService,
   ) {}
 
   async create(dto: CreateTicketDto, clientId: string, actorId: string, viewer?: TicketViewer) {
@@ -798,5 +801,47 @@ export class TicketsService {
     });
 
     return this.prisma.ticketAttachment.findMany({ where: { ticketId: id } });
+  }
+
+  // ---- Worklog / support-hours time tracking --------------------------------
+
+  async listWorklogs(id: string, clientId: string, viewer: TicketViewer) {
+    await this.findOne(id, clientId, viewer);
+    return this.prisma.ticketWorklog.findMany({
+      where: { ticketId: id },
+      orderBy: { workDate: 'desc' },
+    });
+  }
+
+  async addWorklog(id: string, dto: CreateWorklogDto, clientId: string, actorId: string, viewer: TicketViewer) {
+    const ticket = await this.findOne(id, clientId, viewer);
+    const hours = Number(dto.hours);
+    if (!(hours > 0)) throw new BadRequestException('Hours must be greater than zero');
+
+    const me = await this.prisma.user.findUnique({ where: { id: actorId }, select: { username: true } });
+    const worklog = await this.prisma.ticketWorklog.create({
+      data: {
+        clientId,
+        ticketId: id,
+        userId: actorId,
+        consultantName: me?.username ?? null,
+        workDate: dto.workDate ? new Date(dto.workDate) : new Date(),
+        hours,
+        note: dto.note?.trim() || null,
+        createdBy: actorId,
+      },
+    });
+
+    // Rolling the new hours into the company pool may trip the "hours low" alert.
+    await this.supportHours.recomputeAndAlert(ticket.customerCompanyId, clientId);
+    return worklog;
+  }
+
+  async deleteWorklog(id: string, worklogId: string, clientId: string, viewer: TicketViewer) {
+    await this.findOne(id, clientId, viewer);
+    const wl = await this.prisma.ticketWorklog.findFirst({ where: { id: worklogId, ticketId: id } });
+    if (!wl) throw new NotFoundException('Worklog not found');
+    await this.prisma.ticketWorklog.delete({ where: { id: worklogId } });
+    return { message: 'Worklog removed' };
   }
 }

@@ -48,6 +48,10 @@ export class CustomerCompaniesService {
       contactEmail: c.contactEmail,
       status: c.status,
       maxContacts: c.maxContacts,
+      agreedSupportHours: c.agreedSupportHours == null ? null : Number(c.agreedSupportHours),
+      supportPeriodStart: c.supportPeriodStart,
+      supportPeriodEnd: c.supportPeriodEnd,
+      supportAlertThresholdPct: c.supportAlertThresholdPct,
       contactCount: c._count.users,
       ticketCount: c._count.tickets,
       createdAt: c.createdAt,
@@ -85,14 +89,15 @@ export class CustomerCompaniesService {
     let idFilter: { id: { in: string[] } } | undefined;
     if (!isStaff) {
       if (!customerCompanyId) return [];
-      const links = await this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId } });
+      // Only products whose AMC is still active — expired/terminated ones drop off.
+      const links = await this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId, status: 'ACTIVE' } });
       if (links.length === 0) return [];
       idFilter = { id: { in: links.map((l) => l.productId) } };
     }
     return this.prisma.product.findMany({
       where: { clientId, isActive: true, ...(idFilter ?? {}) },
       orderBy: [{ sortOrder: 'asc' }],
-      select: { id: true, name: true, code: true, autoAssign: true, modules: { select: { id: true, name: true }, orderBy: [{ sortOrder: 'asc' }] } },
+      select: { id: true, name: true, code: true, autoAssign: true, modules: { select: { id: true, name: true, tracks: true }, orderBy: [{ sortOrder: 'asc' }] } },
     });
   }
 
@@ -121,6 +126,10 @@ export class CustomerCompaniesService {
         contactEmail: dto.contactEmail,
         maxContacts: dto.maxContacts ?? 5,
         status: dto.status ?? 'ACTIVE',
+        agreedSupportHours: dto.agreedSupportHours ?? null,
+        supportPeriodStart: dto.supportPeriodStart ? new Date(dto.supportPeriodStart) : null,
+        supportPeriodEnd: dto.supportPeriodEnd ? new Date(dto.supportPeriodEnd) : null,
+        supportAlertThresholdPct: dto.supportAlertThresholdPct ?? 70,
         createdBy: actorId,
         updatedBy: actorId,
       },
@@ -155,10 +164,20 @@ export class CustomerCompaniesService {
       });
       if (dup) throw new ConflictException('A customer company with this name already exists');
     }
-    const { productIds, ...rest } = dto;
+    const { productIds, supportPeriodStart, supportPeriodEnd, ...rest } = dto;
+    // Re-arm the "hours low" alert whenever the pool is (re)configured, so a new
+    // period or a raised cap can trigger a fresh alert.
+    const poolChanged = ['agreedSupportHours', 'supportPeriodStart', 'supportPeriodEnd', 'supportAlertThresholdPct']
+      .some((k) => k in dto);
     const company = await this.prisma.customerCompany.update({
       where: { id },
-      data: { ...rest, updatedBy: actorId },
+      data: {
+        ...rest,
+        ...(supportPeriodStart !== undefined ? { supportPeriodStart: supportPeriodStart ? new Date(supportPeriodStart) : null } : {}),
+        ...(supportPeriodEnd !== undefined ? { supportPeriodEnd: supportPeriodEnd ? new Date(supportPeriodEnd) : null } : {}),
+        ...(poolChanged ? { supportAlertSentAt: null } : {}),
+        updatedBy: actorId,
+      },
     });
     if (productIds) await this.setProducts(id, productIds, clientId);
     return company;

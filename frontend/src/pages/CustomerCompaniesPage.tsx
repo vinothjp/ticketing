@@ -1,14 +1,14 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Users2, Trash2, Building2 } from 'lucide-react';
+import { Plus, Pencil, Users2, Trash2, Building2, Boxes } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import CompanyProductsDialog from './customer-companies/CompanyProductsDialog';
 
 interface Company {
   id: string;
@@ -19,10 +19,18 @@ interface Company {
   maxContacts: number;
   contactCount: number;
   ticketCount: number;
+  agreedSupportHours?: number | null;
+  supportPeriodStart?: string | null;
+  supportPeriodEnd?: string | null;
+  supportAlertThresholdPct?: number;
 }
 interface Contact { id: string; username: string; email: string; isActive: boolean; }
 
-const empty = { name: '', code: '', contactEmail: '', maxContacts: 5, adminUsername: '', adminEmail: '', adminPassword: '', productIds: [] as string[] };
+const empty = {
+  name: '', code: '', contactEmail: '', maxContacts: 5,
+  agreedSupportHours: '', supportPeriodStart: '', supportPeriodEnd: '', supportAlertThresholdPct: 70,
+  adminUsername: '', adminEmail: '', adminPassword: '',
+};
 
 export default function CustomerCompaniesPage() {
   const qc = useQueryClient();
@@ -30,23 +38,25 @@ export default function CustomerCompaniesPage() {
   const [editing, setEditing] = useState<Company | null>(null);
   const [form, setForm] = useState<typeof empty>(empty);
   const [contactsFor, setContactsFor] = useState<Company | null>(null);
+  const [productsFor, setProductsFor] = useState<Company | null>(null);
 
   const { data: companies = [], isLoading } = useQuery<Company[]>({
     queryKey: ['customer-companies'],
     queryFn: async () => (await api.get('/api/customer-companies')).data,
   });
-  const { data: products = [] } = useQuery<{ id: string; name: string }[]>({
-    queryKey: ['products'],
-    queryFn: async () => (await api.get('/api/products')).data,
-  });
-  const toggleProduct = (id: string) =>
-    setForm((f) => ({ ...f, productIds: f.productIds.includes(id) ? f.productIds.filter((p) => p !== id) : [...f.productIds, id] }));
-
   const invalidate = () => qc.invalidateQueries({ queryKey: ['customer-companies'] });
 
   const saveMutation = useMutation({
     mutationFn: (c: typeof form) => {
-      const body: Record<string, unknown> = { name: c.name, code: c.code || undefined, contactEmail: c.contactEmail || undefined, maxContacts: Number(c.maxContacts), productIds: c.productIds };
+      const body: Record<string, unknown> = {
+        name: c.name, code: c.code || undefined, contactEmail: c.contactEmail || undefined,
+        maxContacts: Number(c.maxContacts),
+        // Support-hours pool — send null to clear, so a company can drop the pool.
+        agreedSupportHours: c.agreedSupportHours === '' ? null : Number(c.agreedSupportHours),
+        supportPeriodStart: c.supportPeriodStart || null,
+        supportPeriodEnd: c.supportPeriodEnd || null,
+        supportAlertThresholdPct: Number(c.supportAlertThresholdPct) || 70,
+      };
       if (editing) return api.patch(`/api/customer-companies/${editing.id}`, body);
       // Optional bootstrap: seed the first CustomerAdmin login on creation.
       if (c.adminUsername && c.adminEmail && c.adminPassword) {
@@ -69,13 +79,14 @@ export default function CustomerCompaniesPage() {
   const openCreate = () => { setEditing(null); setForm(empty); setFormOpen(true); };
   const openEdit = async (c: Company) => {
     setEditing(c);
-    setForm({ ...empty, name: c.name, code: c.code ?? '', contactEmail: c.contactEmail ?? '', maxContacts: c.maxContacts });
+    setForm({
+      ...empty, name: c.name, code: c.code ?? '', contactEmail: c.contactEmail ?? '', maxContacts: c.maxContacts,
+      agreedSupportHours: c.agreedSupportHours == null ? '' : String(c.agreedSupportHours),
+      supportPeriodStart: c.supportPeriodStart ? c.supportPeriodStart.slice(0, 10) : '',
+      supportPeriodEnd: c.supportPeriodEnd ? c.supportPeriodEnd.slice(0, 10) : '',
+      supportAlertThresholdPct: c.supportAlertThresholdPct ?? 70,
+    });
     setFormOpen(true);
-    // Load the company's current products for the multi-select.
-    try {
-      const productIds = (await api.get(`/api/customer-companies/${c.id}/products`)).data as string[];
-      setForm((f) => ({ ...f, productIds }));
-    } catch { /* ignore */ }
   };
 
   return (
@@ -90,9 +101,9 @@ export default function CustomerCompaniesPage() {
 
       {/* Create / edit dialog */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
-        <DialogContent>
+        <DialogContent className="flex max-h-[90vh] flex-col">
           <DialogHeader><DialogTitle>{editing ? 'Edit Company' : 'New Customer Company'}</DialogTitle></DialogHeader>
-          <div className="space-y-4">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Company name</label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Globex Ltd" />
@@ -112,20 +123,41 @@ export default function CustomerCompaniesPage() {
               <Input type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} placeholder="ops@globex.example" />
             </div>
 
-            {products.length > 0 && (
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Products used</label>
-                <p className="text-xs text-muted-foreground">Limits which products this company can raise tickets for.</p>
-                <div className="flex flex-wrap gap-x-4 gap-y-2 rounded-md border p-3">
-                  {products.map((p) => (
-                    <label key={p.id} className="flex items-center gap-2 text-sm">
-                      <Checkbox checked={form.productIds.includes(p.id)} onCheckedChange={() => toggleProduct(p.id)} />
-                      {p.name}
-                    </label>
-                  ))}
+            {editing && (
+              <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                Products, warranty and AMC are managed from the <span className="font-medium text-foreground">Products</span> button on the company row.
+              </p>
+            )}
+
+            {/* Agreed support-hours pool for the period. Leave hours blank to disable. */}
+            <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+              <div className="text-sm font-medium">Support hours <span className="font-normal text-muted-foreground">(optional)</span></div>
+              <p className="text-xs text-muted-foreground">
+                Agreed working hours for the period. When usage crosses the alert threshold, the customer is emailed and notified. Leave hours blank to disable.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">Agreed hours</label>
+                  <Input type="number" min={0} step="0.5" value={form.agreedSupportHours}
+                    onChange={(e) => setForm({ ...form, agreedSupportHours: e.target.value })} placeholder="e.g. 150" />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">Alert at (%)</label>
+                  <Input type="number" min={1} max={100} value={form.supportAlertThresholdPct}
+                    onChange={(e) => setForm({ ...form, supportAlertThresholdPct: Number(e.target.value) })} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">Period start</label>
+                  <Input type="date" value={form.supportPeriodStart}
+                    onChange={(e) => setForm({ ...form, supportPeriodStart: e.target.value })} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">Period end</label>
+                  <Input type="date" value={form.supportPeriodEnd}
+                    onChange={(e) => setForm({ ...form, supportPeriodEnd: e.target.value })} />
                 </div>
               </div>
-            )}
+            </div>
 
             {!editing && (
               <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
@@ -150,6 +182,7 @@ export default function CustomerCompaniesPage() {
       </Dialog>
 
       {contactsFor && <ContactsDialog company={contactsFor} onClose={() => setContactsFor(null)} onChanged={invalidate} />}
+      {productsFor && <CompanyProductsDialog companyId={productsFor.id} companyName={productsFor.name} onClose={() => setProductsFor(null)} />}
 
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
@@ -181,6 +214,7 @@ export default function CustomerCompaniesPage() {
                   <TableCell><Badge variant={c.status === 'ACTIVE' ? 'success' : 'secondary'}>{c.status}</Badge></TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
+                      <Button size="sm" variant="outline" onClick={() => setProductsFor(c)}><Boxes className="size-4" /> Products</Button>
                       <Button size="sm" variant="outline" onClick={() => setContactsFor(c)}><Users2 className="size-4" /> People</Button>
                       <Button size="sm" variant="outline" onClick={() => openEdit(c)}><Pencil className="size-4" /> Edit</Button>
                       <Button size="sm" variant="destructive" onClick={() => { if (confirm(`Delete ${c.name}?`)) deleteMutation.mutate(c.id); }}>

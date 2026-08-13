@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Put,
+  Delete,
   Body,
   Param,
   UseGuards,
@@ -20,6 +21,7 @@ import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { AssignTechniciansDto } from './dto/assign-technicians.dto';
 import { SetResolutionDto } from './dto/set-resolution.dto';
 import { RejectTicketDto } from './dto/reject-ticket.dto';
+import { CreateWorklogDto } from './dto/worklog.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
 import { StaffGuard } from '../auth/staff.guard';
@@ -48,6 +50,25 @@ export class TicketsController {
   @Get(':id/activity')
   getActivity(@Param('id') id: string, @Request() req: AuthedRequest) {
     return this.ticketsService.getActivity(id, req.user.clientId, req.user);
+  }
+
+  // ---- Worklog / support-hours time tracking (staff only) ----
+  @Get(':id/worklogs')
+  @UseGuards(StaffGuard)
+  listWorklogs(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.listWorklogs(id, req.user.clientId, req.user);
+  }
+
+  @Post(':id/worklogs')
+  @UseGuards(StaffGuard)
+  addWorklog(@Param('id') id: string, @Body() dto: CreateWorklogDto, @Request() req: AuthedRequest) {
+    return this.ticketsService.addWorklog(id, dto, req.user.clientId, req.user.id, req.user);
+  }
+
+  @Delete(':id/worklogs/:worklogId')
+  @UseGuards(StaffGuard)
+  deleteWorklog(@Param('id') id: string, @Param('worklogId') worklogId: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.deleteWorklog(id, worklogId, req.user.clientId, req.user);
   }
 
   @Put(':id/resolution')

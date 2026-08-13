@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Trash2, Boxes } from 'lucide-react';
 import { toast } from 'sonner';
@@ -8,23 +9,38 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { useConfirm } from '@/hooks/useConfirm';
+import { cn } from '@/lib/utils';
 
+type Track = 'TECHNICAL' | 'FUNCTIONAL';
 interface StaffUser { id: string; username: string }
-interface Consultant { id: string; track: 'TECHNICAL' | 'FUNCTIONAL'; rank: 'PRIMARY' | 'SECONDARY'; user: { id: string; username: string } }
-interface ProductModule { id: string; name: string; consultants: Consultant[] }
-interface Product { id: string; name: string; code: string; autoAssign: boolean; isActive: boolean; modules: ProductModule[] }
+interface Consultant { id: string; track: Track; isPrimary: boolean; sortOrder: number; user: { id: string; username: string } }
+interface ProductModule { id: string; name: string; tracks: Track[]; consultants: Consultant[] }
+interface Product { id: string; name: string; code: string; description?: string | null; autoAssign: boolean; isActive: boolean; modules: ProductModule[] }
 
-const NONE = '__none__';
-const TRACKS = ['TECHNICAL', 'FUNCTIONAL'] as const;
-const RANKS = ['PRIMARY', 'SECONDARY'] as const;
+const TRACKS: Track[] = ['TECHNICAL', 'FUNCTIONAL'];
+const trackLabel = (t: Track) => (t === 'TECHNICAL' ? 'Technical' : 'Functional');
+
+// A professional on/off pill for a track (replaces the checkbox list).
+function TrackPill({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+        active ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-transparent text-muted-foreground hover:bg-muted',
+      )}
+    >
+      {label}
+    </button>
+  );
+}
 
 export default function ProductsPage() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const { confirm, ConfirmDialog } = useConfirm();
-  const [addProductOpen, setAddProductOpen] = useState(false);
-  const [newProduct, setNewProduct] = useState({ name: '', code: '', autoAssign: true });
   const [newModule, setNewModule] = useState<Record<string, string>>({});
 
   const { data: products = [], isLoading } = useQuery<Product[]>({
@@ -37,11 +53,6 @@ export default function ProductsPage() {
   });
   const invalidate = () => qc.invalidateQueries({ queryKey: ['products'] });
 
-  const createProduct = useMutation({
-    mutationFn: () => api.post('/api/products', { name: newProduct.name.trim(), code: newProduct.code.trim() || 'OTHERS', autoAssign: newProduct.autoAssign }),
-    onSuccess: () => { invalidate(); setAddProductOpen(false); setNewProduct({ name: '', code: '', autoAssign: true }); toast.success('Product added'); },
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error adding product'),
-  });
   const removeProduct = useMutation({
     mutationFn: (id: string) => api.delete(`/api/products/${id}`),
     onSuccess: () => { invalidate(); toast.success('Product deleted'); },
@@ -57,25 +68,54 @@ export default function ProductsPage() {
     onSuccess: () => { invalidate(); toast.success('Module removed'); },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error'),
   });
-  const setConsultant = useMutation({
-    mutationFn: (v: { moduleId: string; track: string; rank: string; userId: string | null }) =>
-      api.put(`/api/products/modules/${v.moduleId}/consultant`, { track: v.track, rank: v.rank, userId: v.userId }),
+  const updateModuleTracks = useMutation({
+    mutationFn: (v: { moduleId: string; tracks: Track[] }) => api.patch(`/api/products/modules/${v.moduleId}`, { tracks: v.tracks }),
+    onSuccess: invalidate,
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error'),
+  });
+  const addConsultant = useMutation({
+    mutationFn: (v: { moduleId: string; track: Track; userId: string }) =>
+      api.post(`/api/products/modules/${v.moduleId}/consultants`, { track: v.track, userId: v.userId }),
+    onSuccess: invalidate,
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error'),
+  });
+  const removeConsultant = useMutation({
+    mutationFn: (v: { moduleId: string; consultantId: string }) =>
+      api.delete(`/api/products/modules/${v.moduleId}/consultants/${v.consultantId}`),
+    onSuccess: invalidate,
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error'),
+  });
+  const setPrimary = useMutation({
+    mutationFn: (v: { moduleId: string; consultantId: string }) =>
+      api.put(`/api/products/modules/${v.moduleId}/consultants/${v.consultantId}/primary`),
     onSuccess: invalidate,
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error'),
   });
 
-  const slot = (m: ProductModule, track: string, rank: string) =>
-    m.consultants.find((c) => c.track === track && c.rank === rank)?.user.id ?? NONE;
-
-  // A consultant is a specialist for exactly one slot. Everyone already assigned
-  // anywhere is off-limits — except the person currently in the slot being edited.
+  // A consultant is a specialist for exactly one module/track. Everyone already
+  // assigned anywhere is off-limits for new lists.
   const assignedUserIds = useMemo(() => {
     const set = new Set<string>();
     products.forEach((p) => p.modules.forEach((m) => m.consultants.forEach((c) => set.add(c.user.id))));
     return set;
   }, [products]);
-  const eligible = (currentUserId: string) =>
-    staff.filter((u) => !assignedUserIds.has(u.id) || u.id === currentUserId);
+  const eligibleStaff = staff.filter((u) => !assignedUserIds.has(u.id));
+
+  const agentsFor = (m: ProductModule, track: Track) =>
+    m.consultants
+      .filter((c) => c.track === track)
+      .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || a.sortOrder - b.sortOrder);
+
+  const toggleModuleTrack = async (m: ProductModule, t: Track) => {
+    const has = m.tracks.includes(t);
+    if (has && m.tracks.length === 1) return;                 // keep at least one track
+    const next = has ? m.tracks.filter((x) => x !== t) : [...m.tracks, t];
+    if (has && agentsFor(m, t).length > 0) {
+      const ok = await confirm({ title: `Turn off ${trackLabel(t)} for ${m.name}?`, description: 'Agents listed under this track will be removed.', destructive: true, confirmText: 'Turn off' });
+      if (!ok) return;
+    }
+    updateModuleTracks.mutate({ moduleId: m.id, tracks: next });
+  };
 
   return (
     <div>
@@ -83,9 +123,9 @@ export default function ProductsPage() {
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Products</h1>
-          <p className="text-sm text-muted-foreground">Products you support and the consultant handling each module. Customer tickets auto-route to the primary (or secondary if busy).</p>
+          <p className="text-sm text-muted-foreground">Products you support and the agents handling each module. Customer tickets auto-route to the primary agent (or the next free one).</p>
         </div>
-        <Button onClick={() => setAddProductOpen(true)}><Plus className="size-4" /> Add product</Button>
+        <Button onClick={() => navigate('/admin/products/new')}><Plus className="size-4" /> Add product</Button>
       </div>
 
       {isLoading ? <p className="text-muted-foreground">Loading…</p> : products.length === 0 ? (
@@ -97,12 +137,15 @@ export default function ProductsPage() {
         <div className="space-y-5">
           {products.map((p) => (
             <Card key={p.id}>
-              <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="flex items-center gap-2 text-base">
-                  {p.name}
-                  <Badge variant="secondary">{p.code}</Badge>
-                  {p.autoAssign ? <Badge variant="outline">auto-assign</Badge> : <Badge variant="outline" className="text-muted-foreground">manual</Badge>}
-                </CardTitle>
+              <CardHeader className="flex flex-row items-start justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    {p.name}
+                    <Badge variant="secondary">{p.code}</Badge>
+                    {p.autoAssign ? <Badge variant="outline">auto-assign</Badge> : <Badge variant="outline" className="text-muted-foreground">manual</Badge>}
+                  </CardTitle>
+                  {p.description && <p className="mt-1 text-sm text-muted-foreground">{p.description}</p>}
+                </div>
                 <Button size="icon" variant="ghost" className="size-8 text-destructive hover:text-destructive"
                   onClick={async () => { if (await confirm({ title: `Delete ${p.name}?`, destructive: true, confirmText: 'Delete' })) removeProduct.mutate(p.id); }}>
                   <Trash2 className="size-4" />
@@ -111,32 +154,58 @@ export default function ProductsPage() {
               <CardContent className="space-y-4 pb-6">
                 {!p.autoAssign && <p className="text-sm text-muted-foreground">Tickets for this product are assigned manually by an admin.</p>}
 
-                {p.modules.map((m) => (
+                {p.autoAssign && p.modules.map((m) => (
                   <div key={m.id} className="rounded-lg border p-3">
-                    <div className="mb-3 flex items-center justify-between">
+                    <div className="mb-3 flex flex-wrap items-center gap-3">
                       <div className="font-medium text-foreground">{m.name}</div>
-                      <Button size="icon" variant="ghost" className="size-7 text-destructive hover:text-destructive" onClick={() => removeModule.mutate(m.id)}><Trash2 className="size-4" /></Button>
+                      {/* Per-module track toggles */}
+                      <div className="flex gap-2">
+                        {TRACKS.map((t) => (
+                          <TrackPill key={t} active={m.tracks.includes(t)} label={trackLabel(t)} onClick={() => toggleModuleTrack(m, t)} />
+                        ))}
+                      </div>
+                      <Button size="icon" variant="ghost" className="ml-auto size-7 text-destructive hover:text-destructive" onClick={() => removeModule.mutate(m.id)}><Trash2 className="size-4" /></Button>
                     </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      {TRACKS.map((track) => (
-                        <div key={track} className="rounded-md bg-muted/30 p-2.5">
-                          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{track === 'TECHNICAL' ? 'Technical' : 'Functional'}</div>
-                          <div className="space-y-2">
-                            {RANKS.map((rank) => (
-                              <div key={rank} className="flex items-center gap-2">
-                                <span className="w-20 shrink-0 text-xs text-muted-foreground">{rank === 'PRIMARY' ? 'Primary' : 'Secondary'}</span>
-                                <Select value={slot(m, track, rank)} onValueChange={(v) => setConsultant.mutate({ moduleId: m.id, track, rank, userId: v === NONE ? null : v })}>
-                                  <SelectTrigger className="h-8 flex-1"><SelectValue placeholder="Unassigned" /></SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value={NONE}>Unassigned</SelectItem>
-                                    {eligible(slot(m, track, rank)).map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-                                  </SelectContent>
-                                </Select>
-                              </div>
-                            ))}
+                    <div className={`grid gap-3 ${m.tracks.length > 1 ? 'sm:grid-cols-2' : ''}`}>
+                      {TRACKS.filter((t) => m.tracks.includes(t)).map((track) => {
+                        const agents = agentsFor(m, track);
+                        const takenHere = new Set(agents.map((a) => a.user.id));
+                        const addable = eligibleStaff.filter((u) => !takenHere.has(u.id));
+                        return (
+                          <div key={track} className="rounded-md bg-muted/30 p-2.5">
+                            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{trackLabel(track)}</div>
+                            <div className="space-y-1.5">
+                              {agents.length === 0 && <p className="text-xs text-muted-foreground">No agents yet — the first you add becomes primary.</p>}
+                              {agents.map((a) => (
+                                <div key={a.id} className="flex items-center gap-2 rounded-md border bg-background px-2 py-1.5">
+                                  <span className="flex-1 truncate text-sm text-foreground">
+                                    {a.user.username}
+                                    {a.isPrimary && <span className="ml-1.5 text-xs font-medium text-amber-600 dark:text-amber-400">(primary)</span>}
+                                  </span>
+                                  {!a.isPrimary && (
+                                    <button className="text-xs text-muted-foreground hover:text-foreground" title="Make this agent the primary"
+                                      onClick={() => setPrimary.mutate({ moduleId: m.id, consultantId: a.id })}>
+                                      Make primary
+                                    </button>
+                                  )}
+                                  <Button size="icon" variant="ghost" className="size-6 text-destructive hover:text-destructive"
+                                    onClick={() => removeConsultant.mutate({ moduleId: m.id, consultantId: a.id })}>
+                                    <Trash2 className="size-3.5" />
+                                  </Button>
+                                </div>
+                              ))}
+                              <Select value="" onValueChange={(v) => addConsultant.mutate({ moduleId: m.id, track, userId: v })}>
+                                <SelectTrigger className="h-8"><SelectValue placeholder="+ Add agent" /></SelectTrigger>
+                                <SelectContent>
+                                  {addable.length === 0
+                                    ? <SelectItem value="__none" disabled>No unassigned staff</SelectItem>
+                                    : addable.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
+                                </SelectContent>
+                              </Select>
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -145,7 +214,7 @@ export default function ProductsPage() {
                   <div className="flex items-center gap-2">
                     <Input
                       className="max-w-xs"
-                      placeholder={p.code === 'B1' ? 'e.g. Business One' : 'New module (e.g. FI, MM, SD)'}
+                      placeholder="New module (e.g. FI, MM, SD)"
                       value={newModule[p.id] ?? ''}
                       onChange={(e) => setNewModule((s) => ({ ...s, [p.id]: e.target.value }))}
                     />
@@ -159,30 +228,6 @@ export default function ProductsPage() {
           ))}
         </div>
       )}
-
-      <Dialog open={addProductOpen} onOpenChange={setAddProductOpen}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Add product</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div><div className="mb-1 text-sm">Name</div><Input value={newProduct.name} onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })} placeholder="e.g. SAP Business One" /></div>
-            <div>
-              <div className="mb-1 text-sm">Type</div>
-              <Select value={newProduct.code} onValueChange={(v) => setNewProduct({ ...newProduct, code: v, autoAssign: v !== 'OTHERS' })}>
-                <SelectTrigger><SelectValue placeholder="Choose a type" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="B1">SAP Business One (single set of consultants)</SelectItem>
-                  <SelectItem value="S4HANA">SAP S/4HANA (consultants per module)</SelectItem>
-                  <SelectItem value="OTHERS">Others (manual assignment)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setAddProductOpen(false)}>Cancel</Button>
-            <Button disabled={!newProduct.name.trim() || !newProduct.code || createProduct.isPending} onClick={() => createProduct.mutate()}>Add</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

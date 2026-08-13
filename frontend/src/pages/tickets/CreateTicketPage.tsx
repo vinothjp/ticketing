@@ -26,8 +26,12 @@ interface TemplateData {
 interface PicklistOption { value: string; label: string; parentValue?: string | null; }
 interface UserOption { id: string; username: string; }
 interface CompanyOption { id: string; name: string; }
-interface SapProduct { id: string; name: string; code: string; autoAssign: boolean; modules: { id: string; name: string }[]; }
+type Track = 'TECHNICAL' | 'FUNCTIONAL';
+interface SapProduct { id: string; name: string; code: string; autoAssign: boolean; modules: { id: string; name: string; tracks: Track[] }[]; }
 interface SlaPolicy { id: string; priority: string; resolutionHours: number; responseHours?: number | null; isActive: boolean; }
+type SupportUsage =
+  | { hasPool: false }
+  | { hasPool: true; agreedHours: number; usedHours: number; remainingHours: number; pct: number; thresholdPct: number; overThreshold: boolean };
 
 const GROUP_LABELS: Record<MergedTemplateField['group'], string> = {
   ticket_info: 'Ticket Info',
@@ -89,6 +93,7 @@ export default function CreateTicketPage() {
   const projectId = searchParams.get('projectId');
   const { user } = useAuth();
   const isCustomer = !!user?.roles.includes('Customer') && !user?.roles.includes('Admin');
+  const isCustomerSide = !!user?.roles.includes('Customer') || !!user?.roles.includes('CustomerAdmin');
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>('');
   const [values, setValues] = useState<Record<string, any>>({});
@@ -102,6 +107,17 @@ export default function CreateTicketPage() {
     enabled: !isCustomer,
   });
 
+  // Support-hours usage: a customer sees their own company's; staff see the
+  // company they've tagged. Only rendered when that company has a pool set.
+  const { data: supportUsage } = useQuery<SupportUsage>({
+    queryKey: ['support-usage', isCustomerSide ? 'mine' : selectedCompanyId],
+    queryFn: async () =>
+      isCustomerSide
+        ? (await api.get('/api/my-company/support-usage')).data
+        : (await api.get(`/api/customer-companies/${selectedCompanyId}/support-usage`)).data,
+    enabled: isCustomerSide || !!selectedCompanyId,
+  });
+
   // SAP routing: product/module the ticket is about + technical/functional. Drives
   // auto-assignment. A customer sees only their company's products.
   const { data: sapProducts = [] } = useQuery<SapProduct[]>({
@@ -110,11 +126,17 @@ export default function CreateTicketPage() {
   });
   const [routing, setRouting] = useState<{ productId: string; moduleId: string; consultantType: string }>({ productId: '', moduleId: '', consultantType: '' });
   const selProduct = sapProducts.find((p) => p.id === routing.productId);
+  const selModule = selProduct?.modules.find((m) => m.id === routing.moduleId);
+  // A module with a single track needs no issue-type choice — auto-select it.
+  const trackFor = (m?: { tracks: Track[] }) => (m && m.tracks.length === 1 ? m.tracks[0] : '');
   const chooseProduct = (pid: string) => {
     const p = sapProducts.find((x) => x.id === pid);
-    // B1 has a single module — auto-select it; S/4HANA needs a module choice.
-    const mod = p && p.modules.length === 1 ? p.modules[0].id : '';
-    setRouting({ productId: pid, moduleId: mod, consultantType: '' });
+    const mod = p && p.modules.length === 1 ? p.modules[0] : undefined;
+    setRouting({ productId: pid, moduleId: mod?.id ?? '', consultantType: trackFor(mod) });
+  };
+  const chooseModule = (mid: string) => {
+    const m = selProduct?.modules.find((x) => x.id === mid);
+    setRouting((r) => ({ ...r, moduleId: mid, consultantType: trackFor(m) }));
   };
 
   const { data: templates = [] } = useQuery<TemplateSummary[]>({
@@ -324,6 +346,38 @@ export default function CreateTicketPage() {
         </div>
       </div>
 
+      {supportUsage?.hasPool && (
+        <div className={`mb-6 rounded-lg border p-4 ${
+          supportUsage.overThreshold
+            ? 'border-amber-500/40 bg-amber-500/10'
+            : 'border-border bg-muted/30'
+        }`}>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <span className="text-sm font-medium text-foreground">Support hours used</span>
+            <span className="text-sm text-muted-foreground">
+              {supportUsage.usedHours} of {supportUsage.agreedHours} hrs
+              <span className="mx-1.5">·</span>
+              <span className={supportUsage.overThreshold ? 'font-semibold text-amber-600 dark:text-amber-400' : 'font-semibold text-foreground'}>
+                {supportUsage.pct}% used
+              </span>
+              <span className="mx-1.5">·</span>
+              {supportUsage.remainingHours} hrs left
+            </span>
+          </div>
+          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className={`h-full rounded-full ${supportUsage.overThreshold ? 'bg-amber-500' : 'bg-primary'}`}
+              style={{ width: `${Math.min(100, supportUsage.pct)}%` }}
+            />
+          </div>
+          {supportUsage.overThreshold && (
+            <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+              You've crossed {supportUsage.thresholdPct}% of your agreed support hours.
+            </p>
+          )}
+        </div>
+      )}
+
       {activeTemplates.length === 0 ? (
         <p className="text-muted-foreground">No templates configured yet.</p>
       ) : !template ? (
@@ -347,7 +401,7 @@ export default function CreateTicketPage() {
                 {selProduct && selProduct.modules.length > 1 && (
                   <div>
                     <div className="mb-1 text-sm text-muted-foreground">Module</div>
-                    <Select value={routing.moduleId || undefined} onValueChange={(v) => setRouting((r) => ({ ...r, moduleId: v }))}>
+                    <Select value={routing.moduleId || undefined} onValueChange={chooseModule}>
                       <SelectTrigger className="w-full"><SelectValue placeholder="Select module" /></SelectTrigger>
                       <SelectContent>
                         {selProduct.modules.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
@@ -355,15 +409,15 @@ export default function CreateTicketPage() {
                     </Select>
                   </div>
                 )}
-                {/* Type: only for auto-assigned products (not "Others"). */}
-                {selProduct?.autoAssign && (
+                {/* Type: only when the chosen module routes on more than one track. */}
+                {selProduct?.autoAssign && selModule && selModule.tracks.length > 1 && (
                   <div>
                     <div className="mb-1 text-sm text-muted-foreground">Issue type</div>
                     <Select value={routing.consultantType || undefined} onValueChange={(v) => setRouting((r) => ({ ...r, consultantType: v }))}>
                       <SelectTrigger className="w-full"><SelectValue placeholder="Technical / Functional" /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="FUNCTIONAL">Functional</SelectItem>
-                        <SelectItem value="TECHNICAL">Technical</SelectItem>
+                        {selModule.tracks.includes('FUNCTIONAL') && <SelectItem value="FUNCTIONAL">Functional</SelectItem>}
+                        {selModule.tracks.includes('TECHNICAL') && <SelectItem value="TECHNICAL">Technical</SelectItem>}
                       </SelectContent>
                     </Select>
                   </div>

@@ -1,6 +1,14 @@
-import { IsOptional, IsString, IsInt, Min, Max, IsEmail, IsArray } from 'class-validator';
+import { IsOptional, IsString, IsInt, IsNumber, Min, Max, IsEmail, IsArray, IsDateString } from 'class-validator';
 
-export class CreateCompanyDto {
+// Agreed support-hours pool. Shared by create + update so both validate the same way.
+class SupportHoursFields {
+  @IsOptional() @IsNumber() @Min(0) agreedSupportHours?: number;
+  @IsOptional() @IsDateString() supportPeriodStart?: string;
+  @IsOptional() @IsDateString() supportPeriodEnd?: string;
+  @IsOptional() @IsInt() @Min(1) @Max(100) supportAlertThresholdPct?: number;
+}
+
+export class CreateCompanyDto extends SupportHoursFields {
   @IsString() name!: string;
   @IsOptional() @IsString() code?: string;
   @IsOptional() @IsEmail() contactEmail?: string;
@@ -15,7 +23,7 @@ export class CreateCompanyDto {
   @IsOptional() @IsString() adminPassword?: string;
 }
 
-export class UpdateCompanyDto {
+export class UpdateCompanyDto extends SupportHoursFields {
   @IsOptional() @IsString() name?: string;
   @IsOptional() @IsString() code?: string;
   @IsOptional() @IsEmail() contactEmail?: string;

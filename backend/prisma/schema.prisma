@@ -122,6 +122,15 @@ model CustomerCompany {
   contactEmail String?
   status       String   @default("ACTIVE")
   maxContacts  Int      @default(5)
+  // Agreed support-hours pool for a period. If agreedSupportHours is null the
+  // whole feature is dormant for this company (no banner, no alerts).
+  agreedSupportHours       Decimal?
+  supportPeriodStart       DateTime?
+  supportPeriodEnd         DateTime?
+  supportAlertThresholdPct Int      @default(70)
+  // Set when the "hours running low" alert fires, so it only goes out once per
+  // period; cleared whenever the hours/period/threshold are edited.
+  supportAlertSentAt       DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   createdBy    String?
@@ -130,6 +139,7 @@ model CustomerCompany {
   tickets      Ticket[]
   projects     Project[]
   products     CustomerCompanyProduct[]
+  productRequests ProductRequest[]
 
   @@unique([clientId, name])
 }
@@ -276,20 +286,22 @@ model Product {
   clientId   String
   client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
   name       String
-  code       String                              // 'B1' | 'S4HANA' | 'OTHERS'
-  autoAssign Boolean  @default(true)             // Others = false (admin assigns manually)
+  code       String                              // free-form product code
+  description String?
+  autoAssign Boolean  @default(true)             // false = admin assigns tickets manually
   sortOrder  Int      @default(0)
   isActive   Boolean  @default(true)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
   modules    ProductModule[]
   companies  CustomerCompanyProduct[]
+  requests   ProductRequest[]
 
   @@unique([clientId, name])
 }
 
-// Which products a customer company uses (limits the products they can raise
-// tickets for).
+// A product a customer company has purchased from the provider, with its
+// warranty + AMC coverage. Only ACTIVE ones can be chosen when raising a ticket.
 model CustomerCompanyProduct {
   id                String   @id @default(uuid())
   customerCompanyId String
@@ -297,7 +309,47 @@ model CustomerCompanyProduct {
   productId         String
   product           Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
 
+  status            String   @default("ACTIVE")   // ACTIVE | EXPIRED | TERMINATED
+  purchaseDate      DateTime?
+  // Warranty coverage.
+  warrantyMonths    Int      @default(12)
+  warrantyEnd       DateTime?
+  // AMC (Annual Maintenance Contract). Free for a period, then a paid renewal.
+  freeAmcMonths     Int      @default(12)
+  amcType           String   @default("FREE")     // FREE | PAID
+  amcStart          DateTime?
+  amcEnd            DateTime?                       // coverage end — drives expiry/termination
+  amcMonthlyCost    Decimal?
+  amcHoursPerMonth  Int?
+  amcVisitsPerMonth Int?     @default(2)
+  // Set when the "coverage running out" alert fires, so it goes once per period.
+  expiryAlertSentAt DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
   @@unique([customerCompanyId, productId])
+  @@index([productId])
+}
+
+// A customer's request to start using a new provider product. The provider
+// grants it (setting the purchase/AMC terms) or declines.
+model ProductRequest {
+  id                String   @id @default(uuid())
+  clientId          String
+  customerCompanyId String
+  customerCompany   CustomerCompany @relation(fields: [customerCompanyId], references: [id], onDelete: Cascade)
+  productId         String
+  product           Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  note              String?
+  status            String   @default("PENDING")  // PENDING | GRANTED | DECLINED
+  decisionNote      String?
+  requestedById     String?
+  decidedById       String?
+  decidedAt         DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([customerCompanyId])
   @@index([productId])
 }
 
@@ -308,6 +360,9 @@ model ProductModule {
   productId   String
   product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
   name        String
+  // Consultant tracks this module uses. Defaults to both; the admin toggles them
+  // per module. Agent-lists and the ticket issue-type picker follow this.
+  tracks      String[] @default(["TECHNICAL", "FUNCTIONAL"])
   sortOrder   Int      @default(0)
   createdAt   DateTime @default(now())
   consultants ModuleConsultant[]
@@ -315,19 +370,21 @@ model ProductModule {
   @@index([productId])
 }
 
-// The consultant handling a module for a given track (technical/functional) and
-// rank (primary/secondary). Auto-assignment prefers primary, falls back to secondary.
+// An agent in a module's consultant list for a given track (technical/functional).
+// A module+track holds an ordered list; exactly one is the primary. Auto-assignment
+// prefers the primary and falls back through the rest when they're busy.
 model ModuleConsultant {
   id        String   @id @default(uuid())
   moduleId  String
   module    ProductModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
   track     String   // 'TECHNICAL' | 'FUNCTIONAL'
-  rank      String   // 'PRIMARY' | 'SECONDARY'
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isPrimary Boolean  @default(false)
+  sortOrder Int      @default(0)
   createdAt DateTime @default(now())
 
-  @@unique([moduleId, track, rank])
+  @@unique([moduleId, track, userId])
   @@index([userId])
 }
 
@@ -506,6 +563,7 @@ model Ticket {
   tasks                 TicketTask[]
   approvals             TicketApproval[]
   messages              TicketMessage[]
+  worklogs              TicketWorklog[]
 
   @@unique([clientId, ticketNumber])
   @@index([clientId, customerCompanyId])
@@ -613,6 +671,26 @@ model TicketMessage {
 
   @@index([ticketId, createdAt])
   @@index([externalId])
+}
+
+// Time a consultant spent on a ticket (Worklog tab). Rolls up to the
+// customer company's agreed support-hours pool.
+model TicketWorklog {
+  id             String   @id @default(uuid())
+  clientId       String
+  ticketId       String
+  ticket         Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  userId         String?
+  consultantName String?
+  workDate       DateTime
+  hours          Decimal
+  note           String?
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([ticketId])
+  @@index([clientId, workDate])
 }
 
 model MessageAttachment {

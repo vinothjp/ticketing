@@ -44,6 +44,9 @@ import CustomerTeamPage from './pages/CustomerTeamPage';
 import ProjectTemplatesListPage from './pages/projects/ProjectTemplatesListPage';
 import ProjectTemplateDesignerPage from './pages/projects/ProjectTemplateDesignerPage';
 import ProductsPage from './pages/ProductsPage';
+import ProductCreatePage from './pages/ProductCreatePage';
+import MyProductsPage from './pages/MyProductsPage';
+import ProductRequestsPage from './pages/ProductRequestsPage';
 
 const queryClient = new QueryClient();
 const isSuperAdmin = (roles: string[]) => roles.includes('SuperAdmin');
@@ -97,6 +100,7 @@ export default function App() {
                         <Route path="/tickets" element={<TicketListPage />} />
                         <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
                         <Route path="/my-team" element={<RoleGate allow={isCustomerAdmin} redirectTo="/tickets"><CustomerTeamPage /></RoleGate>} />
+                        <Route path="/my-products" element={<RoleGate allow={isCustomerAdmin} redirectTo="/tickets"><MyProductsPage /></RoleGate>} />
                         <Route path="/my-change-requests" element={<RoleGate allow={isCustomerAdmin} redirectTo="/tickets"><CustomerChangeRequestsPage /></RoleGate>} />
                         <Route path="/my-change-requests/:id" element={<RoleGate allow={isCustomerAdmin} redirectTo="/tickets"><CustomerChangeRequestDetailPage /></RoleGate>} />
                         <Route path="/knowledge-base/new" element={<RoleGate allow={isStaff} redirectTo="/knowledge-base"><KbArticleEditorPage /></RoleGate>} />
@@ -120,6 +124,8 @@ export default function App() {
                         <Route path="/admin/templates/:id" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><TemplateDesignerPage /></RoleGate>} />
                         <Route path="/admin/picklists" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><PicklistOptionsPage /></RoleGate>} />
                         <Route path="/admin/products" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductsPage /></RoleGate>} />
+                        <Route path="/admin/products/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductCreatePage /></RoleGate>} />
+                        <Route path="/admin/product-requests" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductRequestsPage /></RoleGate>} />
                         <Route path="/admin/project-templates" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProjectTemplatesListPage /></RoleGate>} />
                         <Route path="/admin/project-templates/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProjectTemplateDesignerPage /></RoleGate>} />
                         <Route path="/admin/project-templates/:id" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProjectTemplateDesignerPage /></RoleGate>} />

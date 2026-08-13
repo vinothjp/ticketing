@@ -1,29 +1,35 @@
-import { IsString, IsOptional, IsBoolean, IsIn, IsNotEmpty } from 'class-validator';
+import { IsString, IsOptional, IsBoolean, IsIn, IsNotEmpty, IsArray } from 'class-validator';
+
+const TRACKS = ['TECHNICAL', 'FUNCTIONAL'] as const;
 
 export class CreateProductDto {
   @IsString() @IsNotEmpty() name!: string;
-  @IsString() @IsNotEmpty() code!: string; // B1 | S4HANA | OTHERS (free-form, but these drive behaviour)
+  @IsString() @IsNotEmpty() code!: string; // free-form product code
+  @IsOptional() @IsString() description?: string;
   @IsOptional() @IsBoolean() autoAssign?: boolean;
 }
 
 export class UpdateProductDto {
   @IsOptional() @IsString() name?: string;
   @IsOptional() @IsString() code?: string;
+  @IsOptional() @IsString() description?: string;
   @IsOptional() @IsBoolean() autoAssign?: boolean;
   @IsOptional() @IsBoolean() isActive?: boolean;
 }
 
 export class CreateModuleDto {
   @IsString() @IsNotEmpty() name!: string;
+  // Tracks this module uses. Defaults to both when omitted.
+  @IsOptional() @IsArray() @IsIn(TRACKS, { each: true }) tracks?: ('TECHNICAL' | 'FUNCTIONAL')[];
 }
 
 export class UpdateModuleDto {
-  @IsString() @IsNotEmpty() name!: string;
+  @IsOptional() @IsString() @IsNotEmpty() name?: string;
+  @IsOptional() @IsArray() @IsIn(TRACKS, { each: true }) tracks?: ('TECHNICAL' | 'FUNCTIONAL')[];
 }
 
-// Upsert (or clear) a single consultant slot on a module.
-export class SetConsultantDto {
-  @IsIn(['TECHNICAL', 'FUNCTIONAL']) track!: 'TECHNICAL' | 'FUNCTIONAL';
-  @IsIn(['PRIMARY', 'SECONDARY']) rank!: 'PRIMARY' | 'SECONDARY';
-  @IsOptional() @IsString() userId?: string | null; // null/omitted clears the slot
+// Add an agent to a module's consultant list for a track.
+export class AddConsultantDto {
+  @IsIn(TRACKS) track!: 'TECHNICAL' | 'FUNCTIONAL';
+  @IsString() @IsNotEmpty() userId!: string;
 }

@@ -9,9 +9,10 @@ import { ActivityModule } from '../activity/activity.module';
 import { MailModule } from '../mail/mail.module';
 import { ProductsModule } from '../products/products.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { CustomerCompaniesModule } from '../customer-companies/customer-companies.module';
 
 @Module({
-  imports: [TemplatesModule, ActivityModule, MailModule, ProductsModule, NotificationsModule],
+  imports: [TemplatesModule, ActivityModule, MailModule, ProductsModule, NotificationsModule, CustomerCompaniesModule],
   providers: [TicketsService],
   controllers: [TicketsController, FieldCatalogController],
   exports: [TicketsService],

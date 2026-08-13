@@ -18,6 +18,7 @@ import type { MergedTemplateField } from './DynamicTicketField';
 import HistoryTab from './detail/HistoryTab';
 import ResolutionTab from './detail/ResolutionTab';
 import TasksTab from './detail/TasksTab';
+import WorklogTab from './detail/WorklogTab';
 import ApprovalsTab from './detail/ApprovalsTab';
 import ConversationTab from './detail/ConversationTab';
 
@@ -291,6 +292,7 @@ export default function TicketDetailPage() {
             <TabsTrigger value="resolution">Resolution</TabsTrigger>
             {/* Tasks & Approvals are internal staff workflows — hidden from customers. */}
             {isStaff && <TabsTrigger value="tasks">Tasks</TabsTrigger>}
+            {isStaff && <TabsTrigger value="time">Time</TabsTrigger>}
             {isStaff && <TabsTrigger value="approvals">Approvals</TabsTrigger>}
             <TabsTrigger value="history">History</TabsTrigger>
           </TabsList>
@@ -379,6 +381,9 @@ export default function TicketDetailPage() {
           </TabsContent>
           <TabsContent value="tasks" className="pt-4">
             <TasksTab ticketId={ticket.id} />
+          </TabsContent>
+          <TabsContent value="time" className="pt-4">
+            <WorklogTab ticketId={ticket.id} />
           </TabsContent>
           <TabsContent value="approvals" className="pt-4">
             <ApprovalsTab ticketId={ticket.id} />

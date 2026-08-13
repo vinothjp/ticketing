@@ -616,10 +616,10 @@ async function main() {
   const A = await Promise.all(
     Array.from({ length: 16 }, (_, i) => `agent${i + 1}`).map(agentByName),
   ); // A[0]=agent1 … A[15]=agent16
-  const setSlot = async (moduleId: string, track: string, rank: string, userId: string) => {
+  const addAgent = async (moduleId: string, track: string, userId: string, isPrimary: boolean, sortOrder: number) => {
     await prisma.moduleConsultant.upsert({
-      where: { moduleId_track_rank: { moduleId, track, rank } },
-      update: { userId }, create: { moduleId, track, rank, userId },
+      where: { moduleId_track_userId: { moduleId, track, userId } },
+      update: { isPrimary, sortOrder }, create: { moduleId, track, userId, isPrimary, sortOrder },
     });
   };
   const upsertProduct = async (name: string, code: string, autoAssign: boolean, sortOrder: number) =>
@@ -628,10 +628,11 @@ async function main() {
     const existing = await prisma.productModule.findFirst({ where: { productId, name } });
     return existing ?? prisma.productModule.create({ data: { productId, name, sortOrder } });
   };
-  // Assign the four slots of a module from four distinct consultants: [techP, techS, funcP, funcS].
+  // Seed each module's lists from four distinct consultants: the first in each
+  // track's list is the primary, the second a fallback. [techPrimary, techNext, funcPrimary, funcNext].
   const fillModule = async (moduleId: string, [tp, ts, fp, fs]: string[]) => {
-    await setSlot(moduleId, 'TECHNICAL', 'PRIMARY', tp); await setSlot(moduleId, 'TECHNICAL', 'SECONDARY', ts);
-    await setSlot(moduleId, 'FUNCTIONAL', 'PRIMARY', fp); await setSlot(moduleId, 'FUNCTIONAL', 'SECONDARY', fs);
+    await addAgent(moduleId, 'TECHNICAL', tp, true, 0); await addAgent(moduleId, 'TECHNICAL', ts, false, 1);
+    await addAgent(moduleId, 'FUNCTIONAL', fp, true, 0); await addAgent(moduleId, 'FUNCTIONAL', fs, false, 1);
   };
 
   const b1 = await upsertProduct('SAP Business One', 'B1', true, 0);

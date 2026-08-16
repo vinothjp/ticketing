@@ -76,7 +76,7 @@ const tenantNavGroups: NavGroup[] = [
     items: [
       { to: '/users', label: 'Users', icon: Users },
       { to: '/roles', label: 'Roles', icon: KeyRound },
-      { to: '/admin/customer-companies', label: 'Customer Companies', icon: Building2 },
+      { to: '/admin/customer-companies', label: 'Clients', icon: Building2 },
       { to: '/admin/products', label: 'Products', icon: Boxes },
       { to: '/admin/product-requests', label: 'Product Requests', icon: PackagePlus },
       { to: '/admin/templates', label: 'Templates', icon: LayoutTemplate },

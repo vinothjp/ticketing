@@ -12,6 +12,7 @@ import { MailerService } from '../mail/mailer.service';
 import { ProductsService } from '../products/products.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SupportHoursService } from '../customer-companies/support-hours.service';
+import { CustomerProductsService } from '../customer-companies/customer-products.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { CreateWorklogDto } from './dto/worklog.dto';
@@ -63,6 +64,7 @@ export class TicketsService {
     private products: ProductsService,
     private notifications: NotificationsService,
     private supportHours: SupportHoursService,
+    private customerProducts: CustomerProductsService,
   ) {}
 
   async create(dto: CreateTicketDto, clientId: string, actorId: string, viewer?: TicketViewer) {
@@ -208,25 +210,30 @@ export class TicketsService {
     // secondary when the primary already has an open ticket). "Others"/no module
     // stays unassigned for an admin to pick.
     let assignedConsultantId: string | null = null;
-    if (isCustomerTicket && dto.productId && dto.moduleId && dto.consultantType) {
-      const product = await this.prisma.product.findFirst({ where: { id: dto.productId, clientId } });
-      if (product?.autoAssign) {
-        assignedConsultantId = await this.products.resolveConsultant(
-          clientId,
-          dto.moduleId,
-          dto.consultantType === 'TECHNICAL' ? 'TECHNICAL' : 'FUNCTIONAL',
-        );
-        if (assignedConsultantId) {
-          await this.prisma.ticketTechnician.create({ data: { ticketId: ticket.id, userId: assignedConsultantId } });
-          const c = await this.prisma.user.findUnique({ where: { id: assignedConsultantId }, select: { username: true } });
-          await this.activity.log({
-            ticketId: ticket.id,
-            actorUserId: actorId,
-            type: 'ASSIGNED',
-            summary: `Auto-assigned to ${c?.username ?? 'consultant'}`,
-            meta: { userId: assignedConsultantId, auto: true },
-          });
+    if (isCustomerTicket) {
+      const track = dto.consultantType === 'TECHNICAL' ? 'TECHNICAL' : dto.consultantType === 'FUNCTIONAL' ? 'FUNCTIONAL' : null;
+      // 1) A customer-level consultant (product/module-scoped or the customer default)
+      //    overrides the module's default routing.
+      assignedConsultantId = await this.customerProducts.resolveCustomerConsultant(
+        clientId, ticket.customerCompanyId, dto.productId ?? null, dto.moduleId ?? null, track,
+      );
+      // 2) Otherwise fall back to the module's own primary/fallback list.
+      if (!assignedConsultantId && dto.productId && dto.moduleId && track) {
+        const product = await this.prisma.product.findFirst({ where: { id: dto.productId, clientId } });
+        if (product?.autoAssign) {
+          assignedConsultantId = await this.products.resolveConsultant(clientId, dto.moduleId, track);
         }
+      }
+      if (assignedConsultantId) {
+        await this.prisma.ticketTechnician.create({ data: { ticketId: ticket.id, userId: assignedConsultantId } });
+        const c = await this.prisma.user.findUnique({ where: { id: assignedConsultantId }, select: { username: true } });
+        await this.activity.log({
+          ticketId: ticket.id,
+          actorUserId: actorId,
+          type: 'ASSIGNED',
+          summary: `Auto-assigned to ${c?.username ?? 'consultant'}`,
+          meta: { userId: assignedConsultantId, auto: true },
+        });
       }
     }
 

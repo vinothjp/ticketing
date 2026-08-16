@@ -39,6 +39,11 @@ export class MyCompanyController {
     return req.user.customerCompanyId;
   }
 
+  @Get('product-contract')
+  myContract(@Request() req: AuthedRequest) {
+    return this.customerProducts.myContract(this.companyId(req), req.user.clientId);
+  }
+
   @Get('purchased-products')
   myProducts(@Request() req: AuthedRequest) {
     return this.customerProducts.listMyProducts(req.user.clientId, this.companyId(req));

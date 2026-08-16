@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 
 interface ProductRequest {
   id: string;
@@ -18,7 +19,9 @@ interface ProductRequest {
   customerCompany: { name: string };
 }
 
-const emptyTerms = { warrantyMonths: 12, freeAmcMonths: 12, amcMonthlyCost: 100000, amcHoursPerMonth: 40, amcVisitsPerMonth: 2 };
+const today = () => new Date().toISOString().slice(0, 10);
+const monthsFromNow = (m: number) => { const d = new Date(); d.setMonth(d.getMonth() + m); return d.toISOString().slice(0, 10); };
+const emptyTerms = { coverageType: 'WARRANTY' as 'WARRANTY' | 'AMC', startDate: today(), endDate: monthsFromNow(12), supportHours: 100, visits: 4, contractAmount: 100000 };
 
 const badge = (s: string) =>
   s === 'PENDING' ? { label: 'Pending', cls: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30' }
@@ -42,7 +45,12 @@ export default function ProductRequestsPage() {
   };
 
   const grant = useMutation({
-    mutationFn: () => api.post(`/api/customer-companies/product-requests/${grantFor!.id}/grant`, terms),
+    mutationFn: () => api.post(`/api/customer-companies/product-requests/${grantFor!.id}/grant`, {
+      coverageType: terms.coverageType,
+      startDate: terms.startDate, endDate: terms.endDate,
+      supportHours: terms.supportHours, visits: terms.visits,
+      ...(terms.coverageType === 'AMC' ? { contractAmount: terms.contractAmount } : {}),
+    }),
     onSuccess: () => { invalidate(); setGrantFor(null); setTerms(emptyTerms); toast.success('Product granted to customer'); },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error'),
   });
@@ -113,17 +121,22 @@ export default function ProductRequestsPage() {
       <Dialog open={!!grantFor} onOpenChange={(o) => !o && setGrantFor(null)}>
         <DialogContent>
           <DialogHeader><DialogTitle>Grant {grantFor?.product.name}</DialogTitle></DialogHeader>
-          <p className="text-sm text-muted-foreground">Sets the warranty and free-AMC clocks from today. The paid-AMC terms show to the customer once the free period ends.</p>
+          <RadioGroup value={terms.coverageType} onValueChange={(v) => setTerms({ ...terms, coverageType: v as 'WARRANTY' | 'AMC' })} className="flex gap-6">
+            <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="WARRANTY" /> Under warranty <span className="text-xs text-muted-foreground">(free)</span></label>
+            <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="AMC" /> Under AMC <span className="text-xs text-muted-foreground">(paid)</span></label>
+          </RadioGroup>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Warranty (months)" value={terms.warrantyMonths} onChange={(v) => setTerms({ ...terms, warrantyMonths: v })} />
-            <Field label="Free AMC (months)" value={terms.freeAmcMonths} onChange={(v) => setTerms({ ...terms, freeAmcMonths: v })} />
-            <Field label="Paid AMC (₹/month)" value={terms.amcMonthlyCost} onChange={(v) => setTerms({ ...terms, amcMonthlyCost: v })} />
-            <Field label="Service hours/month" value={terms.amcHoursPerMonth} onChange={(v) => setTerms({ ...terms, amcHoursPerMonth: v })} />
-            <Field label="Visits/month" value={terms.amcVisitsPerMonth} onChange={(v) => setTerms({ ...terms, amcVisitsPerMonth: v })} />
+            <Field label="Start date" type="date" value={terms.startDate} onChange={(v) => setTerms({ ...terms, startDate: v as string })} />
+            <Field label="End date" type="date" min={terms.startDate || undefined} value={terms.endDate} onChange={(v) => setTerms({ ...terms, endDate: v as string })} />
+            <Field label="Support hours" value={terms.supportHours} onChange={(v) => setTerms({ ...terms, supportHours: v as number })} />
+            <Field label="No. of visits" value={terms.visits} onChange={(v) => setTerms({ ...terms, visits: v as number })} />
+            {terms.coverageType === 'AMC' && (
+              <Field label="Contract amount" value={terms.contractAmount} onChange={(v) => setTerms({ ...terms, contractAmount: v as number })} />
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setGrantFor(null)}>Cancel</Button>
-            <Button disabled={grant.isPending} onClick={() => grant.mutate()}>{grant.isPending ? 'Granting…' : 'Grant product'}</Button>
+            <Button disabled={grant.isPending} onClick={() => { if (terms.startDate && terms.endDate && terms.endDate <= terms.startDate) { toast.error('End date must be after the start date'); return; } grant.mutate(); }}>{grant.isPending ? 'Granting…' : 'Grant product'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -143,11 +156,12 @@ export default function ProductRequestsPage() {
   );
 }
 
-function Field({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+function Field({ label, value, onChange, type = 'number', min }: { label: string; value: number | string; onChange: (v: number | string) => void; type?: 'number' | 'date'; min?: string | number }) {
   return (
     <div className="space-y-1.5">
       <label className="text-sm font-medium">{label}</label>
-      <Input type="number" min={0} value={value} onChange={(e) => onChange(Number(e.target.value))} />
+      <Input type={type} min={min ?? (type === 'number' ? 0 : undefined)} value={value}
+        onChange={(e) => onChange(type === 'number' ? Number(e.target.value) : e.target.value)} />
     </div>
   );
 }

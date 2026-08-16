@@ -1,12 +1,13 @@
 import {
-  Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, Request,
+  Controller, Get, Post, Put, Patch, Delete, Body, Param, UseGuards, Request,
 } from '@nestjs/common';
 import { CustomerCompaniesService } from './customer-companies.service';
 import { SupportHoursService } from './support-hours.service';
 import { CustomerProductsService } from './customer-products.service';
 import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto } from './dto/customer-company.dto';
 import {
-  AssignProductDto, UpdateProductTermsDto, RenewAmcDto, GrantRequestDto, DeclineRequestDto,
+  AssignProductDto, UpdateProductTermsDto, RenewAmcDto, GrantRequestDto, DeclineRequestDto, SetContractDto,
+  RenewContractDto, AddCustomerConsultantDto, LogUsageDto,
 } from './dto/customer-product.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
@@ -52,6 +53,30 @@ export class CustomerCompaniesController {
   }
 
   // ---- Provider: a company's purchased products + AMC/warranty terms ----
+  @Get(':id/product-contract')
+  @Roles('Admin')
+  getContract(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.customerProducts.getContract(id, req.user.clientId);
+  }
+
+  @Put(':id/product-contract')
+  @Roles('Admin')
+  setContract(@Param('id') id: string, @Body() dto: SetContractDto, @Request() req: AuthedRequest) {
+    return this.customerProducts.setContract(id, dto, req.user.clientId);
+  }
+
+  @Post(':id/contract-usage')
+  @Roles('Admin')
+  logContractUsage(@Param('id') id: string, @Body() dto: LogUsageDto, @Request() req: AuthedRequest) {
+    return this.customerProducts.logContractUsage(id, dto, req.user.clientId);
+  }
+
+  @Post(':id/contract-renew')
+  @Roles('Admin')
+  renewContract(@Param('id') id: string, @Body() dto: RenewContractDto, @Request() req: AuthedRequest) {
+    return this.customerProducts.renewContract(id, dto, req.user.clientId);
+  }
+
   @Get(':id/purchased-products')
   @Roles('Admin')
   purchasedProducts(@Param('id') id: string, @Request() req: AuthedRequest) {
@@ -76,10 +101,42 @@ export class CustomerCompaniesController {
     return this.customerProducts.renewAmc(cpId, dto, req.user.clientId);
   }
 
+  @Post('purchased-products/:cpId/usage')
+  @Roles('Admin')
+  logUsage(@Param('cpId') cpId: string, @Body() dto: LogUsageDto, @Request() req: AuthedRequest) {
+    return this.customerProducts.logUsage(cpId, dto, req.user.clientId);
+  }
+
   @Delete('purchased-products/:cpId')
   @Roles('Admin')
   removePurchasedProduct(@Param('cpId') cpId: string, @Request() req: AuthedRequest) {
     return this.customerProducts.removeProduct(cpId, req.user.clientId);
+  }
+
+  // ---- Provider: customer-level consultants (auto-assignment overrides) ----
+  @Get(':id/consultants')
+  @Roles('Admin')
+  listConsultants(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.customerProducts.listCustomerConsultants(id, req.user.clientId);
+  }
+
+  @Post(':id/consultants')
+  @Roles('Admin')
+  addConsultant(@Param('id') id: string, @Body() dto: AddCustomerConsultantDto, @Request() req: AuthedRequest) {
+    return this.customerProducts.addCustomerConsultant(id, dto, req.user.clientId);
+  }
+
+  @Delete('consultants/:ccId')
+  @Roles('Admin')
+  removeCustomerConsultant(@Param('ccId') ccId: string, @Request() req: AuthedRequest) {
+    return this.customerProducts.removeCustomerConsultant(ccId, req.user.clientId);
+  }
+
+  // One client's core details (declared last so it doesn't shadow static routes).
+  @Get(':id')
+  @Roles('Admin')
+  getOne(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.service.getOne(id, req.user.clientId);
   }
 
   // Any authenticated staff member may list companies (needed for the ticket

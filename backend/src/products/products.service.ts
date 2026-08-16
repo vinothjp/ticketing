@@ -1,8 +1,17 @@
 import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateProductDto, UpdateProductDto, CreateModuleDto, UpdateModuleDto, AddConsultantDto,
 } from './dto/product.dto';
+
+const PRODUCT_INCLUDE = {
+  consultants: { include: { user: { select: { id: true, username: true } } } },
+  modules: {
+    orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    include: { consultants: { include: { user: { select: { id: true, username: true } } } } },
+  },
+} satisfies Prisma.ProductInclude;
 
 @Injectable()
 export class ProductsService {
@@ -12,15 +21,14 @@ export class ProductsService {
     return this.prisma.product.findMany({
       where: { clientId },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-      include: {
-        modules: {
-          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-          include: {
-            consultants: { include: { user: { select: { id: true, username: true } } } },
-          },
-        },
-      },
+      include: PRODUCT_INCLUDE,
     });
+  }
+
+  async getOne(id: string, clientId: string) {
+    const p = await this.prisma.product.findFirst({ where: { id, clientId }, include: PRODUCT_INCLUDE });
+    if (!p) throw new NotFoundException('Product not found');
+    return p;
   }
 
   private async ownedProduct(id: string, clientId: string) {
@@ -42,19 +50,26 @@ export class ProductsService {
       data: {
         clientId, name: dto.name.trim(), code: dto.code.trim(),
         description: dto.description?.trim() || null,
-        autoAssign: dto.autoAssign ?? true, sortOrder: count,
+        imageUrl: dto.imageUrl || null,
+        tracks: dto.tracks ?? [], sortOrder: count,
       },
     });
   }
 
   async updateProduct(id: string, dto: UpdateProductDto, clientId: string) {
     await this.ownedProduct(id, clientId);
+    // Dropping a product-level track removes any agents listed under it.
+    if (dto.tracks) {
+      await this.prisma.productConsultant.deleteMany({ where: { productId: id, track: { notIn: dto.tracks } } });
+    }
     return this.prisma.product.update({
       where: { id },
       data: {
         name: dto.name?.trim(), code: dto.code?.trim(),
         ...(dto.description !== undefined ? { description: dto.description.trim() || null } : {}),
-        autoAssign: dto.autoAssign, isActive: dto.isActive,
+        ...(dto.imageUrl !== undefined ? { imageUrl: dto.imageUrl || null } : {}),
+        ...(dto.tracks !== undefined ? { tracks: dto.tracks } : {}),
+        isActive: dto.isActive,
       },
     });
   }
@@ -68,13 +83,11 @@ export class ProductsService {
   async addModule(productId: string, dto: CreateModuleDto, clientId: string) {
     await this.ownedProduct(productId, clientId);
     const count = await this.prisma.productModule.count({ where: { productId } });
-    const tracks = dto.tracks?.length ? dto.tracks : ['TECHNICAL', 'FUNCTIONAL'];
-    return this.prisma.productModule.create({ data: { productId, name: dto.name.trim(), tracks, sortOrder: count } });
+    return this.prisma.productModule.create({ data: { productId, name: dto.name.trim(), tracks: dto.tracks ?? [], sortOrder: count } });
   }
 
   async updateModule(moduleId: string, dto: UpdateModuleDto, clientId: string) {
     await this.ownedModule(moduleId, clientId);
-    // Dropping a track cleans out any agents that were listed under it.
     if (dto.tracks) {
       await this.prisma.moduleConsultant.deleteMany({ where: { moduleId, track: { notIn: dto.tracks } } });
     }
@@ -82,7 +95,7 @@ export class ProductsService {
       where: { id: moduleId },
       data: {
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
-        ...(dto.tracks !== undefined ? { tracks: dto.tracks.length ? dto.tracks : ['TECHNICAL', 'FUNCTIONAL'] } : {}),
+        ...(dto.tracks !== undefined ? { tracks: dto.tracks } : {}),
       },
     });
   }
@@ -93,55 +106,37 @@ export class ProductsService {
     return { message: 'Module deleted' };
   }
 
-  // Add an agent to a module's consultant list for a track. The first agent added
-  // becomes the primary automatically.
+  // ---- module-level agents ----
+
   async addConsultant(moduleId: string, dto: AddConsultantDto, clientId: string) {
-    await this.ownedModule(moduleId, clientId);
+    const mod = await this.ownedModule(moduleId, clientId);
     const staff = await this.prisma.user.findFirst({ where: { id: dto.userId, clientId } });
     if (!staff) throw new NotFoundException('User not found');
-
-    // A consultant is a specialist for exactly one slot — they may appear in a
-    // single module+track list and nowhere else.
-    const clash = await this.prisma.moduleConsultant.findFirst({
-      where: { userId: dto.userId, module: { product: { clientId } }, NOT: { moduleId, track: dto.track } },
-      include: { module: true },
-    });
-    if (clash) {
-      throw new ConflictException(
-        `${staff.username} is already a ${clash.track.toLowerCase()} consultant for "${clash.module.name}" — a consultant handles only one module/track`,
-      );
-    }
-
     const existing = await this.prisma.moduleConsultant.findMany({ where: { moduleId, track: dto.track } });
     if (existing.some((c) => c.userId === dto.userId)) {
       throw new ConflictException(`${staff.username} is already in this list`);
     }
+    // The grid has no separate "add track" step — registering an agent adds the track.
+    if (!mod.tracks.includes(dto.track)) {
+      await this.prisma.productModule.update({ where: { id: moduleId }, data: { tracks: { push: dto.track } } });
+    }
     return this.prisma.moduleConsultant.create({
-      data: {
-        moduleId, track: dto.track, userId: dto.userId,
-        isPrimary: existing.length === 0,       // first agent in the list is primary
-        sortOrder: existing.length,
-      },
+      data: { moduleId, track: dto.track, userId: dto.userId, isPrimary: existing.length === 0, sortOrder: existing.length },
     });
   }
 
-  // Remove an agent from a list; if they were the primary, promote the next one.
   async removeConsultant(moduleId: string, consultantId: string, clientId: string) {
     await this.ownedModule(moduleId, clientId);
     const row = await this.prisma.moduleConsultant.findFirst({ where: { id: consultantId, moduleId } });
     if (!row) throw new NotFoundException('Consultant not found');
     await this.prisma.moduleConsultant.delete({ where: { id: consultantId } });
-
     if (row.isPrimary) {
-      const next = await this.prisma.moduleConsultant.findFirst({
-        where: { moduleId, track: row.track }, orderBy: { sortOrder: 'asc' },
-      });
+      const next = await this.prisma.moduleConsultant.findFirst({ where: { moduleId, track: row.track }, orderBy: { sortOrder: 'asc' } });
       if (next) await this.prisma.moduleConsultant.update({ where: { id: next.id }, data: { isPrimary: true } });
     }
     return { message: 'Consultant removed' };
   }
 
-  // Make one agent the primary for its module+track (demotes the current primary).
   async setPrimary(moduleId: string, consultantId: string, clientId: string) {
     await this.ownedModule(moduleId, clientId);
     const row = await this.prisma.moduleConsultant.findFirst({ where: { id: consultantId, moduleId } });
@@ -153,10 +148,50 @@ export class ProductsService {
     return { message: 'Primary updated' };
   }
 
+  // ---- product-level agents (no module) ----
+
+  async addProductConsultant(productId: string, dto: AddConsultantDto, clientId: string) {
+    const product = await this.ownedProduct(productId, clientId);
+    const staff = await this.prisma.user.findFirst({ where: { id: dto.userId, clientId } });
+    if (!staff) throw new NotFoundException('User not found');
+    const existing = await this.prisma.productConsultant.findMany({ where: { productId, track: dto.track } });
+    if (existing.some((c) => c.userId === dto.userId)) {
+      throw new ConflictException(`${staff.username} is already in this list`);
+    }
+    if (!product.tracks.includes(dto.track)) {
+      await this.prisma.product.update({ where: { id: productId }, data: { tracks: { push: dto.track } } });
+    }
+    return this.prisma.productConsultant.create({
+      data: { productId, track: dto.track, userId: dto.userId, isPrimary: existing.length === 0, sortOrder: existing.length },
+    });
+  }
+
+  async removeProductConsultant(productId: string, consultantId: string, clientId: string) {
+    await this.ownedProduct(productId, clientId);
+    const row = await this.prisma.productConsultant.findFirst({ where: { id: consultantId, productId } });
+    if (!row) throw new NotFoundException('Consultant not found');
+    await this.prisma.productConsultant.delete({ where: { id: consultantId } });
+    if (row.isPrimary) {
+      const next = await this.prisma.productConsultant.findFirst({ where: { productId, track: row.track }, orderBy: { sortOrder: 'asc' } });
+      if (next) await this.prisma.productConsultant.update({ where: { id: next.id }, data: { isPrimary: true } });
+    }
+    return { message: 'Consultant removed' };
+  }
+
+  async setProductPrimary(productId: string, consultantId: string, clientId: string) {
+    await this.ownedProduct(productId, clientId);
+    const row = await this.prisma.productConsultant.findFirst({ where: { id: consultantId, productId } });
+    if (!row) throw new NotFoundException('Consultant not found');
+    await this.prisma.$transaction([
+      this.prisma.productConsultant.updateMany({ where: { productId, track: row.track }, data: { isPrimary: false } }),
+      this.prisma.productConsultant.update({ where: { id: consultantId }, data: { isPrimary: true } }),
+    ]);
+    return { message: 'Primary updated' };
+  }
+
   /**
-   * Pick the consultant to auto-assign for a module + track. Prefers the primary,
-   * then falls back through the rest of the list (in order) to the first agent
-   * without an open ticket. Returns the userId, or null when the list is empty.
+   * Pick the consultant to auto-assign for a module + track (ticket routing).
+   * Prefers the primary, then the first free agent in the list.
    */
   async resolveConsultant(clientId: string, moduleId: string, track: 'TECHNICAL' | 'FUNCTIONAL'): Promise<string | null> {
     const agents = await this.prisma.moduleConsultant.findMany({
@@ -164,15 +199,11 @@ export class ProductsService {
       orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }],
     });
     if (agents.length === 0) return null;
-
     const hasOpenTicket = async (userId: string) =>
-      (await this.prisma.ticketTechnician.count({
-        where: { userId, ticket: { clientId, resolvedAt: null, closedDate: null } },
-      })) > 0;
-
+      (await this.prisma.ticketTechnician.count({ where: { userId, ticket: { clientId, resolvedAt: null, closedDate: null } } })) > 0;
     for (const a of agents) {
       if (!(await hasOpenTicket(a.userId))) return a.userId;
     }
-    return agents[0].userId;                         // everyone busy → the primary anyway
+    return agents[0].userId;
   }
 }

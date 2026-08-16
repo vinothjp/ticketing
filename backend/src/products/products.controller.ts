@@ -24,10 +24,34 @@ export class ProductsController {
     return this.service.list(req.user.clientId);
   }
 
+  @Get(':id')
+  getOne(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.service.getOne(id, req.user.clientId);
+  }
+
   @Post()
   @Roles('Admin')
   createProduct(@Body() dto: CreateProductDto, @Request() req: AuthedRequest) {
     return this.service.createProduct(dto, req.user.clientId);
+  }
+
+  // ---- product-level agents (no module) ----
+  @Post(':id/consultants')
+  @Roles('Admin')
+  addProductConsultant(@Param('id') id: string, @Body() dto: AddConsultantDto, @Request() req: AuthedRequest) {
+    return this.service.addProductConsultant(id, dto, req.user.clientId);
+  }
+
+  @Delete(':id/consultants/:consultantId')
+  @Roles('Admin')
+  removeProductConsultant(@Param('id') id: string, @Param('consultantId') consultantId: string, @Request() req: AuthedRequest) {
+    return this.service.removeProductConsultant(id, consultantId, req.user.clientId);
+  }
+
+  @Put(':id/consultants/:consultantId/primary')
+  @Roles('Admin')
+  setProductPrimary(@Param('id') id: string, @Param('consultantId') consultantId: string, @Request() req: AuthedRequest) {
+    return this.service.setProductPrimary(id, consultantId, req.user.clientId);
   }
 
   @Patch(':id')

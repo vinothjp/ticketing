@@ -64,6 +64,15 @@ export class CustomerCompaniesService {
     return company;
   }
 
+  /** One client's core details (for the client workspace page). */
+  async getOne(id: string, clientId: string) {
+    const c = await this.getOwned(id, clientId);
+    return {
+      id: c.id, name: c.name, code: c.code, status: c.status, contactEmail: c.contactEmail,
+      contractScope: c.contractScope, contractStart: c.contractStart, contractEnd: c.contractEnd, contractHours: c.contractHours,
+    };
+  }
+
   // Replace the set of products a company uses (validates ownership).
   private async setProducts(companyId: string, productIds: string[], clientId: string) {
     const valid = await this.prisma.product.findMany({ where: { id: { in: productIds }, clientId }, select: { id: true } });

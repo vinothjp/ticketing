@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, Users2, Trash2, Building2, Boxes } from 'lucide-react';
 import { toast } from 'sonner';
@@ -8,7 +9,6 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import CompanyProductsDialog from './customer-companies/CompanyProductsDialog';
 
 interface Company {
   id: string;
@@ -38,7 +38,7 @@ export default function CustomerCompaniesPage() {
   const [editing, setEditing] = useState<Company | null>(null);
   const [form, setForm] = useState<typeof empty>(empty);
   const [contactsFor, setContactsFor] = useState<Company | null>(null);
-  const [productsFor, setProductsFor] = useState<Company | null>(null);
+  const navigate = useNavigate();
 
   const { data: companies = [], isLoading } = useQuery<Company[]>({
     queryKey: ['customer-companies'],
@@ -93,16 +93,16 @@ export default function CustomerCompaniesPage() {
     <div>
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Customer Companies</h1>
-          <p className="text-sm text-muted-foreground">External customers whose contacts can log in and raise tickets.</p>
+          <h1 className="text-2xl font-bold text-foreground">Clients</h1>
+          <p className="text-sm text-muted-foreground">External clients whose contacts can log in and raise tickets.</p>
         </div>
-        <Button onClick={openCreate}><Plus className="size-4" /> New Company</Button>
+        <Button onClick={openCreate}><Plus className="size-4" /> New Client</Button>
       </div>
 
       {/* Create / edit dialog */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="flex max-h-[90vh] flex-col">
-          <DialogHeader><DialogTitle>{editing ? 'Edit Company' : 'New Customer Company'}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{editing ? 'Edit Client' : 'New Client'}</DialogTitle></DialogHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Company name</label>
@@ -182,7 +182,6 @@ export default function CustomerCompaniesPage() {
       </Dialog>
 
       {contactsFor && <ContactsDialog company={contactsFor} onClose={() => setContactsFor(null)} onChanged={invalidate} />}
-      {productsFor && <CompanyProductsDialog companyId={productsFor.id} companyName={productsFor.name} onClose={() => setProductsFor(null)} />}
 
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
@@ -214,7 +213,7 @@ export default function CustomerCompaniesPage() {
                   <TableCell><Badge variant={c.status === 'ACTIVE' ? 'success' : 'secondary'}>{c.status}</Badge></TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
-                      <Button size="sm" variant="outline" onClick={() => setProductsFor(c)}><Boxes className="size-4" /> Products</Button>
+                      <Button size="sm" onClick={() => navigate(`/admin/clients/${c.id}`)}><Boxes className="size-4" /> Products &amp; consultants</Button>
                       <Button size="sm" variant="outline" onClick={() => setContactsFor(c)}><Users2 className="size-4" /> People</Button>
                       <Button size="sm" variant="outline" onClick={() => openEdit(c)}><Pencil className="size-4" /> Edit</Button>
                       <Button size="sm" variant="destructive" onClick={() => { if (confirm(`Delete ${c.name}?`)) deleteMutation.mutate(c.id); }}>

@@ -12,6 +12,6 @@ import { NotificationsModule } from '../notifications/notifications.module';
   imports: [MailModule, NotificationsModule],
   providers: [CustomerCompaniesService, SupportHoursService, CustomerProductsService, AmcExpiryService],
   controllers: [CustomerCompaniesController, MyCompanyController],
-  exports: [CustomerCompaniesService, SupportHoursService],
+  exports: [CustomerCompaniesService, SupportHoursService, CustomerProductsService],
 })
 export class CustomerCompaniesModule {}

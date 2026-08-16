@@ -131,6 +131,17 @@ model CustomerCompany {
   // Set when the "hours running low" alert fires, so it only goes out once per
   // period; cleared whenever the hours/period/threshold are edited.
   supportAlertSentAt       DateTime?
+  // Product contract scope. PRODUCT = each product carries its own warranty/AMC
+  // terms; CUSTOMER = one shared contract (dates + hours) covering many products.
+  contractScope            String   @default("PRODUCT")   // PRODUCT | CUSTOMER
+  contractStart            DateTime?
+  contractEnd              DateTime?
+  contractHours            Int?
+  contractVisits           Int?
+  contractHoursUsed        Decimal  @default(0)
+  contractVisitsUsed       Int      @default(0)
+  contractMonthlyCost      Decimal?
+  contractAlertSentAt      DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   createdBy    String?
@@ -140,8 +151,26 @@ model CustomerCompany {
   projects     Project[]
   products     CustomerCompanyProduct[]
   productRequests ProductRequest[]
+  consultants  CustomerConsultant[]
 
   @@unique([clientId, name])
+}
+
+// A consultant tied to a customer, used to auto-assign that customer's tickets.
+// Optionally scoped to a product/module/track; a row with no scope is the
+// customer's default consultant. These override the module's default routing.
+model CustomerConsultant {
+  id                String   @id @default(uuid())
+  clientId          String
+  customerCompanyId String
+  customerCompany   CustomerCompany @relation(fields: [customerCompanyId], references: [id], onDelete: Cascade)
+  userId            String
+  productId         String?
+  moduleId          String?
+  track             String?  // 'TECHNICAL' | 'FUNCTIONAL' | null (any)
+  createdAt         DateTime @default(now())
+
+  @@index([customerCompanyId])
 }
 
 model License {
@@ -180,6 +209,7 @@ model User {
   userRoles      UserRole[]
   ticketAssignments TicketTechnician[]
   moduleConsultants ModuleConsultant[]
+  productConsultants ProductConsultant[]
   notifications  Notification[]
   projectTaskWatchers ProjectTaskWatcher[]
   projectResources ProjectResource[]
@@ -288,7 +318,10 @@ model Product {
   name       String
   code       String                              // free-form product code
   description String?
-  autoAssign Boolean  @default(true)             // false = admin assigns tickets manually
+  imageUrl   String?                             // product logo (data URL); null → default cube
+  autoAssign Boolean  @default(true)             // kept for ticket routing; not shown in the product admin
+  // Product-level tracks (used when the product has no modules). TECHNICAL | FUNCTIONAL | OTHERS.
+  tracks     String[] @default([])
   sortOrder  Int      @default(0)
   isActive   Boolean  @default(true)
   createdAt  DateTime @default(now())
@@ -296,8 +329,25 @@ model Product {
   modules    ProductModule[]
   companies  CustomerCompanyProduct[]
   requests   ProductRequest[]
+  consultants ProductConsultant[]
 
   @@unique([clientId, name])
+}
+
+// An agent assigned directly to a product's track (when the product has no
+// module). Multiple agents per track are allowed; the first is the primary.
+model ProductConsultant {
+  id        String   @id @default(uuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  track     String   // 'TECHNICAL' | 'FUNCTIONAL' | 'OTHERS'
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isPrimary Boolean  @default(false)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([productId])
 }
 
 // A product a customer company has purchased from the provider, with its
@@ -322,8 +372,19 @@ model CustomerCompanyProduct {
   amcMonthlyCost    Decimal?
   amcHoursPerMonth  Int?
   amcVisitsPerMonth Int?     @default(2)
+  // Support-hours + site-visits allocations. Free-period pool and the paid-period
+  // pool (used after subscribing). `hoursUsed`/`visitsUsed` track the current
+  // period's consumption; they reset to 0 when the AMC renews into a new period.
+  freeAmcHours      Int?
+  freeAmcVisits     Int?
+  paidAmcMonths     Int?
+  paidAmcHours      Int?
+  paidAmcVisits     Int?
+  hoursUsed         Decimal  @default(0)
+  visitsUsed        Int      @default(0)
   // Set when the "coverage running out" alert fires, so it goes once per period.
   expiryAlertSentAt DateTime?
+  warrantyAlertSentAt DateTime?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 

@@ -1,10 +1,11 @@
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
-import { CustomerCompanyProduct } from '@prisma/client';
+import { CustomerCompanyProduct, CustomerCompany } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailerService } from '../mail/mailer.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import {
-  AssignProductDto, UpdateProductTermsDto, RenewAmcDto, CreateProductRequestDto, GrantRequestDto,
+  AssignProductDto, UpdateProductTermsDto, RenewAmcDto, CreateProductRequestDto, GrantRequestDto, SetContractDto,
+  RenewContractDto, AddCustomerConsultantDto,
 } from './dto/customer-product.dto';
 
 const DAY = 86_400_000;
@@ -13,6 +14,9 @@ const monthsAfter = (d: Date, months: number) => {
   r.setMonth(r.getMonth() + months);
   return r;
 };
+// Rough whole-month span between two dates, for the display "months" fields.
+const monthsBetween = (start: Date, end: Date) =>
+  Math.max(1, Math.round((end.getTime() - start.getTime()) / (30.44 * DAY)));
 
 @Injectable()
 export class CustomerProductsService {
@@ -24,6 +28,14 @@ export class CustomerProductsService {
 
   // ---- coverage maths --------------------------------------------------------
 
+  /** Reject invalid / inverted coverage windows before they hit the DB. */
+  private assertRange(start: Date, end: Date) {
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()))
+      throw new BadRequestException('Invalid start or end date');
+    if (end.getTime() <= start.getTime())
+      throw new BadRequestException('End date must be after the start date');
+  }
+
   private pctElapsed(start?: Date | null, end?: Date | null): number {
     if (!start || !end) return 0;
     const total = end.getTime() - start.getTime();
@@ -34,10 +46,29 @@ export class CustomerProductsService {
     if (!end) return null;
     return Math.ceil((end.getTime() - Date.now()) / DAY);
   }
+  /** A human "X mo Y d" countdown to a date. */
+  private timeLeft(end?: Date | null): { days: number | null; label: string } {
+    if (!end) return { days: null, label: '—' };
+    const days = Math.ceil((end.getTime() - Date.now()) / DAY);
+    if (days <= 0) return { days, label: 'Ended' };
+    const months = Math.floor(days / 30);
+    const rem = days % 30;
+    return { days, label: months > 0 ? `${months} mo ${rem} d` : `${days} d` };
+  }
 
-  /** Customer-facing view of a purchased product with computed warranty + AMC state. */
-  private toView(cp: CustomerCompanyProduct & { product?: { name: string; code: string } | null }) {
+  /** Customer-facing view: warranty + AMC countdowns, live hours/visits left, agents. */
+  private toView(
+    cp: CustomerCompanyProduct & { product?: { name: string; code: string } | null },
+    agents: string[] = [],
+  ) {
     const now = Date.now();
+    const paid = cp.amcType === 'PAID';
+    // Active pool = paid allocation once subscribed, else the free-period allocation.
+    const allocHours = paid ? cp.paidAmcHours : cp.freeAmcHours;
+    const allocVisits = paid ? cp.paidAmcVisits : cp.freeAmcVisits;
+    const hoursUsed = Number(cp.hoursUsed);
+    const warranty = this.timeLeft(cp.warrantyEnd);
+    const amc = this.timeLeft(cp.amcEnd);
     return {
       id: cp.id,
       productId: cp.productId,
@@ -45,10 +76,12 @@ export class CustomerProductsService {
       productCode: cp.product?.code ?? null,
       status: cp.status,
       purchaseDate: cp.purchaseDate,
+      agents,
       warranty: {
         months: cp.warrantyMonths,
         end: cp.warrantyEnd,
-        daysLeft: this.daysLeft(cp.warrantyEnd),
+        daysLeft: warranty.days,
+        label: warranty.label,
         pct: this.pctElapsed(cp.purchaseDate, cp.warrantyEnd),
         active: cp.warrantyEnd ? cp.warrantyEnd.getTime() > now : false,
       },
@@ -56,15 +89,48 @@ export class CustomerProductsService {
         type: cp.amcType,
         start: cp.amcStart,
         end: cp.amcEnd,
-        daysLeft: this.daysLeft(cp.amcEnd),
+        daysLeft: amc.days,
+        label: amc.label,
         pct: this.pctElapsed(cp.amcStart, cp.amcEnd),
         active: cp.amcEnd ? cp.amcEnd.getTime() > now : false,
-        monthlyCost: cp.amcMonthlyCost == null ? null : Number(cp.amcMonthlyCost),
-        hoursPerMonth: cp.amcHoursPerMonth,
-        visitsPerMonth: cp.amcVisitsPerMonth,
         freeMonths: cp.freeAmcMonths,
       },
+      // Live support-hours + visits for the current period.
+      hours: {
+        allocated: allocHours,
+        used: hoursUsed,
+        left: allocHours == null ? null : Math.max(0, allocHours - hoursUsed),
+      },
+      visits: {
+        allocated: allocVisits,
+        used: cp.visitsUsed,
+        left: allocVisits == null ? null : Math.max(0, allocVisits - cp.visitsUsed),
+      },
+      // Paid-AMC terms shown so the customer knows what a subscription buys.
+      paidTerms: {
+        months: cp.paidAmcMonths,
+        monthlyCost: cp.amcMonthlyCost == null ? null : Number(cp.amcMonthlyCost),
+        hours: cp.paidAmcHours,
+        visits: cp.paidAmcVisits,
+      },
     };
+  }
+
+  /** Map of productId -> assigned agent usernames for a company (product-scoped + default). */
+  private async agentsByProduct(companyId: string, clientId: string) {
+    const rows = await this.prisma.customerConsultant.findMany({ where: { clientId, customerCompanyId: companyId } });
+    if (!rows.length) return { byProduct: new Map<string, string[]>(), defaults: [] as string[] };
+    const users = await this.prisma.user.findMany({ where: { id: { in: rows.map((r) => r.userId) } }, select: { id: true, username: true } });
+    const nameById = new Map(users.map((u) => [u.id, u.username]));
+    const byProduct = new Map<string, string[]>();
+    const defaults: string[] = [];
+    for (const r of rows) {
+      const name = nameById.get(r.userId);
+      if (!name) continue;
+      if (r.productId) byProduct.set(r.productId, [...(byProduct.get(r.productId) ?? []), name]);
+      else defaults.push(name);
+    }
+    return { byProduct, defaults };
   }
 
   private async ownedCompany(companyId: string, clientId: string) {
@@ -80,22 +146,35 @@ export class CustomerProductsService {
     const product = await this.prisma.product.findFirst({ where: { id: dto.productId, clientId } });
     if (!product) throw new NotFoundException('Product not found');
 
-    const purchaseDate = dto.purchaseDate ? new Date(dto.purchaseDate) : new Date();
-    const warrantyMonths = dto.warrantyMonths ?? 12;
-    const freeAmcMonths = dto.freeAmcMonths ?? 12;
+    // Coverage is ONE timeline: Warranty (free) OR AMC (paid), chosen by coverageType.
+    // The DB keeps free* = warranty pool, paid* = AMC pool; amcType FREE = under
+    // warranty, PAID = under AMC. Support-hours/visits go to the active phase's pool.
+    const paid = dto.coverageType === 'AMC';
+    const start = dto.startDate ? new Date(dto.startDate) : new Date();
+    const end = dto.endDate ? new Date(dto.endDate) : monthsAfter(start, 12);
+    this.assertRange(start, end);
+    const months = monthsBetween(start, end);
     const data = {
       status: 'ACTIVE',
-      purchaseDate,
-      warrantyMonths,
-      warrantyEnd: monthsAfter(purchaseDate, warrantyMonths),
-      freeAmcMonths,
-      amcType: 'FREE',
-      amcStart: purchaseDate,
-      amcEnd: monthsAfter(purchaseDate, freeAmcMonths),
-      amcMonthlyCost: dto.amcMonthlyCost ?? null,
-      amcHoursPerMonth: dto.amcHoursPerMonth ?? null,
-      amcVisitsPerMonth: dto.amcVisitsPerMonth ?? 2,
+      purchaseDate: start,
+      warrantyMonths: months,
+      warrantyEnd: end,
+      freeAmcMonths: months,
+      amcType: paid ? 'PAID' : 'FREE',
+      amcStart: start,
+      amcEnd: end,
+      paidAmcMonths: months,
+      amcMonthlyCost: paid ? dto.contractAmount ?? null : null,
+      // Only the active phase's pool is set on assign; the other stays empty until
+      // the coverage is switched.
+      freeAmcHours: paid ? null : dto.supportHours ?? null,
+      freeAmcVisits: paid ? null : dto.visits ?? null,
+      paidAmcHours: paid ? dto.supportHours ?? null : null,
+      paidAmcVisits: paid ? dto.visits ?? null : null,
+      hoursUsed: 0,
+      visitsUsed: 0,
       expiryAlertSentAt: null,
+      warrantyAlertSentAt: null,
     };
     return this.prisma.customerCompanyProduct.upsert({
       where: { customerCompanyId_productId: { customerCompanyId: companyId, productId: dto.productId } },
@@ -115,41 +194,90 @@ export class CustomerProductsService {
 
   async updateTerms(cpId: string, dto: UpdateProductTermsDto, clientId: string) {
     const cp = await this.ownedCp(cpId, clientId);
-    const purchaseDate = dto.purchaseDate ? new Date(dto.purchaseDate) : cp.purchaseDate ?? new Date();
-    const warrantyMonths = dto.warrantyMonths ?? cp.warrantyMonths;
-    const freeAmcMonths = dto.freeAmcMonths ?? cp.freeAmcMonths;
-    // Recompute the free-AMC window from purchase; paid renewals are left alone.
-    const recomputeAmc = cp.amcType === 'FREE';
+    const wasType = cp.amcType === 'PAID' ? 'AMC' : 'WARRANTY';
+    const coverageType = dto.coverageType ?? wasType;
+    const paid = coverageType === 'AMC';
+    const switched = coverageType !== wasType;   // switching phase → fresh pool
+    // One coverage window; only the active phase's pool is written (the other is
+    // preserved so switching back keeps its terms).
+    const start = dto.startDate ? new Date(dto.startDate)
+      : (paid ? cp.amcStart : cp.purchaseDate) ?? new Date();
+    const end = dto.endDate ? new Date(dto.endDate)
+      : (paid ? cp.amcEnd : cp.warrantyEnd) ?? monthsAfter(start, 12);
+    this.assertRange(start, end);
+    const months = monthsBetween(start, end);
     return this.prisma.customerCompanyProduct.update({
       where: { id: cpId },
       data: {
-        purchaseDate,
-        warrantyMonths,
-        warrantyEnd: monthsAfter(purchaseDate, warrantyMonths),
-        freeAmcMonths,
-        ...(recomputeAmc ? { amcStart: purchaseDate, amcEnd: monthsAfter(purchaseDate, freeAmcMonths), status: 'ACTIVE', expiryAlertSentAt: null } : {}),
-        ...(dto.amcMonthlyCost !== undefined ? { amcMonthlyCost: dto.amcMonthlyCost } : {}),
-        ...(dto.amcHoursPerMonth !== undefined ? { amcHoursPerMonth: dto.amcHoursPerMonth } : {}),
-        ...(dto.amcVisitsPerMonth !== undefined ? { amcVisitsPerMonth: dto.amcVisitsPerMonth } : {}),
+        purchaseDate: start,
+        warrantyMonths: months,
+        warrantyEnd: end,
+        freeAmcMonths: months,
+        paidAmcMonths: months,
+        amcType: paid ? 'PAID' : 'FREE',
+        amcStart: start,
+        amcEnd: end,
+        status: 'ACTIVE',
+        expiryAlertSentAt: null,
+        ...(switched ? { hoursUsed: 0, visitsUsed: 0 } : {}),
+        ...(paid
+          ? {
+              ...(dto.contractAmount !== undefined ? { amcMonthlyCost: dto.contractAmount } : {}),
+              ...(dto.supportHours !== undefined ? { paidAmcHours: dto.supportHours } : {}),
+              ...(dto.visits !== undefined ? { paidAmcVisits: dto.visits } : {}),
+            }
+          : {
+              ...(dto.supportHours !== undefined ? { freeAmcHours: dto.supportHours } : {}),
+              ...(dto.visits !== undefined ? { freeAmcVisits: dto.visits } : {}),
+            }),
       },
     });
+  }
+
+  /** Log support-hours / a site visit used against the current AMC period. */
+  async logUsage(cpId: string, dto: { hours?: number; visits?: number }, clientId: string) {
+    const cp = await this.ownedCp(cpId, clientId);
+    const updated = await this.prisma.customerCompanyProduct.update({
+      where: { id: cpId },
+      data: {
+        hoursUsed: { increment: dto.hours ?? 0 },
+        visitsUsed: { increment: dto.visits ?? 0 },
+      },
+      include: { product: true },
+    });
+    // Warn when the current pool crosses ~85% used.
+    const paid = updated.amcType === 'PAID';
+    const allocHours = paid ? updated.paidAmcHours : updated.freeAmcHours;
+    if (allocHours && Number(updated.hoursUsed) >= allocHours * 0.85) {
+      await this.notifyCompanyAdmins(updated.customerCompanyId, clientId, {
+        type: 'PRODUCT_AMC', title: 'Support hours running low',
+        body: `You've used ${Number(updated.hoursUsed)} of ${allocHours} support hours for ${updated.product?.name}.`,
+      });
+    }
+    return updated;
   }
 
   /** Renew into a paid AMC period from today; reactivates a terminated product. */
   async renewAmc(cpId: string, dto: RenewAmcDto, clientId: string) {
     const cp = await this.ownedCp(cpId, clientId);
     const start = new Date();
+    const months = dto.months ?? cp.paidAmcMonths ?? 12;
     const updated = await this.prisma.customerCompanyProduct.update({
       where: { id: cpId },
       data: {
         status: 'ACTIVE',
         amcType: 'PAID',
         amcStart: start,
-        amcEnd: monthsAfter(start, dto.months),
+        amcEnd: monthsAfter(start, months),
+        paidAmcMonths: months,
         amcMonthlyCost: dto.amcMonthlyCost ?? cp.amcMonthlyCost,
-        amcHoursPerMonth: dto.amcHoursPerMonth ?? cp.amcHoursPerMonth,
-        amcVisitsPerMonth: dto.amcVisitsPerMonth ?? cp.amcVisitsPerMonth,
+        paidAmcHours: dto.amcHoursPerMonth ?? cp.paidAmcHours,
+        paidAmcVisits: dto.amcVisitsPerMonth ?? cp.paidAmcVisits,
+        // New paid period → fresh pools.
+        hoursUsed: 0,
+        visitsUsed: 0,
         expiryAlertSentAt: null,
+        warrantyAlertSentAt: cp.warrantyAlertSentAt,
       },
       include: { product: true },
     });
@@ -166,25 +294,143 @@ export class CustomerProductsService {
     return { message: 'Product removed from company' };
   }
 
+  // ---- contract scope (product-specific vs one shared customer contract) -----
+
+  /** Live view of a shared customer contract: period, hours + visits used/left. */
+  private contractView(c: CustomerCompany) {
+    const now = Date.now();
+    const hoursUsed = Number(c.contractHoursUsed);
+    return {
+      scope: c.contractScope,
+      start: c.contractStart,
+      end: c.contractEnd,
+      hours: c.contractHours,
+      visits: c.contractVisits,
+      monthlyCost: c.contractMonthlyCost == null ? null : Number(c.contractMonthlyCost),
+      period: {
+        pct: this.pctElapsed(c.contractStart, c.contractEnd),
+        daysLeft: this.daysLeft(c.contractEnd),
+        active: c.contractEnd ? c.contractEnd.getTime() > now : true,
+      },
+      hoursPool: {
+        allocated: c.contractHours, used: hoursUsed,
+        left: c.contractHours == null ? null : Math.max(0, c.contractHours - hoursUsed),
+      },
+      visitsPool: {
+        allocated: c.contractVisits, used: c.contractVisitsUsed,
+        left: c.contractVisits == null ? null : Math.max(0, c.contractVisits - c.contractVisitsUsed),
+      },
+    };
+  }
+
+  async getContract(companyId: string, clientId: string) {
+    const c = await this.ownedCompany(companyId, clientId);
+    const links = await this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId: companyId }, select: { productId: true } });
+    return { ...this.contractView(c), productIds: links.map((l) => l.productId) };
+  }
+
+  async setContract(companyId: string, dto: SetContractDto, clientId: string) {
+    await this.ownedCompany(companyId, clientId);
+
+    if (dto.scope === 'CUSTOMER') {
+      if (dto.start && dto.end) this.assertRange(new Date(dto.start), new Date(dto.end));
+      await this.prisma.customerCompany.update({
+        where: { id: companyId },
+        data: {
+          contractScope: 'CUSTOMER',
+          contractStart: dto.start ? new Date(dto.start) : null,
+          contractEnd: dto.end ? new Date(dto.end) : null,
+          contractHours: dto.hours ?? null,
+          contractVisits: dto.visits ?? null,
+          contractMonthlyCost: dto.monthlyCost ?? null,
+          contractAlertSentAt: null, // re-arm the "running low" alert on any change
+        },
+      });
+      // The ticked products are exactly what this contract covers.
+      if (dto.productIds) {
+        const valid = await this.prisma.product.findMany({ where: { id: { in: dto.productIds }, clientId }, select: { id: true } });
+        const ids = valid.map((v) => v.id);
+        for (const id of ids) {
+          await this.prisma.customerCompanyProduct.upsert({
+            where: { customerCompanyId_productId: { customerCompanyId: companyId, productId: id } },
+            update: { status: 'ACTIVE' },
+            create: { customerCompanyId: companyId, productId: id, status: 'ACTIVE' },
+          });
+        }
+        await this.prisma.customerCompanyProduct.deleteMany({ where: { customerCompanyId: companyId, productId: { notIn: ids } } });
+      }
+    } else {
+      await this.prisma.customerCompany.update({ where: { id: companyId }, data: { contractScope: 'PRODUCT' } });
+    }
+    return this.getContract(companyId, clientId);
+  }
+
+  /** Contract view for the signed-in customer (drives their My Products layout). */
+  async myContract(companyId: string, clientId: string) {
+    const c = await this.prisma.customerCompany.findFirst({ where: { id: companyId, clientId } });
+    if (!c) return { scope: 'PRODUCT' as const };
+    return this.contractView(c);
+  }
+
+  /** Log support hours / a site visit against the shared customer contract pool. */
+  async logContractUsage(companyId: string, dto: { hours?: number; visits?: number }, clientId: string) {
+    await this.ownedCompany(companyId, clientId);
+    const c = await this.prisma.customerCompany.update({
+      where: { id: companyId },
+      data: { contractHoursUsed: { increment: dto.hours ?? 0 }, contractVisitsUsed: { increment: dto.visits ?? 0 } },
+    });
+    if (c.contractHours && Number(c.contractHoursUsed) >= c.contractHours * 0.85 && !c.contractAlertSentAt) {
+      await this.prisma.customerCompany.update({ where: { id: companyId }, data: { contractAlertSentAt: new Date() } });
+      await this.notifyCompanyAdmins(companyId, clientId, {
+        type: 'CONTRACT', title: 'Support hours running low',
+        body: `You've used ${Number(c.contractHoursUsed)} of ${c.contractHours} contracted support hours.`,
+      });
+    }
+    return this.contractView(c);
+  }
+
+  /** Renew the customer contract into a fresh period (resets used hours/visits). */
+  async renewContract(companyId: string, dto: RenewContractDto, clientId: string) {
+    const c = await this.ownedCompany(companyId, clientId);
+    const start = new Date();
+    const updated = await this.prisma.customerCompany.update({
+      where: { id: companyId },
+      data: {
+        contractScope: 'CUSTOMER',
+        contractStart: start,
+        contractEnd: monthsAfter(start, dto.months),
+        contractHours: dto.hours ?? c.contractHours,
+        contractVisits: dto.visits ?? c.contractVisits,
+        contractMonthlyCost: dto.monthlyCost ?? c.contractMonthlyCost,
+        contractHoursUsed: 0,
+        contractVisitsUsed: 0,
+        contractAlertSentAt: null,
+      },
+    });
+    await this.notifyCompanyAdmins(companyId, clientId, {
+      type: 'CONTRACT', title: 'Support contract renewed',
+      body: `Your support contract is active until ${updated.contractEnd?.toDateString()}.`,
+    });
+    return this.contractView(updated);
+  }
+
   async listCompanyProducts(companyId: string, clientId: string) {
     await this.ownedCompany(companyId, clientId);
-    const rows = await this.prisma.customerCompanyProduct.findMany({
-      where: { customerCompanyId: companyId },
-      include: { product: true },
-      orderBy: { createdAt: 'asc' },
-    });
-    return rows.map((r) => this.toView(r));
+    const [rows, agents] = await Promise.all([
+      this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId: companyId }, include: { product: true }, orderBy: { createdAt: 'asc' } }),
+      this.agentsByProduct(companyId, clientId),
+    ]);
+    return rows.map((r) => this.toView(r, agents.byProduct.get(r.productId) ?? agents.defaults));
   }
 
   // ---- customer: my products, catalogue, requests ----------------------------
 
   async listMyProducts(clientId: string, companyId: string) {
-    const rows = await this.prisma.customerCompanyProduct.findMany({
-      where: { customerCompanyId: companyId, customerCompany: { clientId } },
-      include: { product: true },
-      orderBy: { createdAt: 'asc' },
-    });
-    return rows.map((r) => this.toView(r));
+    const [rows, agents] = await Promise.all([
+      this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId: companyId, customerCompany: { clientId } }, include: { product: true }, orderBy: { createdAt: 'asc' } }),
+      this.agentsByProduct(companyId, clientId),
+    ]);
+    return rows.map((r) => this.toView(r, agents.byProduct.get(r.productId) ?? agents.defaults));
   }
 
   /** Active provider products the customer doesn't already own or have pending. */
@@ -285,6 +531,65 @@ export class CustomerProductsService {
     return { message: 'Request declined' };
   }
 
+  // ---- customer-level consultants (auto-assignment overrides) ----------------
+
+  async listCustomerConsultants(companyId: string, clientId: string) {
+    await this.ownedCompany(companyId, clientId);
+    const rows = await this.prisma.customerConsultant.findMany({ where: { customerCompanyId: companyId, clientId }, orderBy: { createdAt: 'asc' } });
+    const users = await this.prisma.user.findMany({ where: { id: { in: rows.map((r) => r.userId) } }, select: { id: true, username: true } });
+    const nameById = new Map(users.map((u) => [u.id, u.username]));
+    return rows.map((r) => ({ id: r.id, userId: r.userId, username: nameById.get(r.userId) ?? null, productId: r.productId, moduleId: r.moduleId, track: r.track }));
+  }
+
+  async addCustomerConsultant(companyId: string, dto: AddCustomerConsultantDto, clientId: string) {
+    await this.ownedCompany(companyId, clientId);
+    const user = await this.prisma.user.findFirst({ where: { id: dto.userId, clientId } });
+    if (!user) throw new NotFoundException('User not found');
+    if (dto.moduleId && !dto.productId) throw new BadRequestException('A module needs its product');
+    // A default consultant (no scope) is unique per customer.
+    if (!dto.productId && !dto.moduleId) {
+      const existingDefault = await this.prisma.customerConsultant.findFirst({ where: { customerCompanyId: companyId, productId: null, moduleId: null } });
+      if (existingDefault) await this.prisma.customerConsultant.delete({ where: { id: existingDefault.id } });
+    }
+    return this.prisma.customerConsultant.create({
+      data: {
+        clientId, customerCompanyId: companyId, userId: dto.userId,
+        productId: dto.productId ?? null, moduleId: dto.moduleId ?? null, track: dto.track ?? null,
+      },
+    });
+  }
+
+  async removeCustomerConsultant(id: string, clientId: string) {
+    const row = await this.prisma.customerConsultant.findFirst({ where: { id, clientId } });
+    if (!row) throw new NotFoundException('Not found');
+    await this.prisma.customerConsultant.delete({ where: { id } });
+    return { message: 'Removed' };
+  }
+
+  /**
+   * Pick a customer-level consultant override for a ticket, most specific first:
+   * product+module(+track) → product+module → the customer's default. Returns a
+   * userId only when the user is still active. Null means "use module routing".
+   */
+  async resolveCustomerConsultant(
+    clientId: string, customerCompanyId: string | null,
+    productId: string | null, moduleId: string | null, track: 'TECHNICAL' | 'FUNCTIONAL' | null,
+  ): Promise<string | null> {
+    if (!customerCompanyId) return null;
+    const rows = await this.prisma.customerConsultant.findMany({ where: { clientId, customerCompanyId } });
+    if (!rows.length) return null;
+
+    const scoped = rows.filter((r) => r.productId && r.productId === productId && r.moduleId === moduleId);
+    const pick =
+      scoped.find((r) => r.track && r.track === track)     // module + exact track
+      ?? scoped.find((r) => !r.track)                       // module, any track
+      ?? rows.find((r) => !r.productId && !r.moduleId);     // customer default
+    if (!pick) return null;
+
+    const user = await this.prisma.user.findFirst({ where: { id: pick.userId, clientId, isActive: true }, select: { id: true } });
+    return user?.id ?? null;
+  }
+
   // ---- expiry sweep (called by the timer) ------------------------------------
 
   /**
@@ -309,8 +614,25 @@ export class CustomerProductsService {
         await this.prisma.customerCompanyProduct.update({ where: { id: cp.id }, data: { expiryAlertSentAt: new Date() } });
         await this.fireCoverageAlert(cp, 'expiring');
       }
+
     }
-    return { scanned: active.length };
+
+    // Shared customer contracts: alert once when the period is >= 90% elapsed.
+    const contracts = await this.prisma.customerCompany.findMany({
+      where: { contractScope: 'CUSTOMER', contractEnd: { not: null }, contractAlertSentAt: null },
+      select: { id: true, name: true, clientId: true, contractStart: true, contractEnd: true },
+    });
+    for (const c of contracts) {
+      const pct = this.pctElapsed(c.contractStart, c.contractEnd);
+      if (pct >= 90) {
+        await this.prisma.customerCompany.update({ where: { id: c.id }, data: { contractAlertSentAt: new Date() } });
+        await this.notifyCompanyAdmins(c.id, c.clientId, {
+          type: 'CONTRACT', title: 'Support contract ending soon',
+          body: `Your support contract ends on ${c.contractEnd?.toDateString()}. Renew to keep service running.`,
+        });
+      }
+    }
+    return { scanned: active.length, contracts: contracts.length };
   }
 
   private async fireCoverageAlert(
@@ -320,12 +642,17 @@ export class CustomerProductsService {
     const company = cp.customerCompany;
     if (!company) return;
     const name = cp.product?.name ?? 'your product';
+    const cover = cp.amcType === 'FREE' ? 'Warranty' : 'AMC';   // FREE = under warranty
     const subject = phase === 'expired'
-      ? `Service terminated for ${name}`
-      : `AMC / warranty running out for ${name}`;
+      ? `${cover} ended for ${name}`
+      : `${cover} running out for ${name}`;
     const body = phase === 'expired'
-      ? `The AMC for ${name} has ended and service is now paused. Renew to continue raising tickets.`
-      : `The AMC for ${name} is almost over. Renew to keep your service and warranty support running.`;
+      ? (cp.amcType === 'FREE'
+          ? `The warranty for ${name} has ended — start a paid AMC to keep service running.`
+          : `The AMC for ${name} has ended and service is now paused. Renew to continue.`)
+      : (cp.amcType === 'FREE'
+          ? `The warranty for ${name} is almost over — after it, a paid AMC begins.`
+          : `The AMC for ${name} is almost over. Renew to keep service running.`);
 
     await this.notifyCompanyAdmins(company.id, company.clientId, { type: 'PRODUCT_AMC', title: subject, body });
 

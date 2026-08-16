@@ -44,9 +44,11 @@ import CustomerTeamPage from './pages/CustomerTeamPage';
 import ProjectTemplatesListPage from './pages/projects/ProjectTemplatesListPage';
 import ProjectTemplateDesignerPage from './pages/projects/ProjectTemplateDesignerPage';
 import ProductsPage from './pages/ProductsPage';
-import ProductCreatePage from './pages/ProductCreatePage';
+import ProductEditorPage from './pages/ProductEditorPage';
 import MyProductsPage from './pages/MyProductsPage';
 import ProductRequestsPage from './pages/ProductRequestsPage';
+import ClientDetailPage from './pages/clients/ClientDetailPage';
+import ClientProductPage from './pages/clients/ClientProductPage';
 
 const queryClient = new QueryClient();
 const isSuperAdmin = (roles: string[]) => roles.includes('SuperAdmin');
@@ -117,6 +119,8 @@ export default function App() {
                         {/* Admin-only sections — non-admins are redirected to their tickets */}
                         <Route path="/users" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><UsersPage /></RoleGate>} />
                         <Route path="/admin/customer-companies" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><CustomerCompaniesPage /></RoleGate>} />
+                        <Route path="/admin/clients/:companyId" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientDetailPage /></RoleGate>} />
+                        <Route path="/admin/clients/:companyId/products/:cpId" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientProductPage /></RoleGate>} />
                         <Route path="/roles" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><RolesPage /></RoleGate>} />
                         <Route path="/organization" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><OrganizationPage /></RoleGate>} />
                         <Route path="/admin/templates" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><TemplatesListPage /></RoleGate>} />
@@ -124,7 +128,8 @@ export default function App() {
                         <Route path="/admin/templates/:id" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><TemplateDesignerPage /></RoleGate>} />
                         <Route path="/admin/picklists" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><PicklistOptionsPage /></RoleGate>} />
                         <Route path="/admin/products" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductsPage /></RoleGate>} />
-                        <Route path="/admin/products/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductCreatePage /></RoleGate>} />
+                        <Route path="/admin/products/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductEditorPage /></RoleGate>} />
+                        <Route path="/admin/products/:id/edit" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductEditorPage /></RoleGate>} />
                         <Route path="/admin/product-requests" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductRequestsPage /></RoleGate>} />
                         <Route path="/admin/project-templates" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProjectTemplatesListPage /></RoleGate>} />
                         <Route path="/admin/project-templates/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProjectTemplateDesignerPage /></RoleGate>} />

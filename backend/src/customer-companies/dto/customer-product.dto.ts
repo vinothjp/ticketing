@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsInt, IsNumber, Min, IsDateString, IsNotEmpty, IsIn, IsArray } from 'class-validator';
+import { IsString, IsOptional, IsInt, IsNumber, Min, IsDateString, IsNotEmpty, IsIn, IsArray, IsBoolean } from 'class-validator';
 
 // Set a company's product contract scope. CUSTOMER carries the shared dates/hours
 // + the list of covered products; PRODUCT just flips back to per-product terms.
@@ -71,6 +71,7 @@ export class AddCustomerConsultantDto {
   @IsOptional() @IsString() productId?: string;
   @IsOptional() @IsString() moduleId?: string;
   @IsOptional() @IsIn(['TECHNICAL', 'FUNCTIONAL']) track?: 'TECHNICAL' | 'FUNCTIONAL';
+  @IsOptional() @IsBoolean() isPrimary?: boolean;
 }
 
 // Provider grants a request, setting the same terms as a direct assignment.

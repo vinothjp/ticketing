@@ -122,15 +122,21 @@ export class CustomerProductsService {
     if (!rows.length) return { byProduct: new Map<string, string[]>(), defaults: [] as string[] };
     const users = await this.prisma.user.findMany({ where: { id: { in: rows.map((r) => r.userId) } }, select: { id: true, username: true } });
     const nameById = new Map(users.map((u) => [u.id, u.username]));
-    const byProduct = new Map<string, string[]>();
-    const defaults: string[] = [];
+    // Dedupe per product — an agent assigned to several modules/tracks of the same
+    // product should appear once.
+    const byProductSet = new Map<string, Set<string>>();
+    const defaultSet = new Set<string>();
     for (const r of rows) {
+      if (!r.isPrimary) continue; // cards show only the primary consultant of each cell
       const name = nameById.get(r.userId);
       if (!name) continue;
-      if (r.productId) byProduct.set(r.productId, [...(byProduct.get(r.productId) ?? []), name]);
-      else defaults.push(name);
+      if (r.productId) {
+        if (!byProductSet.has(r.productId)) byProductSet.set(r.productId, new Set());
+        byProductSet.get(r.productId)!.add(name);
+      } else defaultSet.add(name);
     }
-    return { byProduct, defaults };
+    const byProduct = new Map<string, string[]>([...byProductSet].map(([k, v]) => [k, [...v]]));
+    return { byProduct, defaults: [...defaultSet] };
   }
 
   private async ownedCompany(companyId: string, clientId: string) {
@@ -181,6 +187,46 @@ export class CustomerProductsService {
       update: data,
       create: { customerCompanyId: companyId, productId: dto.productId, ...data },
     });
+  }
+
+  /**
+   * Copy a product's module/product consultants into a client as a one-time
+   * snapshot (only when the client has none for that product yet). The client's
+   * copy is then edited independently — later product changes don't touch it.
+   */
+  async seedConsultantsFromProduct(companyId: string, productId: string, clientId: string) {
+    const existing = await this.prisma.customerConsultant.count({ where: { customerCompanyId: companyId, productId } });
+    if (existing > 0) return; // already set up (seeded or hand-edited) — leave it
+
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, clientId },
+      include: {
+        consultants: { select: { track: true, userId: true, isPrimary: true } },
+        modules: { select: { id: true, consultants: { select: { track: true, userId: true, isPrimary: true } } } },
+      },
+    });
+    if (!product) return;
+    const hasModules = product.modules.length > 0;
+    // Grid columns are Technical / Functional / Others; custom tracks fall into Others (null).
+    const norm = (t: string | null) => (t === 'TECHNICAL' || t === 'FUNCTIONAL' ? t : null);
+    const source: { moduleId: string | null; track: string | null; userId: string; isPrimary: boolean }[] = [
+      ...product.modules.flatMap((m) => m.consultants.map((c) => ({ moduleId: m.id as string | null, track: norm(c.track), userId: c.userId, isPrimary: c.isPrimary }))),
+      ...(!hasModules ? product.consultants.map((c) => ({ moduleId: null as string | null, track: norm(c.track), userId: c.userId, isPrimary: c.isPrimary })) : []),
+    ];
+    if (!source.length) return;
+    // Normalising custom tracks to "Others" can collapse two module-cells into one;
+    // keep at most one primary per resulting (module, track) cell.
+    const seen = new Set<string>();
+    const primarySeen = new Set<string>();
+    const rows = source
+      .filter((r) => { const k = `${r.moduleId}|${r.track}|${r.userId}`; if (seen.has(k)) return false; seen.add(k); return true; })
+      .map((r) => {
+        const cell = `${r.moduleId}|${r.track}`;
+        const isPrimary = r.isPrimary && !primarySeen.has(cell);
+        if (isPrimary) primarySeen.add(cell);
+        return { clientId, customerCompanyId: companyId, userId: r.userId, productId, moduleId: r.moduleId, track: r.track, isPrimary };
+      });
+    await this.prisma.customerConsultant.createMany({ data: rows });
   }
 
   private async ownedCp(cpId: string, clientId: string) {
@@ -289,8 +335,11 @@ export class CustomerProductsService {
   }
 
   async removeProduct(cpId: string, clientId: string) {
-    await this.ownedCp(cpId, clientId);
+    const cp = await this.ownedCp(cpId, clientId);
     await this.prisma.customerCompanyProduct.delete({ where: { id: cpId } });
+    // Drop this client's consultants for the product too, so re-adding it later
+    // starts fresh from the product's module mapping (not the old snapshot).
+    await this.prisma.customerConsultant.deleteMany({ where: { customerCompanyId: cp.customerCompanyId, productId: cp.productId } });
     return { message: 'Product removed from company' };
   }
 
@@ -358,6 +407,8 @@ export class CustomerProductsService {
           });
         }
         await this.prisma.customerCompanyProduct.deleteMany({ where: { customerCompanyId: companyId, productId: { notIn: ids } } });
+        // Also drop consultants for products no longer covered, so re-adding re-seeds.
+        await this.prisma.customerConsultant.deleteMany({ where: { customerCompanyId: companyId, productId: { not: null, notIn: ids } } });
       }
     } else {
       await this.prisma.customerCompany.update({ where: { id: companyId }, data: { contractScope: 'PRODUCT' } });
@@ -511,6 +562,7 @@ export class CustomerProductsService {
     if (req.status !== 'PENDING') throw new BadRequestException('This request has already been decided');
 
     await this.assignProduct(req.customerCompanyId, { productId: req.productId, ...dto }, clientId);
+    await this.seedConsultantsFromProduct(req.customerCompanyId, req.productId, clientId);
     await this.prisma.productRequest.update({ where: { id: requestId }, data: { status: 'GRANTED', decidedById: actorId, decidedAt: new Date() } });
     await this.notifyCompanyAdmins(req.customerCompanyId, clientId, {
       type: 'PRODUCT_REQUEST', title: 'Product request approved',
@@ -538,7 +590,7 @@ export class CustomerProductsService {
     const rows = await this.prisma.customerConsultant.findMany({ where: { customerCompanyId: companyId, clientId }, orderBy: { createdAt: 'asc' } });
     const users = await this.prisma.user.findMany({ where: { id: { in: rows.map((r) => r.userId) } }, select: { id: true, username: true } });
     const nameById = new Map(users.map((u) => [u.id, u.username]));
-    return rows.map((r) => ({ id: r.id, userId: r.userId, username: nameById.get(r.userId) ?? null, productId: r.productId, moduleId: r.moduleId, track: r.track }));
+    return rows.map((r) => ({ id: r.id, userId: r.userId, username: nameById.get(r.userId) ?? null, productId: r.productId, moduleId: r.moduleId, track: r.track, isPrimary: r.isPrimary }));
   }
 
   async addCustomerConsultant(companyId: string, dto: AddCustomerConsultantDto, clientId: string) {
@@ -546,24 +598,40 @@ export class CustomerProductsService {
     const user = await this.prisma.user.findFirst({ where: { id: dto.userId, clientId } });
     if (!user) throw new NotFoundException('User not found');
     if (dto.moduleId && !dto.productId) throw new BadRequestException('A module needs its product');
-    // A default consultant (no scope) is unique per customer.
-    if (!dto.productId && !dto.moduleId) {
-      const existingDefault = await this.prisma.customerConsultant.findFirst({ where: { customerCompanyId: companyId, productId: null, moduleId: null } });
-      if (existingDefault) await this.prisma.customerConsultant.delete({ where: { id: existingDefault.id } });
-    }
-    return this.prisma.customerConsultant.create({
-      data: {
-        clientId, customerCompanyId: companyId, userId: dto.userId,
-        productId: dto.productId ?? null, moduleId: dto.moduleId ?? null, track: dto.track ?? null,
-      },
-    });
+    // A "cell" is a (product, module, track) group; one agent is primary per cell.
+    const group = { customerCompanyId: companyId, productId: dto.productId ?? null, moduleId: dto.moduleId ?? null, track: dto.track ?? null };
+    const existing = await this.prisma.customerConsultant.findMany({ where: group });
+    const dup = existing.find((c) => c.userId === dto.userId);
+    if (dup) return dup;
+    const makePrimary = dto.isPrimary ?? existing.length === 0; // first in the cell is primary
+    if (makePrimary && existing.length) await this.prisma.customerConsultant.updateMany({ where: group, data: { isPrimary: false } });
+    return this.prisma.customerConsultant.create({ data: { clientId, userId: dto.userId, isPrimary: makePrimary, ...group } });
   }
 
   async removeCustomerConsultant(id: string, clientId: string) {
     const row = await this.prisma.customerConsultant.findFirst({ where: { id, clientId } });
     if (!row) throw new NotFoundException('Not found');
     await this.prisma.customerConsultant.delete({ where: { id } });
+    // If the primary was removed, promote the next agent in the same cell.
+    if (row.isPrimary) {
+      const next = await this.prisma.customerConsultant.findFirst({
+        where: { customerCompanyId: row.customerCompanyId, productId: row.productId, moduleId: row.moduleId, track: row.track },
+        orderBy: { createdAt: 'asc' },
+      });
+      if (next) await this.prisma.customerConsultant.update({ where: { id: next.id }, data: { isPrimary: true } });
+    }
     return { message: 'Removed' };
+  }
+
+  async setCustomerPrimary(id: string, clientId: string) {
+    const row = await this.prisma.customerConsultant.findFirst({ where: { id, clientId } });
+    if (!row) throw new NotFoundException('Not found');
+    const group = { customerCompanyId: row.customerCompanyId, productId: row.productId, moduleId: row.moduleId, track: row.track };
+    await this.prisma.$transaction([
+      this.prisma.customerConsultant.updateMany({ where: group, data: { isPrimary: false } }),
+      this.prisma.customerConsultant.update({ where: { id }, data: { isPrimary: true } }),
+    ]);
+    return { message: 'Primary updated' };
   }
 
   /**
@@ -580,10 +648,16 @@ export class CustomerProductsService {
     if (!rows.length) return null;
 
     const scoped = rows.filter((r) => r.productId && r.productId === productId && r.moduleId === moduleId);
+    // Contract-level common consultants (no product/module) handle every covered
+    // product; match the ticket's track first, then a track-less catch-all.
+    const contract = rows.filter((r) => !r.productId && !r.moduleId);
+    // Within a matching cell, the primary agent wins.
+    const byPrimary = (a: typeof rows[number], b: typeof rows[number]) => Number(b.isPrimary) - Number(a.isPrimary);
     const pick =
-      scoped.find((r) => r.track && r.track === track)     // module + exact track
-      ?? scoped.find((r) => !r.track)                       // module, any track
-      ?? rows.find((r) => !r.productId && !r.moduleId);     // customer default
+      scoped.filter((r) => r.track && r.track === track).sort(byPrimary)[0]     // module + exact track
+      ?? scoped.filter((r) => !r.track).sort(byPrimary)[0]                       // module, any track
+      ?? contract.filter((r) => r.track && r.track === track).sort(byPrimary)[0] // contract common, exact track
+      ?? contract.filter((r) => !r.track).sort(byPrimary)[0];                    // contract common, any track
     if (!pick) return null;
 
     const user = await this.prisma.user.findFirst({ where: { id: pick.userId, clientId, isActive: true }, select: { id: true } });

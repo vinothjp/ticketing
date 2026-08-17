@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -280,14 +281,39 @@ function AgentGrid({
   );
 }
 
-// Type-to-search agent picker (replaces the dropdown).
+// Type-to-search agent picker. The dropdown is portalled to <body> with fixed
+// positioning so it isn't clipped by the table's overflow (flips up near the edge).
 function AgentTypeahead({ staff, exclude, onPick }: { staff: StaffUser[]; exclude: Set<string>; onPick: (userId: string) => void }) {
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [pos, setPos] = useState<{ left: number; width: number; top?: number; bottom?: number } | null>(null);
   const matches = staff.filter((u) => !exclude.has(u.id) && u.username.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 8);
+
+  const reposition = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const DROP_H = 200;
+    const below = window.innerHeight - r.bottom;
+    const openUp = below < DROP_H + 8 && r.top > below;
+    setPos(openUp
+      ? { left: r.left, width: r.width, bottom: window.innerHeight - r.top + 4 }
+      : { left: r.left, width: r.width, top: r.bottom + 4 });
+  };
+  useLayoutEffect(() => {
+    if (!open) return;
+    reposition();
+    const h = () => reposition();
+    window.addEventListener('scroll', h, true);
+    window.addEventListener('resize', h);
+    return () => { window.removeEventListener('scroll', h, true); window.removeEventListener('resize', h); };
+  }, [open, q]);
+
   return (
     <div className="relative">
       <input
+        ref={inputRef}
         value={q}
         onChange={(e) => { setQ(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
@@ -295,14 +321,17 @@ function AgentTypeahead({ staff, exclude, onPick }: { staff: StaffUser[]; exclud
         placeholder="+ type agent…"
         className="h-7 w-full rounded border border-input bg-background px-2 text-xs outline-none focus:border-primary"
       />
-      {open && matches.length > 0 && (
-        <div className="absolute left-0 top-full z-30 mt-1 max-h-48 w-full min-w-36 overflow-y-auto rounded-md border bg-popover shadow-md">
+      {open && matches.length > 0 && pos && createPortal(
+        <div
+          style={{ position: 'fixed', left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width, zIndex: 50 }}
+          className="max-h-48 min-w-36 overflow-y-auto rounded-md border bg-popover shadow-md">
           {matches.map((u) => (
             <button key={u.id} className="block w-full truncate px-2 py-1.5 text-left text-xs hover:bg-muted" onMouseDown={(e) => { e.preventDefault(); onPick(u.id); setQ(''); }}>
               {u.username}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

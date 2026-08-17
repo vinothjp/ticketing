@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ArrowLeft, ShieldCheck, Wrench, Clock, MapPin, RefreshCw, Trash2, Users, X } from 'lucide-react';
+import { ArrowLeft, ShieldCheck, Wrench, Clock, MapPin, RefreshCw, Trash2, Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
@@ -10,25 +10,20 @@ import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import ProductIcon from '@/components/ProductIcon';
+import ConsultantGrid from '@/components/ConsultantGrid';
 
 interface Pool { allocated: number | null; used: number; left: number | null }
 interface Cov { end: string | null; label: string; pct: number; active: boolean }
 interface Purchased {
   id: string; productId: string; productName: string; productCode: string; status: string; purchaseDate: string | null; agents: string[];
-  warranty: Cov & { months: number }; amc: Cov & { start: string | null; type: 'FREE' | 'PAID'; freeMonths: number };
+  warranty: Cov & { months: number }; amc: Cov & { start: string | null; type: 'FREE' | 'PAID'; freeMonths: number; daysLeft: number | null };
   hours: Pool; visits: Pool;
   paidTerms: { months: number | null; monthlyCost: number | null; hours: number | null; visits: number | null };
 }
-interface Consultant { id: string; userId: string; username: string | null; productId: string | null; moduleId: string | null; track: string | null }
+interface Consultant { id: string; userId: string; username: string | null; productId: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
 interface CatModule { id: string; name: string; tracks: string[] }
 interface CatProduct { id: string; name: string; imageUrl?: string | null; modules: CatModule[] }
 interface StaffUser { id: string; username: string }
-
-const CCOLS = [
-  { key: 'TECHNICAL', label: 'Technical' },
-  { key: 'FUNCTIONAL', label: 'Functional' },
-  { key: 'OTHERS', label: 'Others' },
-] as const;
 
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleDateString() : '—');
 const inr = (n: number | null) => (n == null ? '—' : `₹${n.toLocaleString('en-IN')}`);
@@ -65,8 +60,9 @@ export default function ClientProductPage() {
   const { companyId, cpId } = useParams<{ companyId: string; cpId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const [searchParams] = useSearchParams();
 
-  const { data: company } = useQuery<{ name: string }>({ queryKey: ['client', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}`)).data });
+  const { data: company } = useQuery<{ name: string; contractScope?: 'PRODUCT' | 'CUSTOMER' }>({ queryKey: ['client', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}`)).data });
   const { data: products = [] } = useQuery<Purchased[]>({ queryKey: ['client-products', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}/purchased-products`)).data });
   const { data: consultants = [] } = useQuery<Consultant[]>({ queryKey: ['client-consultants', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}/consultants`)).data });
   const { data: catalog = [] } = useQuery<CatProduct[]>({ queryKey: ['products'], queryFn: async () => (await api.get('/api/products')).data });
@@ -114,6 +110,7 @@ export default function ClientProductPage() {
 
   // consultants for this product — grid of Module × Technical / Functional / Others
   const removeConsultant = (id: string) => run(api.delete(`/api/customer-companies/consultants/${id}`));
+  const setPrimaryConsultant = (id: string) => run(api.put(`/api/customer-companies/consultants/${id}/primary`, {}));
   const addConsultant = (moduleId: string | null, col: string, userId: string) =>
     run(api.post(`/api/customer-companies/${companyId}/consultants`, {
       userId, productId: cp!.productId, moduleId: moduleId || undefined,
@@ -121,16 +118,10 @@ export default function ClientProductPage() {
     }), 'Consultant assigned');
 
   if (!cp) return <p className="text-muted-foreground">Loading…</p>;
-  // Rows: one per module when the product is split into modules; otherwise a single
-  // "Whole product" row for a module-less product.
-  const rows = (cat?.modules?.length ?? 0) > 0
-    ? cat!.modules.map((m) => ({ key: m.id, name: m.name, moduleId: m.id as string | null }))
-    : [{ key: '__product', name: 'Whole product', moduleId: null as string | null }];
-  const inCell = (moduleId: string | null, colKey: string) =>
-    productConsultants.filter((c) => c.moduleId === moduleId && (
-      colKey === 'TECHNICAL' ? c.track === 'TECHNICAL'
-      : colKey === 'FUNCTIONAL' ? c.track === 'FUNCTIONAL'
-      : c.track !== 'TECHNICAL' && c.track !== 'FUNCTIONAL'));
+  // On a shared customer contract, per-product coverage/terms don't apply — the
+  // product page is only for its consultants. Driven by the saved scope, or by
+  // navigating here from the customer-contract view (?view=consultants).
+  const customerScoped = company?.contractScope === 'CUSTOMER' || searchParams.get('view') === 'consultants';
 
   return (
     <div>
@@ -149,13 +140,18 @@ export default function ClientProductPage() {
           <div className="text-sm text-muted-foreground">Purchased {fmt(cp.purchaseDate)}</div>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => { setRenew({ months: cp.paidTerms.months ?? 12, amcMonthlyCost: cp.paidTerms.monthlyCost ?? 0 }); setRenewOpen(true); }}>
-            <RefreshCw className="size-4" /> Renew AMC
-          </Button>
+          {!customerScoped && (
+            <Button variant="outline" disabled={cp.amc.active && (cp.amc.daysLeft ?? 0) > 30}
+              title={cp.amc.active && (cp.amc.daysLeft ?? 0) > 30 ? 'Available within 30 days of expiry' : undefined}
+              onClick={() => { setRenew({ months: cp.paidTerms.months ?? 12, amcMonthlyCost: cp.paidTerms.monthlyCost ?? 0 }); setRenewOpen(true); }}>
+              <RefreshCw className="size-4" /> Renew AMC
+            </Button>
+          )}
           <Button variant="outline" className="text-destructive hover:text-destructive" onClick={doRemove}><Trash2 className="size-4" /> Remove</Button>
         </div>
       </div>
 
+      {!customerScoped && (
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Coverage — one timeline: Warranty (free) → AMC (paid) */}
         <section className="space-y-3">
@@ -190,45 +186,13 @@ export default function ClientProductPage() {
           </section>
         </div>
       </div>
+      )}
 
       {/* Consultants — full-width grid of Module × Technical / Functional / Others */}
-      <section className="mt-8 space-y-3">
+      <section className={customerScoped ? 'space-y-3' : 'mt-8 space-y-3'}>
         <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground"><Users className="size-4" /> Consultants for this product</h2>
         <p className="text-sm text-muted-foreground">Route this client's tickets per module and track. Type a name to assign. Empty cells fall back to the module's default routing.</p>
-        <div className="overflow-hidden rounded-lg border">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="bg-muted/50 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="w-44 border-b px-3 py-2">Module</th>
-                {CCOLS.map((c) => <th key={c.key} className="border-b border-l px-3 py-2">{c.label}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.key} className="align-top">
-                  <td className="border-b px-3 py-2 font-medium text-foreground">{row.name}</td>
-                  {CCOLS.map((c) => {
-                    const list = inCell(row.moduleId, c.key);
-                    const taken = new Set(list.map((a) => a.userId));
-                    return (
-                      <td key={c.key} className="border-b border-l px-2 py-2 align-top">
-                        <div className="space-y-1">
-                          {list.map((a) => (
-                            <div key={a.id} className="group flex items-center gap-1 rounded bg-muted px-1.5 py-1 text-xs">
-                              <span className="flex-1 truncate text-foreground">{a.username}</span>
-                              <button className="shrink-0 text-muted-foreground hover:text-destructive" onClick={() => removeConsultant(a.id)}><X className="size-3" /></button>
-                            </div>
-                          ))}
-                          <ConsultantTypeahead staff={staff} exclude={taken} onPick={(uid) => addConsultant(row.moduleId, c.key, uid)} />
-                        </div>
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ConsultantGrid modules={cat?.modules ?? []} consultants={productConsultants} staff={staff} onAdd={addConsultant} onRemove={removeConsultant} onPrimary={setPrimaryConsultant} />
       </section>
 
       <Dialog open={renewOpen} onOpenChange={setRenewOpen}>
@@ -245,34 +209,6 @@ export default function ClientProductPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
-  );
-}
-
-// Type-to-search agent picker for a grid cell (mirrors the product editor).
-function ConsultantTypeahead({ staff, exclude, onPick }: { staff: StaffUser[]; exclude: Set<string>; onPick: (userId: string) => void }) {
-  const [q, setQ] = useState('');
-  const [open, setOpen] = useState(false);
-  const matches = staff.filter((u) => !exclude.has(u.id) && u.username.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 8);
-  return (
-    <div className="relative">
-      <input
-        value={q}
-        onChange={(e) => { setQ(e.target.value); setOpen(true); }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}
-        placeholder="+ type agent…"
-        className="h-7 w-full rounded border border-input bg-background px-2 text-xs outline-none focus:border-primary"
-      />
-      {open && matches.length > 0 && (
-        <div className="absolute left-0 top-full z-30 mt-1 max-h-48 w-full min-w-36 overflow-y-auto rounded-md border bg-popover shadow-md">
-          {matches.map((u) => (
-            <button key={u.id} className="block w-full truncate px-2 py-1.5 text-left text-xs hover:bg-muted" onMouseDown={(e) => { e.preventDefault(); onPick(u.id); setQ(''); }}>
-              {u.username}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

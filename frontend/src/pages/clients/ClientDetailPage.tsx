@@ -2,14 +2,14 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ArrowLeft, Plus, Trash2, ChevronRight, Users, Boxes } from 'lucide-react';
+import { ArrowLeft, Plus, ChevronRight, Users } from 'lucide-react';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import ProductIcon from '@/components/ProductIcon';
+import ConsultantGrid from '@/components/ConsultantGrid';
 import { cn } from '@/lib/utils';
 
 interface Pool { allocated: number | null; used: number; left: number | null }
@@ -24,13 +24,13 @@ interface Contract {
   scope: 'PRODUCT' | 'CUSTOMER'; start: string | null; end: string | null; hours: number | null; visits: number | null; monthlyCost: number | null;
   productIds: string[]; period: { pct: number; daysLeft: number | null; active: boolean }; hoursPool: CPool; visitsPool: CPool;
 }
-interface Consultant { id: string; userId: string; username: string | null; productId: string | null; moduleId: string | null; track: string | null }
-interface CatProduct { id: string; name: string; imageUrl?: string | null }
+interface Consultant { id: string; userId: string; username: string | null; productId: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
+interface CatAgent { track: string; user: { id: string; username: string } }
+interface CatModule { id: string; name: string; consultants: CatAgent[] }
+interface CatProduct { id: string; name: string; imageUrl?: string | null; modules: CatModule[]; consultants: CatAgent[] }
 interface StaffUser { id: string; username: string }
 
 const today = () => new Date().toISOString().slice(0, 10);
-const monthsFromNow = (m: number) => { const d = new Date(); d.setMonth(d.getMonth() + m); return d.toISOString().slice(0, 10); };
-const fmtD = (d: string | null) => (d ? new Date(d).toLocaleDateString() : '—');
 const statusCls = (s: string) =>
   s === 'ACTIVE' ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
   : s === 'EXPIRED' ? 'bg-destructive/15 text-destructive border-destructive/30'
@@ -75,98 +75,93 @@ export default function ClientDetailPage() {
     }), 'Contract saved');
   };
 
-  // Renew against the shared pool. (Usage logging moves to a dedicated submodule.)
-  const [renew, setRenew] = useState({ months: 12, hours: '', visits: '' });
-  const doRenew = () => run(api.post(`/api/customer-companies/${companyId}/contract-renew`, { months: Number(renew.months), hours: renew.hours === '' ? undefined : Number(renew.hours), visits: renew.visits === '' ? undefined : Number(renew.visits) }), 'Contract renewed');
-
-  // ---- assign product ----
-  const owned = new Set(products.map((p) => p.productId));
-  const assignable = catalog.filter((c) => !owned.has(c.id));
-  const [assign, setAssign] = useState<{ productId: string; coverageType: 'WARRANTY' | 'AMC'; startDate: string; endDate: string; supportHours: number; visits: number; contractAmount: number }>({ productId: '', coverageType: 'WARRANTY', startDate: today(), endDate: monthsFromNow(12), supportHours: 100, visits: 4, contractAmount: 100000 });
-  const doAssign = () => {
-    if (assign.startDate && assign.endDate && assign.endDate <= assign.startDate) { toast.error('End date must be after the start date'); return; }
-    run(api.post(`/api/customer-companies/${companyId}/purchased-products`, {
-      productId: assign.productId, coverageType: assign.coverageType,
-      startDate: assign.startDate, endDate: assign.endDate,
-      supportHours: assign.supportHours, visits: assign.visits,
-      ...(assign.coverageType === 'AMC' ? { contractAmount: assign.contractAmount } : {}),
-    }), 'Product assigned').then(() => setAssign((a) => ({ ...a, productId: '' })));
-  };
-
-  // ---- default consultants (no product) ----
-  const defaults = consultants.filter((c) => !c.productId);
-  const [defUser, setDefUser] = useState('');
-  const addDefault = () => run(api.post(`/api/customer-companies/${companyId}/consultants`, { userId: defUser }), 'Default consultant set').then(() => setDefUser(''));
+  // ---- contract consultants (common team for the whole customer contract) ----
+  const contractConsultants = consultants.filter((c) => !c.productId && !c.moduleId);
+  const addContractConsultant = (_moduleId: string | null, col: string, userId: string) =>
+    run(api.post(`/api/customer-companies/${companyId}/consultants`, { userId, track: col === 'OTHERS' ? undefined : col }), 'Consultant assigned');
   const removeConsultant = (id: string) => run(api.delete(`/api/customer-companies/consultants/${id}`));
+  const setPrimaryConsultant = (id: string) => run(api.put(`/api/customer-companies/consultants/${id}/primary`, {}));
 
   const logoOf = (pid: string) => catalog.find((c) => c.id === pid)?.imageUrl;
 
   return (
     <div>
       <Button variant="ghost" size="sm" onClick={() => navigate('/admin/customer-companies')} className="mb-3 -ml-2"><ArrowLeft className="size-4" /> All clients</Button>
-      <div className="mb-6 flex items-center gap-3">
+      <div className="mb-6 flex flex-wrap items-center gap-x-3 gap-y-2">
         <h1 className="text-2xl font-bold text-foreground">{client?.name ?? 'Client'}</h1>
         {client?.code && <span className="text-sm text-muted-foreground">{client.code}</span>}
         {client && <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${statusCls(client.status)}`}>{client.status.toLowerCase()}</span>}
+        <div className="ml-auto flex items-center gap-4">
+          <span className="text-sm font-medium text-muted-foreground">Contract type</span>
+          <RadioGroup value={scope} onValueChange={onScope} className="flex gap-5">
+            <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="PRODUCT" /> Per product</label>
+            <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="CUSTOMER" /> One customer contract</label>
+          </RadioGroup>
+        </div>
       </div>
 
-      {/* Contract type */}
-      <section className="mb-8 space-y-3 border-b pb-6">
-        <div className="text-sm font-medium">Contract type</div>
-        <RadioGroup value={scope} onValueChange={onScope} className="flex flex-wrap gap-6">
-          <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="PRODUCT" /> Per product <span className="text-xs text-muted-foreground">(each product its own AMC)</span></label>
-          <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="CUSTOMER" /> One customer contract <span className="text-xs text-muted-foreground">(shared dates + hours)</span></label>
-        </RadioGroup>
-
-        {scope === 'CUSTOMER' && (
-          <div className="space-y-6 pt-3">
-            {/* Live shared pool */}
-            {contract && contract.hours != null && (
-              <div className="space-y-4">
-                <div className="grid gap-5 sm:grid-cols-3">
-                  <PoolBar label="Contract period" main={contract.period.active ? `${contract.period.daysLeft} days left` : 'Ended'} sub={`${fmtD(contract.start)} → ${fmtD(contract.end)}`} pct={contract.period.pct} active={contract.period.active} />
-                  <PoolBar label="Support hours" main={contract.hoursPool.left == null ? '—' : `${contract.hoursPool.left} left`} sub={contract.hoursPool.allocated == null ? '' : `${contract.hoursPool.used} of ${contract.hoursPool.allocated} used`} pct={contract.hoursPool.allocated ? Math.round((contract.hoursPool.used / contract.hoursPool.allocated) * 100) : 0} active={(contract.hoursPool.left ?? 0) > 0} />
-                  <PoolBar label="Site visits" main={contract.visitsPool.left == null ? '—' : `${contract.visitsPool.left} left`} sub={contract.visitsPool.allocated == null ? '' : `${contract.visitsPool.used} of ${contract.visitsPool.allocated} used`} pct={contract.visitsPool.allocated ? Math.round((contract.visitsPool.used / contract.visitsPool.allocated) * 100) : 0} active={(contract.visitsPool.left ?? 0) > 0} />
-                </div>
-                <div className="flex flex-wrap items-end gap-2">
-                  <Field label="Renew months" value={renew.months} onChange={(v) => setRenew({ ...renew, months: Number(v) })} />
-                  <Field label="New hours" value={renew.hours} onChange={(v) => setRenew({ ...renew, hours: v })} />
-                  <Field label="New visits" value={renew.visits} onChange={(v) => setRenew({ ...renew, visits: v })} />
-                  <Button size="sm" variant="outline" onClick={doRenew}>Renew contract</Button>
-                </div>
-              </div>
-            )}
-
-            {/* Setup / edit terms */}
-            <div className="space-y-3">
-              <div className="text-sm font-medium">Contract terms</div>
-              <div className="text-xs text-muted-foreground">Products covered by this contract</div>
-              <div className="flex flex-wrap gap-x-5 gap-y-2">
-                {catalog.map((c) => (
-                  <label key={c.id} className="flex items-center gap-2 text-sm">
-                    <Checkbox checked={cust.productIds.includes(c.id)} onCheckedChange={() => setCust((s) => ({ ...s, productIds: s.productIds.includes(c.id) ? s.productIds.filter((x) => x !== c.id) : [...s.productIds, c.id] }))} />
-                    {c.name}
-                  </label>
-                ))}
-              </div>
-              <div className="grid max-w-3xl grid-cols-5 gap-3">
-                <Field label="Start date" type="date" value={cust.start} onChange={(v) => setCust({ ...cust, start: v })} />
-                <Field label="End date" type="date" min={cust.start || undefined} value={cust.end} onChange={(v) => setCust({ ...cust, end: v })} />
-                <Field label="Hours" value={cust.hours} onChange={(v) => setCust({ ...cust, hours: v === '' ? '' : Number(v) })} />
-                <Field label="Visits" value={cust.visits} onChange={(v) => setCust({ ...cust, visits: v === '' ? '' : Number(v) })} />
-                <Field label="₹/month" value={cust.monthlyCost} onChange={(v) => setCust({ ...cust, monthlyCost: v === '' ? '' : Number(v) })} />
-              </div>
+      {/* Customer-contract terms (only in customer-contract mode) */}
+      {scope === 'CUSTOMER' && (
+        <section className="mb-6 space-y-8">
+          {/* Contract terms — shared dates + pool */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-foreground">Contract terms</h3>
               <Button size="sm" disabled={cust.productIds.length === 0} onClick={saveCustomer}>Save contract</Button>
             </div>
+            <div className="grid max-w-3xl grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              <Field label="Start date" type="date" value={cust.start} onChange={(v) => setCust({ ...cust, start: v })} />
+              <Field label="End date" type="date" min={cust.start || undefined} value={cust.end} onChange={(v) => setCust({ ...cust, end: v })} />
+              <Field label="Hours" value={cust.hours} onChange={(v) => setCust({ ...cust, hours: v === '' ? '' : Number(v) })} />
+              <Field label="Visits" value={cust.visits} onChange={(v) => setCust({ ...cust, visits: v === '' ? '' : Number(v) })} />
+              <Field label="Contract amount" value={cust.monthlyCost} onChange={(v) => setCust({ ...cust, monthlyCost: v === '' ? '' : Number(v) })} />
+            </div>
           </div>
-        )}
-      </section>
+
+          {/* Products covered — only the products this customer has */}
+          <div className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground">Products covered</h3>
+            {products.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No products yet — switch to Per product to assign one.</p>
+            ) : (
+              <div className="grid gap-3 md:grid-cols-2">
+                {products.map((p) => {
+                  const selected = cust.productIds.includes(p.productId);
+                  const toggle = () => setCust((s) => ({ ...s, productIds: selected ? s.productIds.filter((x) => x !== p.productId) : [...s.productIds, p.productId] }));
+                  return (
+                    <div key={p.id} role="button" tabIndex={0}
+                      onClick={() => navigate(`/admin/clients/${companyId}/products/${p.id}?view=consultants`)}
+                      className={cn('flex cursor-pointer items-start gap-3 rounded-lg border p-3 text-left transition-colors',
+                        selected ? 'border-primary bg-primary/5' : 'hover:border-primary/50 hover:bg-muted/40')}>
+                      <ProductIcon imageUrl={logoOf(p.productId)} className="size-11" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate font-semibold text-foreground">{p.productName}</span>
+                          <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${statusCls(p.status)}`}>{p.status.toLowerCase()}</span>
+                        </div>
+                        <div className="mt-0.5 text-xs text-muted-foreground">Primary agents: {p.agents.length ? p.agents.join(', ') : 'none'}</div>
+                        <div className="mt-1 text-[11px] font-medium text-primary">Manage consultants →</div>
+                      </div>
+                      <span onClick={(e) => e.stopPropagation()} className="mt-0.5 shrink-0" title={selected ? 'Remove from contract' : 'Add to contract'}>
+                        <Checkbox checked={selected} onCheckedChange={toggle} />
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* Per-product management (only in per-product mode) */}
       {scope === 'PRODUCT' && (
-      <section className="mb-8 space-y-4 border-b pb-6">
-        <h2 className="text-base font-semibold text-foreground">Products</h2>
-        {products.length === 0 ? <p className="text-sm text-muted-foreground">No products yet — assign one below.</p> : (
+      <section className="mb-6 space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-base font-semibold text-foreground">Products</h2>
+          <Button size="sm" onClick={() => navigate(`/admin/clients/${companyId}/assign`)}><Plus className="size-3.5" /> Assign a product</Button>
+        </div>
+        {products.length === 0 ? <p className="text-sm text-muted-foreground">No products yet — use “Assign a product”.</p> : (
           <div className="grid gap-3 md:grid-cols-2">
             {products.map((p) => (
               <button key={p.id} onClick={() => navigate(`/admin/clients/${companyId}/products/${p.id}`)}
@@ -182,77 +177,23 @@ export default function ClientDetailPage() {
                     <span>Hours: {p.hours.allocated == null ? '—' : `${p.hours.left}/${p.hours.allocated}`}</span>
                     <span>Visits: {p.visits.allocated == null ? '—' : `${p.visits.left}/${p.visits.allocated}`}</span>
                   </div>
-                  <div className="mt-0.5 text-xs text-muted-foreground">Agents: {p.agents.length ? p.agents.join(', ') : 'none'}</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">Primary agents: {p.agents.length ? p.agents.join(', ') : 'none'}</div>
                 </div>
                 <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
               </button>
             ))}
           </div>
         )}
-
-        {/* Assign a product */}
-        <div className="space-y-3 pt-2">
-          <div className="text-sm font-medium">Assign a product</div>
-          <Select value={assign.productId} onValueChange={(v) => setAssign({ ...assign, productId: v })}>
-            <SelectTrigger className="max-w-sm"><SelectValue placeholder="Choose a product" /></SelectTrigger>
-            <SelectContent>{assignable.length === 0 ? <SelectItem value="__none" disabled>All products assigned</SelectItem> : assignable.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
-          </Select>
-          <RadioGroup value={assign.coverageType} onValueChange={(v) => setAssign({ ...assign, coverageType: v as 'WARRANTY' | 'AMC' })} className="flex gap-6">
-            <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="WARRANTY" /> Under warranty <span className="text-xs text-muted-foreground">(free)</span></label>
-            <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="AMC" /> Under AMC <span className="text-xs text-muted-foreground">(paid)</span></label>
-          </RadioGroup>
-          <div className="grid max-w-2xl grid-cols-2 gap-2">
-            <Field label="Start date" type="date" value={assign.startDate} onChange={(v) => setAssign({ ...assign, startDate: v })} />
-            <Field label="End date" type="date" min={assign.startDate || undefined} value={assign.endDate} onChange={(v) => setAssign({ ...assign, endDate: v })} />
-            <Field label="Support hours" value={assign.supportHours} onChange={(v) => setAssign({ ...assign, supportHours: Number(v) })} />
-            <Field label="No. of visits" value={assign.visits} onChange={(v) => setAssign({ ...assign, visits: Number(v) })} />
-            {assign.coverageType === 'AMC' && (
-              <Field label="Contract amount" value={assign.contractAmount} onChange={(v) => setAssign({ ...assign, contractAmount: Number(v) })} />
-            )}
-          </div>
-          <Button size="sm" disabled={!assign.productId} onClick={doAssign}><Plus className="size-3.5" /> Assign product</Button>
-        </div>
       </section>
       )}
 
-      {/* Default consultants */}
+      {/* Contract consultants — the common team for the whole customer contract */}
+      {scope === 'CUSTOMER' && (
       <section className="space-y-3">
         <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground"><Users className="size-4" /> Default consultants</h2>
-        <p className="text-sm text-muted-foreground">Handle this client's tickets when no product-specific consultant matches. Per-product consultants are set on each product's page.</p>
-        {defaults.length === 0 ? <p className="text-sm text-muted-foreground">No default consultant.</p> : (
-          <div className="divide-y border-y">
-            {defaults.map((c) => (
-              <div key={c.id} className="flex items-center gap-2 py-2 text-sm">
-                <span className="flex-1 font-medium text-foreground">{c.username}</span>
-                <Button size="icon" variant="ghost" className="size-7 text-destructive hover:text-destructive" onClick={() => removeConsultant(c.id)}><Trash2 className="size-4" /></Button>
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="flex items-end gap-2">
-          <div className="w-56">
-            <Select value={defUser} onValueChange={setDefUser}>
-              <SelectTrigger className="h-8"><SelectValue placeholder="Choose a consultant" /></SelectTrigger>
-              <SelectContent>{staff.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}</SelectContent>
-            </Select>
-          </div>
-          <Button size="sm" disabled={!defUser} onClick={addDefault}><Plus className="size-3.5" /> Set default</Button>
-        </div>
+        <ConsultantGrid modules={[]} consultants={contractConsultants} staff={staff} onAdd={addContractConsultant} onRemove={removeConsultant} onPrimary={setPrimaryConsultant} emptyRowLabel="All products" />
       </section>
-    </div>
-  );
-}
-
-function PoolBar({ label, main, sub, pct, active }: { label: string; main: string; sub: string; pct: number; active: boolean }) {
-  const warn = active && pct >= 85;
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-muted-foreground">{label}</span>
-        <span className={cn('font-semibold', !active ? 'text-destructive' : warn ? 'text-amber-600 dark:text-amber-400' : 'text-foreground')}>{main}</span>
-      </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-muted"><div className={cn('h-full rounded-full', !active ? 'bg-destructive' : warn ? 'bg-amber-500' : 'bg-primary')} style={{ width: `${Math.min(100, pct)}%` }} /></div>
-      {sub && <div className="text-[11px] text-muted-foreground">{sub}</div>}
+      )}
     </div>
   );
 }

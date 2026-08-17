@@ -132,6 +132,12 @@ export class CustomerCompaniesController {
     return this.customerProducts.removeCustomerConsultant(ccId, req.user.clientId);
   }
 
+  @Put('consultants/:ccId/primary')
+  @Roles('Admin')
+  setConsultantPrimary(@Param('ccId') ccId: string, @Request() req: AuthedRequest) {
+    return this.customerProducts.setCustomerPrimary(ccId, req.user.clientId);
+  }
+
   // One client's core details (declared last so it doesn't shadow static routes).
   @Get(':id')
   @Roles('Admin')

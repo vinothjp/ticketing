@@ -168,6 +168,7 @@ model CustomerConsultant {
   productId         String?
   moduleId          String?
   track             String?  // 'TECHNICAL' | 'FUNCTIONAL' | null (any)
+  isPrimary         Boolean  @default(false)
   createdAt         DateTime @default(now())
 
   @@index([customerCompanyId])

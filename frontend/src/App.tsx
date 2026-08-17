@@ -49,6 +49,7 @@ import MyProductsPage from './pages/MyProductsPage';
 import ProductRequestsPage from './pages/ProductRequestsPage';
 import ClientDetailPage from './pages/clients/ClientDetailPage';
 import ClientProductPage from './pages/clients/ClientProductPage';
+import ClientAssignProductPage from './pages/clients/ClientAssignProductPage';
 
 const queryClient = new QueryClient();
 const isSuperAdmin = (roles: string[]) => roles.includes('SuperAdmin');
@@ -120,6 +121,7 @@ export default function App() {
                         <Route path="/users" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><UsersPage /></RoleGate>} />
                         <Route path="/admin/customer-companies" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><CustomerCompaniesPage /></RoleGate>} />
                         <Route path="/admin/clients/:companyId" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientDetailPage /></RoleGate>} />
+                        <Route path="/admin/clients/:companyId/assign" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientAssignProductPage /></RoleGate>} />
                         <Route path="/admin/clients/:companyId/products/:cpId" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientProductPage /></RoleGate>} />
                         <Route path="/roles" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><RolesPage /></RoleGate>} />
                         <Route path="/organization" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><OrganizationPage /></RoleGate>} />

@@ -21,6 +21,7 @@ import TasksTab from './detail/TasksTab';
 import WorklogTab from './detail/WorklogTab';
 import ApprovalsTab from './detail/ApprovalsTab';
 import ConversationTab from './detail/ConversationTab';
+import { ClientVisitsPanel } from '../client-visits/ClientVisitsPanel';
 
 interface TicketDetail {
   id: string;
@@ -30,6 +31,7 @@ interface TicketDetail {
   priority?: string | null;
   ticketStatus: string;
   approvalStatus?: string | null;
+  productId?: string | null;
   productName?: string | null;
   productCode?: string | null;
   moduleName?: string | null;
@@ -294,6 +296,8 @@ export default function TicketDetailPage() {
             {isStaff && <TabsTrigger value="tasks">Tasks</TabsTrigger>}
             {isStaff && <TabsTrigger value="time">Time</TabsTrigger>}
             {isStaff && <TabsTrigger value="approvals">Approvals</TabsTrigger>}
+            {/* Client logs are Admin-only on the API — don't offer the tab to anyone else. */}
+            {isTenantAdmin && <TabsTrigger value="client-visits">Client Visits</TabsTrigger>}
             <TabsTrigger value="history">History</TabsTrigger>
           </TabsList>
 
@@ -388,6 +392,18 @@ export default function TicketDetailPage() {
           <TabsContent value="approvals" className="pt-4">
             <ApprovalsTab ticketId={ticket.id} />
           </TabsContent>
+          <TabsContent value="client-visits" className="pt-4">
+            <ClientVisitsPanel
+              filter={{ ticketId: ticket.id }}
+              title="Visits logged against this ticket"
+              prefill={{
+                ticketId: ticket.id,
+                customerCompanyId: ticket.customerCompany?.id,
+                productId: ticket.productId,
+              }}
+            />
+          </TabsContent>
+
           <TabsContent value="history" className="pt-4">
             <HistoryTab ticketId={ticket.id} />
           </TabsContent>

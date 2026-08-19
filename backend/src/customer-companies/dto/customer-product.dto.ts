@@ -4,6 +4,7 @@ import { IsString, IsOptional, IsInt, IsNumber, Min, IsDateString, IsNotEmpty, I
 // + the list of covered products; PRODUCT just flips back to per-product terms.
 export class SetContractDto {
   @IsIn(['PRODUCT', 'CUSTOMER']) scope!: 'PRODUCT' | 'CUSTOMER';
+  @IsOptional() @IsIn(['WARRANTY', 'AMC']) coverageType?: 'WARRANTY' | 'AMC';
   @IsOptional() @IsDateString() start?: string;
   @IsOptional() @IsDateString() end?: string;
   @IsOptional() @IsInt() @Min(0) hours?: number;

@@ -68,6 +68,7 @@ const tenantNavGroups: NavGroup[] = [
       { to: '/projects', label: 'Projects', icon: FolderKanban },
       { to: '/change-requests', label: 'Change Requests', icon: GitPullRequestArrow },
       { to: '/timesheet', label: 'Timesheet', icon: Clock3 },
+      { to: '/client-visits', label: 'Client Visits', icon: ClipboardList },
     ],
   },
   {
@@ -145,6 +146,11 @@ export default function Layout({ children }: { children: ReactNode }) {
                 items.push({ to: '/my-team', label: 'Team', icon: Users });
               }
               return { ...group, items };
+            }
+            // Client Visits is admin-only on the API (ClientVisitsController @Roles('Admin')),
+            // so agents shouldn't see a link that would just 403.
+            if (group.label === 'Workspace' && !isAdmin) {
+              return { ...group, items: group.items.filter((i) => i.to !== '/client-visits') };
             }
             return group;
           });

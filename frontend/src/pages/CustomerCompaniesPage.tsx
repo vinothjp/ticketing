@@ -1,13 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Users2, Trash2, Building2, Boxes } from 'lucide-react';
+import { Plus, Trash2, Building2, Boxes, Search, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import CompanyLogo from '@/components/CompanyLogo';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 
 interface Company {
@@ -15,20 +15,20 @@ interface Company {
   name: string;
   code?: string | null;
   contactEmail?: string | null;
+  contactPerson?: string | null;
+  contactNumber?: string | null;
+  logoUrl?: string | null;
   status: string;
   maxContacts: number;
   contactCount: number;
   ticketCount: number;
-  agreedSupportHours?: number | null;
-  supportPeriodStart?: string | null;
-  supportPeriodEnd?: string | null;
-  supportAlertThresholdPct?: number;
 }
 interface Contact { id: string; username: string; email: string; isActive: boolean; }
 
+const MAX_LOGO_BYTES = 2 * 1024 * 1024;
+
 const empty = {
-  name: '', code: '', contactEmail: '', maxContacts: 5,
-  agreedSupportHours: '', supportPeriodStart: '', supportPeriodEnd: '', supportAlertThresholdPct: 70,
+  name: '', code: '', contactEmail: '', contactPerson: '', contactNumber: '', maxContacts: 5,
   adminUsername: '', adminEmail: '', adminPassword: '',
 };
 
@@ -37,7 +37,12 @@ export default function CustomerCompaniesPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Company | null>(null);
   const [form, setForm] = useState<typeof empty>(empty);
-  const [contactsFor, setContactsFor] = useState<Company | null>(null);
+  const [q, setQ] = useState('');
+  // A new client has no id yet, so its logo is held here and uploaded once the
+  // company exists. `pendingPreview` is an object URL we must revoke.
+  const [pendingLogo, setPendingLogo] = useState<File | null>(null);
+  const [pendingPreview, setPendingPreview] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
 
   const { data: companies = [], isLoading } = useQuery<Company[]>({
@@ -46,16 +51,32 @@ export default function CustomerCompaniesPage() {
   });
   const invalidate = () => qc.invalidateQueries({ queryKey: ['customer-companies'] });
 
+  const filtered = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    if (!term) return companies;
+    return companies.filter((c) => c.name.toLowerCase().includes(term) || (c.code ?? '').toLowerCase().includes(term));
+  }, [companies, q]);
+
+  // The edited client, re-read from the list so the logo refreshes after upload.
+  const current = editing ? companies.find((c) => c.id === editing.id) ?? editing : null;
+
+  useEffect(() => () => { if (pendingPreview) URL.revokeObjectURL(pendingPreview); }, [pendingPreview]);
+
+  // The effect above revokes whatever URL we drop here.
+  const clearPending = () => { setPendingLogo(null); setPendingPreview(null); };
+
+  const uploadLogo = (companyId: string, file: File) => {
+    const formData = new FormData();
+    formData.append('logo', file);
+    return api.post(`/api/customer-companies/${companyId}/logo`, formData);
+  };
+
   const saveMutation = useMutation({
-    mutationFn: (c: typeof form) => {
+    mutationFn: async (c: typeof form) => {
       const body: Record<string, unknown> = {
         name: c.name, code: c.code || undefined, contactEmail: c.contactEmail || undefined,
+        contactPerson: c.contactPerson || undefined, contactNumber: c.contactNumber || undefined,
         maxContacts: Number(c.maxContacts),
-        // Support-hours pool — send null to clear, so a company can drop the pool.
-        agreedSupportHours: c.agreedSupportHours === '' ? null : Number(c.agreedSupportHours),
-        supportPeriodStart: c.supportPeriodStart || null,
-        supportPeriodEnd: c.supportPeriodEnd || null,
-        supportAlertThresholdPct: Number(c.supportAlertThresholdPct) || 70,
       };
       if (editing) return api.patch(`/api/customer-companies/${editing.id}`, body);
       // Optional bootstrap: seed the first CustomerAdmin login on creation.
@@ -64,10 +85,20 @@ export default function CustomerCompaniesPage() {
         body.adminEmail = c.adminEmail;
         body.adminPassword = c.adminPassword;
       }
-      return api.post('/api/customer-companies', body);
+      const created = await api.post('/api/customer-companies', body);
+      // The logo needs the new id, so it goes up right after the company lands.
+      if (pendingLogo) await uploadLogo(created.data.id, pendingLogo);
+      return created;
     },
-    onSuccess: () => { invalidate(); setFormOpen(false); setEditing(null); toast.success(editing ? 'Company updated' : 'Company created'); },
+    onSuccess: () => { invalidate(); closeForm(); toast.success(editing ? 'Company updated' : 'Company created'); },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error saving company'),
+  });
+
+  const logoMutation = useMutation({
+    mutationFn: ({ id, file }: { id: string; file: File | null }) =>
+      file ? uploadLogo(id, file) : api.delete(`/api/customer-companies/${id}/logo`),
+    onSuccess: (_d, v) => { invalidate(); toast.success(v.file ? 'Logo updated' : 'Logo removed'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error saving logo'),
   });
 
   const deleteMutation = useMutation({
@@ -76,22 +107,39 @@ export default function CustomerCompaniesPage() {
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error deleting company'),
   });
 
-  const openCreate = () => { setEditing(null); setForm(empty); setFormOpen(true); };
-  const openEdit = async (c: Company) => {
+  const onPickLogo = (file?: File) => {
+    if (fileRef.current) fileRef.current.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { toast.error('Choose an image file'); return; }
+    if (file.size > MAX_LOGO_BYTES) { toast.error('Logo must be under 2 MB'); return; }
+    if (editing) { logoMutation.mutate({ id: editing.id, file }); return; }
+    clearPending();
+    setPendingLogo(file);
+    setPendingPreview(URL.createObjectURL(file));
+  };
+
+  const removeLogo = () => {
+    if (editing) logoMutation.mutate({ id: editing.id, file: null });
+    else clearPending();
+  };
+
+  const closeForm = () => { setFormOpen(false); setEditing(null); clearPending(); };
+  const openCreate = () => { setEditing(null); setForm(empty); clearPending(); setFormOpen(true); };
+  const openEdit = (c: Company) => {
     setEditing(c);
+    clearPending();
     setForm({
-      ...empty, name: c.name, code: c.code ?? '', contactEmail: c.contactEmail ?? '', maxContacts: c.maxContacts,
-      agreedSupportHours: c.agreedSupportHours == null ? '' : String(c.agreedSupportHours),
-      supportPeriodStart: c.supportPeriodStart ? c.supportPeriodStart.slice(0, 10) : '',
-      supportPeriodEnd: c.supportPeriodEnd ? c.supportPeriodEnd.slice(0, 10) : '',
-      supportAlertThresholdPct: c.supportAlertThresholdPct ?? 70,
+      ...empty, name: c.name, code: c.code ?? '', contactEmail: c.contactEmail ?? '',
+      contactPerson: c.contactPerson ?? '', contactNumber: c.contactNumber ?? '', maxContacts: c.maxContacts,
     });
     setFormOpen(true);
   };
 
+  const hasLogo = editing ? !!current?.logoUrl : !!pendingPreview;
+
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Clients</h1>
           <p className="text-sm text-muted-foreground">External clients whose contacts can log in and raise tickets.</p>
@@ -99,11 +147,33 @@ export default function CustomerCompaniesPage() {
         <Button onClick={openCreate}><Plus className="size-4" /> New Client</Button>
       </div>
 
+      <div className="relative mb-5 max-w-sm">
+        <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search clients…" className="pl-8" />
+      </div>
+
       {/* Create / edit dialog */}
-      <Dialog open={formOpen} onOpenChange={setFormOpen}>
+      <Dialog open={formOpen} onOpenChange={(o) => (o ? setFormOpen(true) : closeForm())}>
         <DialogContent className="flex max-h-[90vh] flex-col">
           <DialogHeader><DialogTitle>{editing ? 'Edit Client' : 'New Client'}</DialogTitle></DialogHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+            <div className="flex items-center gap-4">
+              <CompanyLogo logoUrl={pendingPreview ?? current?.logoUrl} className="size-16" />
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Logo <span className="font-normal text-muted-foreground">(optional)</span></label>
+                <div className="flex items-center gap-2">
+                  <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-3 text-sm hover:bg-muted">
+                    <Upload className="size-3.5" /> {hasLogo ? 'Change image' : 'Upload image'}
+                    <input ref={fileRef} type="file" accept="image/*" className="hidden"
+                      onChange={(e) => onPickLogo(e.target.files?.[0])} />
+                  </label>
+                  {hasLogo && (
+                    <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={removeLogo}>Remove</Button>
+                  )}
+                </div>
+              </div>
+            </div>
+
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Company name</label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Globex Ltd" />
@@ -122,42 +192,28 @@ export default function CustomerCompaniesPage() {
               <label className="text-sm font-medium">Contact email</label>
               <Input type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} placeholder="ops@globex.example" />
             </div>
-
-            {editing && (
-              <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                Products, warranty and AMC are managed from the <span className="font-medium text-foreground">Products</span> button on the company row.
-              </p>
-            )}
-
-            {/* Agreed support-hours pool for the period. Leave hours blank to disable. */}
-            <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
-              <div className="text-sm font-medium">Support hours <span className="font-normal text-muted-foreground">(optional)</span></div>
-              <p className="text-xs text-muted-foreground">
-                Agreed working hours for the period. When usage crosses the alert threshold, the customer is emailed and notified. Leave hours blank to disable.
-              </p>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <label className="text-sm font-medium">Agreed hours</label>
-                  <Input type="number" min={0} step="0.5" value={form.agreedSupportHours}
-                    onChange={(e) => setForm({ ...form, agreedSupportHours: e.target.value })} placeholder="e.g. 150" />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-sm font-medium">Alert at (%)</label>
-                  <Input type="number" min={1} max={100} value={form.supportAlertThresholdPct}
-                    onChange={(e) => setForm({ ...form, supportAlertThresholdPct: Number(e.target.value) })} />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-sm font-medium">Period start</label>
-                  <Input type="date" value={form.supportPeriodStart}
-                    onChange={(e) => setForm({ ...form, supportPeriodStart: e.target.value })} />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-sm font-medium">Period end</label>
-                  <Input type="date" value={form.supportPeriodEnd}
-                    onChange={(e) => setForm({ ...form, supportPeriodEnd: e.target.value })} />
-                </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Contact person</label>
+                <Input value={form.contactPerson} onChange={(e) => setForm({ ...form, contactPerson: e.target.value })} placeholder="e.g. Priya Nair" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Contact number</label>
+                <Input value={form.contactNumber} onChange={(e) => setForm({ ...form, contactNumber: e.target.value })} placeholder="e.g. +91 98765 43210" />
               </div>
             </div>
+
+            {editing && (
+              <>
+                <ContactsSection companyId={editing.id} maxContacts={form.maxContacts} />
+                <Button variant="outline" className="w-full" onClick={() => { const id = editing.id; closeForm(); navigate(`/admin/clients/${id}`); }}>
+                  <Boxes className="size-4" /> Products &amp; consultants
+                </Button>
+                <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                  Products, warranty, AMC and default consultants are managed there.
+                </p>
+              </>
+            )}
 
             {!editing && (
               <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
@@ -181,92 +237,77 @@ export default function CustomerCompaniesPage() {
         </DialogContent>
       </Dialog>
 
-      {contactsFor && <ContactsDialog company={contactsFor} onClose={() => setContactsFor(null)} onChanged={invalidate} />}
-
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
-      ) : companies.length === 0 ? (
+      ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-12 text-center">
           <Building2 className="size-6 text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">No customer companies yet.</p>
+          <p className="text-sm text-muted-foreground">{companies.length === 0 ? 'No clients yet.' : 'No clients match your search.'}</p>
         </div>
       ) : (
-        <div className="border-t">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Company</TableHead>
-                <TableHead>Code</TableHead>
-                <TableHead>Contacts</TableHead>
-                <TableHead>Tickets</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {companies.map((c) => (
-                <TableRow key={c.id}>
-                  <TableCell className="font-medium">{c.name}</TableCell>
-                  <TableCell className="text-muted-foreground">{c.code || '—'}</TableCell>
-                  <TableCell>{c.contactCount} / {c.maxContacts}</TableCell>
-                  <TableCell>{c.ticketCount}</TableCell>
-                  <TableCell><Badge variant={c.status === 'ACTIVE' ? 'success' : 'secondary'}>{c.status}</Badge></TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
-                      <Button size="sm" onClick={() => navigate(`/admin/clients/${c.id}`)}><Boxes className="size-4" /> Products &amp; consultants</Button>
-                      <Button size="sm" variant="outline" onClick={() => setContactsFor(c)}><Users2 className="size-4" /> People</Button>
-                      <Button size="sm" variant="outline" onClick={() => openEdit(c)}><Pencil className="size-4" /> Edit</Button>
-                      <Button size="sm" variant="destructive" onClick={() => { if (confirm(`Delete ${c.name}?`)) deleteMutation.mutate(c.id); }}>
-                        <Trash2 className="size-4" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+          {filtered.map((c) => (
+            // A div, not a button — the delete control below cannot nest in one.
+            <div
+              key={c.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => openEdit(c)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openEdit(c); } }}
+              className="relative flex cursor-pointer flex-col items-center gap-3 rounded-xl border bg-card p-6 text-center transition-colors hover:border-primary/50 hover:bg-muted/40"
+            >
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute top-2 right-2 size-7 text-muted-foreground hover:text-destructive"
+                title={`Delete ${c.name}`}
+                onClick={(e) => { e.stopPropagation(); if (confirm(`Delete ${c.name}?`)) deleteMutation.mutate(c.id); }}
+              >
+                <Trash2 className="size-4" />
+              </Button>
+              <CompanyLogo logoUrl={c.logoUrl} />
+              <div className="min-w-0">
+                <div className="truncate font-semibold text-foreground">{c.name}</div>
+                <div className="text-xs text-muted-foreground">{c.code || '—'}</div>
+              </div>
+              <Badge variant={c.status === 'ACTIVE' ? 'success' : 'secondary'}>{c.status}</Badge>
+              <div className="text-xs text-muted-foreground">
+                {c.contactCount}/{c.maxContacts} people · {c.ticketCount} tickets
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-function ContactsDialog({ company, onClose }: { company: Company; onClose: () => void; onChanged: () => void }) {
+function ContactsSection({ companyId, maxContacts }: { companyId: string; maxContacts: number }) {
   // Read-only for staff: a customer company's people are managed by that
   // company's own admin (self-service), not from this admin console.
   const { data: contacts = [] } = useQuery<Contact[]>({
-    queryKey: ['company-contacts', company.id],
-    queryFn: async () => (await api.get(`/api/customer-companies/${company.id}/contacts`)).data,
+    queryKey: ['company-contacts', companyId],
+    queryFn: async () => (await api.get(`/api/customer-companies/${companyId}/contacts`)).data,
   });
 
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{company.name} — people ({contacts.length}/{company.maxContacts})</DialogTitle>
-        </DialogHeader>
-
-        <div className="space-y-2">
-          {contacts.length === 0 && <p className="text-sm text-muted-foreground">No people yet. Seed a first admin when creating the company; they add the rest.</p>}
-          {contacts.map((c) => (
-            <div key={c.id} className="flex items-center justify-between rounded-lg border px-3 py-2">
-              <div className="min-w-0">
-                <div className="truncate text-sm font-medium text-foreground">{c.username}</div>
-                <div className="truncate text-xs text-muted-foreground">{c.email}</div>
-              </div>
-              {!c.isActive && <span className="text-xs text-muted-foreground">Inactive</span>}
-            </div>
-          ))}
+    <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+      <div className="text-sm font-medium">People <span className="font-normal text-muted-foreground">({contacts.length}/{maxContacts})</span></div>
+      {contacts.length === 0 && (
+        <p className="text-xs text-muted-foreground">No people yet. Seed a first admin when creating the company; they add the rest.</p>
+      )}
+      {contacts.map((c) => (
+        <div key={c.id} className="flex items-center justify-between rounded-lg border bg-background px-3 py-2">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-medium text-foreground">{c.username}</div>
+            <div className="truncate text-xs text-muted-foreground">{c.email}</div>
+          </div>
+          {!c.isActive && <span className="text-xs text-muted-foreground">Inactive</span>}
         </div>
-
-        <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-          People are managed by this company’s own admin. You only seed the first admin at creation.
-        </p>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Close</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      ))}
+      <p className="text-xs text-muted-foreground">
+        People are managed by this company’s own admin. You only seed the first admin at creation.
+      </p>
+    </div>
   );
 }

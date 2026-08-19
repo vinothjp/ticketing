@@ -12,6 +12,8 @@ export class CreateCompanyDto extends SupportHoursFields {
   @IsString() name!: string;
   @IsOptional() @IsString() code?: string;
   @IsOptional() @IsEmail() contactEmail?: string;
+  @IsOptional() @IsString() contactPerson?: string;
+  @IsOptional() @IsString() contactNumber?: string;
   @IsOptional() @IsInt() @Min(1) @Max(50) maxContacts?: number;
   @IsOptional() @IsString() status?: string;
   // Products this company uses (limits what they can raise tickets for).
@@ -27,6 +29,8 @@ export class UpdateCompanyDto extends SupportHoursFields {
   @IsOptional() @IsString() name?: string;
   @IsOptional() @IsString() code?: string;
   @IsOptional() @IsEmail() contactEmail?: string;
+  @IsOptional() @IsString() contactPerson?: string;
+  @IsOptional() @IsString() contactNumber?: string;
   @IsOptional() @IsInt() @Min(1) @Max(50) maxContacts?: number;
   @IsOptional() @IsString() status?: string;
   @IsOptional() @IsArray() @IsString({ each: true }) productIds?: string[];

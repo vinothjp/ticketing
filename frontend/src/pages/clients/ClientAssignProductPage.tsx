@@ -19,7 +19,6 @@ interface StaffUser { id: string; username: string }
 
 const today = () => new Date().toISOString().slice(0, 10);
 const monthsFromNow = (m: number) => { const d = new Date(); d.setMonth(d.getMonth() + m); return d.toISOString().slice(0, 10); };
-const trackNorm = (t: string | null) => (t === 'TECHNICAL' || t === 'FUNCTIONAL' ? t : null);
 
 type Draft = { id: string; userId: string; username: string | null; moduleId: string | null; track: string | null; isPrimary: boolean };
 const cellKey = (moduleId: string | null, track: string | null) => `${moduleId}|${track}`;
@@ -42,24 +41,17 @@ export default function ClientAssignProductPage() {
   // Consultant draft, pre-filled from the selected product's own module/product
   // consultants (a one-time snapshot the admin can edit before assigning).
   const assignProduct = catalog.find((c) => c.id === assign.productId);
+  // The agent dropdown only offers agents assigned to this product in the Products screen.
+  const productAgents = (() => {
+    const byId = new Map<string, StaffUser>();
+    for (const m of assignProduct?.modules ?? []) for (const a of m.consultants ?? []) byId.set(a.user.id, a.user);
+    for (const a of assignProduct?.consultants ?? []) byId.set(a.user.id, a.user);
+    return [...byId.values()];
+  })();
+  // The grid shows the product's module rows only — consultants are NOT pre-filled;
+  // the admin assigns them from the dropdown (which offers only this product's agents).
   const [draftC, setDraftC] = useState<Draft[]>([]);
-  useEffect(() => {
-    const p = catalog.find((c) => c.id === assign.productId);
-    if (!p) { setDraftC([]); return; }
-    const hasModules = p.modules.length > 0;
-    const src: Draft[] = [
-      ...p.modules.flatMap((m) => (m.consultants ?? []).map((c) => ({ id: `${m.id}|${trackNorm(c.track)}|${c.user.id}`, userId: c.user.id, username: c.user.username, moduleId: m.id as string | null, track: trackNorm(c.track), isPrimary: !!c.isPrimary }))),
-      ...(!hasModules ? (p.consultants ?? []).map((c) => ({ id: `null|${trackNorm(c.track)}|${c.user.id}`, userId: c.user.id, username: c.user.username, moduleId: null as string | null, track: trackNorm(c.track), isPrimary: !!c.isPrimary })) : []),
-    ];
-    // Dedupe rows and keep at most one primary per cell.
-    const seen = new Set<string>();
-    const primarySeen = new Set<string>();
-    setDraftC(src.filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true))).map((r) => {
-      const isPrimary = r.isPrimary && !primarySeen.has(cellKey(r.moduleId, r.track));
-      if (isPrimary) primarySeen.add(cellKey(r.moduleId, r.track));
-      return { ...r, isPrimary };
-    }));
-  }, [assign.productId, catalog]);
+  useEffect(() => { setDraftC([]); }, [assign.productId]);
   const addConsultant = (moduleId: string | null, col: string, userId: string) => {
     const track = col === 'OTHERS' ? null : col;
     const id = `${moduleId}|${track}|${userId}`;
@@ -150,8 +142,8 @@ export default function ClientAssignProductPage() {
         {assignProduct && (
           <div className="space-y-2">
             <div className="flex items-center gap-1.5 text-sm font-medium"><Users className="size-4" /> Consultants for {assignProduct.name}</div>
-            <p className="text-xs text-muted-foreground">Pre-filled from the product's default consultants. Adjust as needed — saved when you assign the product.</p>
-            <ConsultantGrid modules={assignProduct.modules ?? []} consultants={draftC} staff={staff} onAdd={addConsultant} onRemove={removeDraftConsultant} onPrimary={setPrimaryDraft} />
+            <p className="text-xs text-muted-foreground">Assign consultants per module and track — the dropdown offers only this product's agents. Saved when you assign the product.</p>
+            <ConsultantGrid modules={assignProduct.modules ?? []} consultants={draftC} staff={productAgents} onAdd={addConsultant} onRemove={removeDraftConsultant} onPrimary={setPrimaryDraft} />
           </div>
         )}
 

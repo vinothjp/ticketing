@@ -189,45 +189,6 @@ export class CustomerProductsService {
     });
   }
 
-  /**
-   * Copy a product's module/product consultants into a client as a one-time
-   * snapshot (only when the client has none for that product yet). The client's
-   * copy is then edited independently — later product changes don't touch it.
-   */
-  async seedConsultantsFromProduct(companyId: string, productId: string, clientId: string) {
-    const existing = await this.prisma.customerConsultant.count({ where: { customerCompanyId: companyId, productId } });
-    if (existing > 0) return; // already set up (seeded or hand-edited) — leave it
-
-    const product = await this.prisma.product.findFirst({
-      where: { id: productId, clientId },
-      include: {
-        consultants: { select: { track: true, userId: true, isPrimary: true } },
-        modules: { select: { id: true, consultants: { select: { track: true, userId: true, isPrimary: true } } } },
-      },
-    });
-    if (!product) return;
-    const hasModules = product.modules.length > 0;
-    // Grid columns are Technical / Functional / Others; custom tracks fall into Others (null).
-    const norm = (t: string | null) => (t === 'TECHNICAL' || t === 'FUNCTIONAL' ? t : null);
-    const source: { moduleId: string | null; track: string | null; userId: string; isPrimary: boolean }[] = [
-      ...product.modules.flatMap((m) => m.consultants.map((c) => ({ moduleId: m.id as string | null, track: norm(c.track), userId: c.userId, isPrimary: c.isPrimary }))),
-      ...(!hasModules ? product.consultants.map((c) => ({ moduleId: null as string | null, track: norm(c.track), userId: c.userId, isPrimary: c.isPrimary })) : []),
-    ];
-    if (!source.length) return;
-    // Normalising custom tracks to "Others" can collapse two module-cells into one;
-    // keep at most one primary per resulting (module, track) cell.
-    const seen = new Set<string>();
-    const primarySeen = new Set<string>();
-    const rows = source
-      .filter((r) => { const k = `${r.moduleId}|${r.track}|${r.userId}`; if (seen.has(k)) return false; seen.add(k); return true; })
-      .map((r) => {
-        const cell = `${r.moduleId}|${r.track}`;
-        const isPrimary = r.isPrimary && !primarySeen.has(cell);
-        if (isPrimary) primarySeen.add(cell);
-        return { clientId, customerCompanyId: companyId, userId: r.userId, productId, moduleId: r.moduleId, track: r.track, isPrimary };
-      });
-    await this.prisma.customerConsultant.createMany({ data: rows });
-  }
 
   private async ownedCp(cpId: string, clientId: string) {
     const cp = await this.prisma.customerCompanyProduct.findFirst({
@@ -351,6 +312,7 @@ export class CustomerProductsService {
     const hoursUsed = Number(c.contractHoursUsed);
     return {
       scope: c.contractScope,
+      coverageType: c.contractCoverageType,
       start: c.contractStart,
       end: c.contractEnd,
       hours: c.contractHours,
@@ -379,19 +341,22 @@ export class CustomerProductsService {
   }
 
   async setContract(companyId: string, dto: SetContractDto, clientId: string) {
-    await this.ownedCompany(companyId, clientId);
+    const company = await this.ownedCompany(companyId, clientId);
 
     if (dto.scope === 'CUSTOMER') {
       if (dto.start && dto.end) this.assertRange(new Date(dto.start), new Date(dto.end));
+      // A warranty period is free, so it never carries a contract amount.
+      const coverageType = dto.coverageType ?? company.contractCoverageType;
       await this.prisma.customerCompany.update({
         where: { id: companyId },
         data: {
           contractScope: 'CUSTOMER',
+          ...(dto.coverageType ? { contractCoverageType: dto.coverageType } : {}),
           contractStart: dto.start ? new Date(dto.start) : null,
           contractEnd: dto.end ? new Date(dto.end) : null,
           contractHours: dto.hours ?? null,
           contractVisits: dto.visits ?? null,
-          contractMonthlyCost: dto.monthlyCost ?? null,
+          contractMonthlyCost: coverageType === 'AMC' ? (dto.monthlyCost ?? null) : null,
           contractAlertSentAt: null, // re-arm the "running low" alert on any change
         },
       });
@@ -452,7 +417,8 @@ export class CustomerProductsService {
         contractEnd: monthsAfter(start, dto.months),
         contractHours: dto.hours ?? c.contractHours,
         contractVisits: dto.visits ?? c.contractVisits,
-        contractMonthlyCost: dto.monthlyCost ?? c.contractMonthlyCost,
+        contractMonthlyCost:
+          c.contractCoverageType === 'AMC' ? (dto.monthlyCost ?? c.contractMonthlyCost) : null,
         contractHoursUsed: 0,
         contractVisitsUsed: 0,
         contractAlertSentAt: null,
@@ -562,7 +528,6 @@ export class CustomerProductsService {
     if (req.status !== 'PENDING') throw new BadRequestException('This request has already been decided');
 
     await this.assignProduct(req.customerCompanyId, { productId: req.productId, ...dto }, clientId);
-    await this.seedConsultantsFromProduct(req.customerCompanyId, req.productId, clientId);
     await this.prisma.productRequest.update({ where: { id: requestId }, data: { status: 'GRANTED', decidedById: actorId, decidedAt: new Date() } });
     await this.notifyCompanyAdmins(req.customerCompanyId, clientId, {
       type: 'PRODUCT_REQUEST', title: 'Product request approved',

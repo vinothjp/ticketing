@@ -5,6 +5,8 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
+import { unlink } from 'fs/promises';
+import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto } from './dto/customer-company.dto';
 
@@ -46,6 +48,9 @@ export class CustomerCompaniesService {
       name: c.name,
       code: c.code,
       contactEmail: c.contactEmail,
+      contactPerson: c.contactPerson,
+      contactNumber: c.contactNumber,
+      logoUrl: c.logoUrl,
       status: c.status,
       maxContacts: c.maxContacts,
       agreedSupportHours: c.agreedSupportHours == null ? null : Number(c.agreedSupportHours),
@@ -69,6 +74,7 @@ export class CustomerCompaniesService {
     const c = await this.getOwned(id, clientId);
     return {
       id: c.id, name: c.name, code: c.code, status: c.status, contactEmail: c.contactEmail,
+      contactPerson: c.contactPerson, contactNumber: c.contactNumber, logoUrl: c.logoUrl,
       contractScope: c.contractScope, contractStart: c.contractStart, contractEnd: c.contractEnd, contractHours: c.contractHours,
     };
   }
@@ -133,6 +139,8 @@ export class CustomerCompaniesService {
         name: dto.name,
         code: dto.code,
         contactEmail: dto.contactEmail,
+        contactPerson: dto.contactPerson,
+        contactNumber: dto.contactNumber,
         maxContacts: dto.maxContacts ?? 5,
         status: dto.status ?? 'ACTIVE',
         agreedSupportHours: dto.agreedSupportHours ?? null,
@@ -190,6 +198,30 @@ export class CustomerCompaniesService {
     });
     if (productIds) await this.setProducts(id, productIds, clientId);
     return company;
+  }
+
+  // ---- Logo (same convention as Client.logoUrl: a path under /uploads/logos) --
+
+  async setLogo(id: string, logoUrl: string, clientId: string, actorId: string) {
+    const company = await this.getOwned(id, clientId);
+    if (company.logoUrl) await this.deleteLogoFile(company.logoUrl);
+    await this.prisma.customerCompany.update({ where: { id }, data: { logoUrl, updatedBy: actorId } });
+    return this.getOne(id, clientId);
+  }
+
+  async removeLogo(id: string, clientId: string, actorId: string) {
+    const company = await this.getOwned(id, clientId);
+    if (company.logoUrl) await this.deleteLogoFile(company.logoUrl);
+    await this.prisma.customerCompany.update({ where: { id }, data: { logoUrl: null, updatedBy: actorId } });
+    return this.getOne(id, clientId);
+  }
+
+  private async deleteLogoFile(logoUrl: string) {
+    try {
+      await unlink(join(process.cwd(), logoUrl.replace(/^\//, '')));
+    } catch {
+      // best-effort cleanup — file may already be gone
+    }
   }
 
   async remove(id: string, clientId: string) {

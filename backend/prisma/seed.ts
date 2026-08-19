@@ -361,6 +361,8 @@ async function main() {
         'Describe the issue, what you were doing when it happened, and any error messages you saw.',
       fields: [
         sys('subject', 'MANDATORY'),
+        sys('description', 'MANDATORY'),
+        sys('attachments'),
         sys('requestType', 'MANDATORY'),
         sys('department'),
         sys('ticketCategory'),
@@ -368,8 +370,6 @@ async function main() {
         sys('priority', 'MANDATORY'),
         cf('Impact', 'SELECT', { group: 'ticket_info', requirement: 'MANDATORY', options: opts('High', 'Medium', 'Low') }),
         cf('Urgency', 'SELECT', { group: 'ticket_info', options: opts('High', 'Medium', 'Low') }),
-        sys('description', 'MANDATORY'),
-        sys('attachments'),
         sys('customerConfirmation'),
         sys('rootCauseCategory'),
         sys('rootCauseDescription'),
@@ -386,12 +386,12 @@ async function main() {
       descriptionGuidance: 'Tell us what you need and why.',
       fields: [
         sys('subject', 'MANDATORY'),
+        sys('description'),
         sys('department'),
         cf('Request category', 'SELECT', { group: 'ticket_info', requirement: 'MANDATORY', options: opts('Hardware', 'Software', 'Access') }),
         cf('Item needed', 'TEXT', { placeholder: 'e.g. Dell 27" monitor' }),
         cf('Needed by', 'DATE', { group: 'ticket_info' }),
         sys('priority'),
-        sys('description'),
       ],
     },
     {
@@ -402,12 +402,12 @@ async function main() {
       descriptionGuidance: 'A clear, reproducible bug report helps us fix it faster.',
       fields: [
         sys('subject', 'MANDATORY'),
+        sys('attachments'),
         cf('Steps to reproduce', 'TEXTAREA', { requirement: 'MANDATORY', placeholder: '1. …\n2. …\n3. …' }),
         cf('Expected result', 'TEXTAREA'),
         cf('Actual result', 'TEXTAREA'),
         cf('Environment', 'SELECT', { group: 'ticket_info', requirement: 'MANDATORY', options: opts('Production', 'Staging', 'Development') }),
         cf('Severity', 'SELECT', { group: 'ticket_info', requirement: 'MANDATORY', options: opts('Critical', 'Major', 'Minor', 'Trivial') }),
-        sys('attachments'),
       ],
     },
     {
@@ -433,6 +433,7 @@ async function main() {
       color: '#0d9488',
       descriptionGuidance: 'Everything needed to get a new hire set up on day one.',
       fields: [
+        sys('description'),
         cf('Employee name', 'TEXT', { group: 'ticket_info', requirement: 'MANDATORY' }),
         cf('Start date', 'DATE', { group: 'ticket_info', requirement: 'MANDATORY' }),
         sys('department'),
@@ -440,7 +441,6 @@ async function main() {
         cf('Reporting manager', 'TEXT', { group: 'ticket_info' }),
         cf('Equipment needed', 'MULTI_SELECT', { options: opts('Laptop', 'Monitor', 'Phone', 'Headset', 'Docking station') }),
         cf('Access needed', 'TEXTAREA', { placeholder: 'Email, VPN, ERP, shared drives…' }),
-        sys('description'),
       ],
     },
     {
@@ -465,9 +465,9 @@ async function main() {
       descriptionGuidance: 'Ask us anything — we’ll route it to the right team.',
       fields: [
         sys('subject', 'MANDATORY'),
+        sys('description', 'MANDATORY'),
         sys('ticketCategory'),
         sys('priority'),
-        sys('description', 'MANDATORY'),
       ],
     },
   ];

@@ -82,3 +82,29 @@ export function formatCountdown(dueDate?: string | null, slaHours?: number | nul
   const fraction = overdue ? 0 : Math.max(0, Math.min(1, diffMs / windowMs));
   return { label: overdue ? `Overdue by ${label}` : `${label} left`, overdue, fraction };
 }
+
+export type FieldGroup = 'ticket_info' | 'ticket_detail' | 'root_cause';
+
+export const FIELD_GROUP_LABELS: Record<FieldGroup, string> = {
+  ticket_info: 'Ticket Info',
+  ticket_detail: 'Ticket Detail',
+  root_cause: 'Root Cause Analysis',
+};
+
+/**
+ * Split fields — already in the admin's `sortOrder` — into contiguous runs of the same group.
+ *
+ * The form used to render a fixed Ticket Info -> Ticket Detail -> Root Cause sequence, which
+ * silently discarded any reordering the Template Designer made across groups (dragging Subject
+ * above Priority did nothing). Rendering runs instead means the designer's top-to-bottom order
+ * is what requesters see; headings still appear, they just follow the fields.
+ */
+export function groupFieldRuns<T extends { group: FieldGroup }>(fields: T[]): { group: FieldGroup; fields: T[] }[] {
+  const runs: { group: FieldGroup; fields: T[] }[] = [];
+  for (const f of fields) {
+    const last = runs[runs.length - 1];
+    if (last && last.group === f.group) last.fields.push(f);
+    else runs.push({ group: f.group, fields: [f] });
+  }
+  return runs;
+}

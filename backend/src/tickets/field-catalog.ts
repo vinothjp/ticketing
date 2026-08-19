@@ -63,6 +63,22 @@ export interface FieldCatalogEntry {
  * thing that does require a code change here.
  */
 export const FIELD_CATALOG: FieldCatalogEntry[] = [
+  // Subject and Description lead: a requester states the problem before classifying it.
+  {
+    key: 'subject',
+    label: 'Subject',
+    group: 'ticket_detail',
+    dataType: 'TEXT',
+    defaultHelperText: 'A short summary of the request.',
+  },
+  {
+    key: 'description',
+    label: 'Description',
+    group: 'ticket_detail',
+    dataType: 'TEXTAREA',
+    defaultHelperText: 'Full details of the request.',
+  },
+
   // Ticket Info
   {
     key: 'templateName',
@@ -205,20 +221,6 @@ export const FIELD_CATALOG: FieldCatalogEntry[] = [
   },
 
   // Ticket Detail
-  {
-    key: 'subject',
-    label: 'Subject',
-    group: 'ticket_detail',
-    dataType: 'TEXT',
-    defaultHelperText: 'A short summary of the request.',
-  },
-  {
-    key: 'description',
-    label: 'Description',
-    group: 'ticket_detail',
-    dataType: 'TEXTAREA',
-    defaultHelperText: 'Full details of the request.',
-  },
   {
     key: 'attachments',
     label: 'Attachments',

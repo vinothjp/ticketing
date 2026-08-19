@@ -167,10 +167,13 @@ export default function ProductEditorPage() {
 
         {showStructure && (
           <>
-            <RadioGroup value={mode} onValueChange={(v) => setMode(v as 'PRODUCT' | 'MODULES')} className="flex flex-wrap gap-6">
-              <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="PRODUCT" /> Assign agents to the whole product</label>
-              <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="MODULES" /> Split into modules</label>
-            </RadioGroup>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Assign consultants</label>
+              <RadioGroup value={mode} onValueChange={(v) => setMode(v as 'PRODUCT' | 'MODULES')} className="flex flex-wrap gap-6">
+                <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="PRODUCT" /> Whole product</label>
+                <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="MODULES" /> Modules</label>
+              </RadioGroup>
+            </div>
 
             {mode === 'PRODUCT' ? (
               <section className="space-y-3">

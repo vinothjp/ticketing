@@ -15,6 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import DynamicTicketField, { type MergedTemplateField, type FieldDataType, type FieldOption } from '../tickets/DynamicTicketField';
+import { FIELD_GROUP_LABELS, groupFieldRuns } from '../tickets/ticketHelpers';
 import {
   TEMPLATE_CATEGORIES, TEMPLATE_COLORS, TEMPLATE_ICONS, CUSTOM_FIELD_TYPES,
   OPTION_BACKED_TYPES, FIELD_GROUPS, FILE_TYPE_OPTIONS, MAX_FILE_SIZE_MB, typeLabel, iconFor,
@@ -49,13 +50,6 @@ interface DesignerField {
   requirement: 'MANDATORY' | 'OPTIONAL';
   readOnly: boolean;
 }
-
-const GROUP_LABEL: Record<Group, string> = {
-  ticket_info: 'Ticket Info',
-  ticket_detail: 'Ticket Detail',
-  root_cause: 'Root Cause Analysis',
-};
-const GROUP_ORDER: Group[] = ['ticket_info', 'ticket_detail', 'root_cause'];
 
 const uid = () =>
   (crypto.randomUUID?.() ?? `k_${Math.random().toString(36).slice(2)}`);
@@ -446,14 +440,11 @@ export default function TemplateDesignerPage() {
           {visibleFields.length === 0 ? (
             <p className="text-sm text-muted-foreground">Add fields to see the form.</p>
           ) : (
-            GROUP_ORDER.map((group) => {
-              const groupFields = visibleFields.filter((f) => f.group === group);
-              if (groupFields.length === 0) return null;
-              return (
-                <div key={group} className="mb-5">
-                  <div className="mb-2.5 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">{GROUP_LABEL[group]}</div>
+            groupFieldRuns(visibleFields).map((run, runIndex) => (
+                <div key={`${run.group}-${runIndex}`} className="mb-5">
+                  <div className="mb-2.5 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">{FIELD_GROUP_LABELS[run.group]}</div>
                   <div className="space-y-3.5">
-                    {groupFields.map((f) => (
+                    {run.fields.map((f) => (
                       <DynamicTicketField
                         key={f.key}
                         field={toMerged(f)}
@@ -464,8 +455,7 @@ export default function TemplateDesignerPage() {
                     ))}
                   </div>
                 </div>
-              );
-            })
+            ))
           )}
         </div>
       </div>

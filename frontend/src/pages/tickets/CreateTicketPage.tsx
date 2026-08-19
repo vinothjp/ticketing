@@ -8,6 +8,7 @@ import { useAuth } from '../../context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import DynamicTicketField, { type MergedTemplateField } from './DynamicTicketField';
+import { FIELD_GROUP_LABELS, groupFieldRuns } from './ticketHelpers';
 
 interface TemplateSummary {
   id: string;
@@ -32,13 +33,6 @@ interface SlaPolicy { id: string; priority: string; resolutionHours: number; res
 type SupportUsage =
   | { hasPool: false }
   | { hasPool: true; agreedHours: number; usedHours: number; remainingHours: number; pct: number; thresholdPct: number; overThreshold: boolean };
-
-const GROUP_LABELS: Record<MergedTemplateField['group'], string> = {
-  ticket_info: 'Ticket Info',
-  ticket_detail: 'Ticket Detail',
-  root_cause: 'Root Cause Analysis',
-};
-const GROUP_ORDER: MergedTemplateField['group'][] = ['ticket_info', 'ticket_detail', 'root_cause'];
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 function isValidEmailList(v: string) {
@@ -160,6 +154,15 @@ export default function CreateTicketPage() {
   const visibleFields = useMemo(
     () => (template?.fields ?? []).filter((f) => f.visibility === 'VISIBLE').sort((a, b) => a.sortOrder - b.sortOrder),
     [template],
+  );
+
+  // Sections follow the order the admin arranged in the Template Designer, not a fixed
+  // Info -> Detail -> Root Cause sequence.
+  const fieldRuns = useMemo(() => groupFieldRuns(visibleFields), [visibleFields]);
+  // The template's description guidance belongs above the first Ticket Detail block.
+  const guidanceRunIndex = useMemo(
+    () => fieldRuns.findIndex((r) => r.group === 'ticket_detail'),
+    [fieldRuns],
   );
 
   const picklistKeys = useMemo(
@@ -428,17 +431,14 @@ export default function CreateTicketPage() {
               )}
             </section>
           )}
-          {GROUP_ORDER.map((group) => {
-            const groupFields = visibleFields.filter((f) => f.group === group);
-            if (groupFields.length === 0) return null;
-            return (
-              <section key={group} className="mb-8">
-                <h2 className="text-base font-semibold text-foreground">{GROUP_LABELS[group]}</h2>
-                {group === 'ticket_detail' && template.descriptionGuidance && (
+          {fieldRuns.map((run, runIndex) => (
+              <section key={`${run.group}-${runIndex}`} className="mb-8">
+                <h2 className="text-base font-semibold text-foreground">{FIELD_GROUP_LABELS[run.group]}</h2>
+                {runIndex === guidanceRunIndex && template.descriptionGuidance && (
                   <p className="mt-0.5 text-sm text-muted-foreground">{template.descriptionGuidance}</p>
                 )}
                 <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  {groupFields.map((f) => (
+                  {run.fields.map((f) => (
                     <div key={f.fieldKey} className={f.dataType === 'TEXTAREA' ? 'sm:col-span-2' : undefined}>
                       <DynamicTicketField
                         field={f.fieldKey === 'sla' ? { ...f, label: 'Expected Resolution Time' } : f}
@@ -457,8 +457,7 @@ export default function CreateTicketPage() {
                   ))}
                 </div>
               </section>
-            );
-          })}
+          ))}
 
           <div className="flex justify-end gap-2 border-t pt-5">
             <Button variant="outline" onClick={() => navigate('/tickets')}>Cancel</Button>

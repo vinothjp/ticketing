@@ -34,6 +34,8 @@ import ProjectDetailPage from './pages/projects/ProjectDetailPage';
 import ProjectAnalyticsPage from './pages/projects/ProjectAnalyticsPage';
 import ResourceCostsPage from './pages/ResourceCostsPage';
 import TimesheetPage from './pages/timesheet/TimesheetPage';
+import { ClientVisitsPage } from './pages/client-visits/ClientVisitsPage';
+import { ClientVisitFormPage } from './pages/client-visits/ClientVisitFormPage';
 import ChangeRequestListPage from './pages/change-requests/ChangeRequestListPage';
 import ChangeRequestCreatePage from './pages/change-requests/ChangeRequestCreatePage';
 import ChangeRequestDetailPage from './pages/change-requests/ChangeRequestDetailPage';
@@ -112,6 +114,9 @@ export default function App() {
                         <Route path="/projects" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectListPage /></RoleGate>} />
                         <Route path="/projects/analytics" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectAnalyticsPage /></RoleGate>} />
                         <Route path="/timesheet" element={<RoleGate allow={isStaff} redirectTo="/tickets"><TimesheetPage /></RoleGate>} />
+                        <Route path="/client-visits" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientVisitsPage /></RoleGate>} />
+                        <Route path="/client-visits/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientVisitFormPage /></RoleGate>} />
+                        <Route path="/client-visits/:id/edit" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientVisitFormPage /></RoleGate>} />
                         <Route path="/projects/:id" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectDetailPage /></RoleGate>} />
                         <Route path="/change-requests" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ChangeRequestListPage /></RoleGate>} />
                         <Route path="/change-requests/new" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ChangeRequestCreatePage /></RoleGate>} />

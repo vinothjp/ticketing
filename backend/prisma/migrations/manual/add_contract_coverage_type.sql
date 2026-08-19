@@ -1,0 +1,1 @@
+ALTER TABLE "CustomerCompany" ADD COLUMN IF NOT EXISTS "contractCoverageType" TEXT NOT NULL DEFAULT 'AMC';

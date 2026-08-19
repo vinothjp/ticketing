@@ -23,6 +23,7 @@ import { KbModule } from './kb/kb.module';
 import { ProjectsModule } from './projects/projects.module';
 import { ResourcesModule } from './resources/resources.module';
 import { TimesheetModule } from './timesheet/timesheet.module';
+import { ClientVisitsModule } from './client-visits/client-visits.module';
 import { RegistersModule } from './project-registers/registers.module';
 import { ProjectAttachmentsModule } from './project-attachments/project-attachments.module';
 import { ChangeRequestsModule } from './change-requests/change-requests.module';
@@ -55,6 +56,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     ProjectsModule,
     ResourcesModule,
     TimesheetModule,
+    ClientVisitsModule,
     RegistersModule,
     ProjectAttachmentsModule,
     ChangeRequestsModule,

@@ -57,10 +57,46 @@ model Client {
   resourceCategories ResourceCategory[]
   changeRequests ChangeRequest[]
   changeRequestOptions ChangeRequestOption[]
+  clientVisits ClientVisit[]
   ticketSequence Int @default(0)
   kbSequence   Int @default(0)
   projectSequence Int @default(0)
   crSequence   Int @default(0)
+  clientVisitSequence Int @default(0) @map("clientLogSequence")
+}
+
+// A logged client visit against a customer, booked to their contract pool.
+// VISITED rows draw down that pool (hours + visit count);
+// `contractDeducted` records whether this row's draw-down is currently applied,
+// so status flips and deletes can reverse it exactly once.
+model ClientVisit {
+  id                String   @id @default(uuid())
+  clientId          String
+  client            Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  visitNumber       String?  @map("logNumber")
+  visitDate         DateTime
+  customerCompanyId String
+  customerCompany   CustomerCompany @relation(fields: [customerCompanyId], references: [id], onDelete: Cascade)
+  consultantId      String
+  consultantName    String?  // denormalised at write time so the list needs no join
+  productId         String?
+  productName       String?  // denormalised alongside consultantName
+  hours             Decimal  @default(0)
+  purpose           String
+  notes             String?
+  status            String   @default("PLANNED")  // PLANNED | VISITED | RESCHEDULED
+  ticketId          String?
+  contractDeducted  Boolean  @default(false)
+  deductedCpId      String?  // CustomerCompanyProduct drawn down; null = the shared customer pool
+  createdBy         String?
+  updatedBy         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([clientId, customerCompanyId])
+  @@index([clientId, consultantId])
+
+  @@map("ClientLog")   // renamed model, original table kept
 }
 
 // Knowledge base article. Staff author; customers see published + customer-visible ones.
@@ -120,6 +156,10 @@ model CustomerCompany {
   name         String
   code         String?
   contactEmail String?
+  contactPerson String?
+  contactNumber String?
+  // Client logo, stored like Client.logoUrl: "/uploads/logos/<file>".
+  logoUrl      String?
   status       String   @default("ACTIVE")
   maxContacts  Int      @default(5)
   // Agreed support-hours pool for a period. If agreedSupportHours is null the
@@ -134,6 +174,7 @@ model CustomerCompany {
   // Product contract scope. PRODUCT = each product carries its own warranty/AMC
   // terms; CUSTOMER = one shared contract (dates + hours) covering many products.
   contractScope            String   @default("PRODUCT")   // PRODUCT | CUSTOMER
+  contractCoverageType     String   @default("AMC")        // WARRANTY | AMC
   contractStart            DateTime?
   contractEnd              DateTime?
   contractHours            Int?
@@ -152,6 +193,7 @@ model CustomerCompany {
   products     CustomerCompanyProduct[]
   productRequests ProductRequest[]
   consultants  CustomerConsultant[]
+  clientVisits ClientVisit[]
 
   @@unique([clientId, name])
 }

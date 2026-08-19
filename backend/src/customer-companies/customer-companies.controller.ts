@@ -1,6 +1,10 @@
 import {
   Controller, Get, Post, Put, Patch, Delete, Body, Param, UseGuards, Request,
+  UseInterceptors, UploadedFile, BadRequestException,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { extname, join } from 'path';
 import { CustomerCompaniesService } from './customer-companies.service';
 import { SupportHoursService } from './support-hours.service';
 import { CustomerProductsService } from './customer-products.service';
@@ -136,6 +140,38 @@ export class CustomerCompaniesController {
   @Roles('Admin')
   setConsultantPrimary(@Param('ccId') ccId: string, @Request() req: AuthedRequest) {
     return this.customerProducts.setCustomerPrimary(ccId, req.user.clientId);
+  }
+
+  // ---- Client logo (stored on disk under uploads/logos, served at /uploads) ----
+  @Post(':id/logo')
+  @Roles('Admin')
+  @UseInterceptors(
+    FileInterceptor('logo', {
+      storage: diskStorage({
+        destination: join(process.cwd(), 'uploads/logos'),
+        filename: (req: any, file, cb) => {
+          cb(null, `cc-${req.params.id}-${Date.now()}${extname(file.originalname)}`);
+        },
+      }),
+      fileFilter: (req, file, cb) => {
+        if (!file.mimetype.startsWith('image/')) {
+          cb(new BadRequestException('Only image files are allowed'), false);
+          return;
+        }
+        cb(null, true);
+      },
+      limits: { fileSize: 2 * 1024 * 1024 },
+    }),
+  )
+  uploadLogo(@Param('id') id: string, @UploadedFile() file: Express.Multer.File, @Request() req: AuthedRequest) {
+    if (!file) throw new BadRequestException('No file uploaded');
+    return this.service.setLogo(id, `/uploads/logos/${file.filename}`, req.user.clientId, req.user.id);
+  }
+
+  @Delete(':id/logo')
+  @Roles('Admin')
+  removeLogo(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.service.removeLogo(id, req.user.clientId, req.user.id);
   }
 
   // One client's core details (declared last so it doesn't shadow static routes).

@@ -21,12 +21,12 @@ interface Purchased {
   paidTerms: { months: number | null; monthlyCost: number | null; hours: number | null; visits: number | null };
 }
 interface Consultant { id: string; userId: string; username: string | null; productId: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
-interface CatModule { id: string; name: string; tracks: string[] }
-interface CatProduct { id: string; name: string; imageUrl?: string | null; modules: CatModule[] }
+interface CatAgent { user: { id: string; username: string } }
+interface CatModule { id: string; name: string; tracks: string[]; consultants: CatAgent[] }
+interface CatProduct { id: string; name: string; imageUrl?: string | null; modules: CatModule[]; consultants: CatAgent[] }
 interface StaffUser { id: string; username: string }
 
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleDateString() : '—');
-const inr = (n: number | null) => (n == null ? '—' : `₹${n.toLocaleString('en-IN')}`);
 const statusCls = (s: string) =>
   s === 'ACTIVE' ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
   : s === 'EXPIRED' ? 'bg-destructive/15 text-destructive border-destructive/30'
@@ -66,11 +66,17 @@ export default function ClientProductPage() {
   const { data: products = [] } = useQuery<Purchased[]>({ queryKey: ['client-products', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}/purchased-products`)).data });
   const { data: consultants = [] } = useQuery<Consultant[]>({ queryKey: ['client-consultants', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}/consultants`)).data });
   const { data: catalog = [] } = useQuery<CatProduct[]>({ queryKey: ['products'], queryFn: async () => (await api.get('/api/products')).data });
-  const { data: staff = [] } = useQuery<StaffUser[]>({ queryKey: ['users'], queryFn: async () => (await api.get('/api/users')).data });
 
   const cp = products.find((p) => p.id === cpId);
   const cat = catalog.find((c) => c.id === cp?.productId);
   const productConsultants = consultants.filter((c) => c.productId === cp?.productId);
+  // The agent dropdown only offers agents assigned to this product in the Products screen.
+  const productAgents = (() => {
+    const byId = new Map<string, StaffUser>();
+    for (const m of cat?.modules ?? []) for (const a of m.consultants ?? []) byId.set(a.user.id, a.user);
+    for (const a of cat?.consultants ?? []) byId.set(a.user.id, a.user);
+    return [...byId.values()];
+  })();
 
   const [terms, setTerms] = useState({ coverageType: 'WARRANTY' as 'WARRANTY' | 'AMC', startDate: '', endDate: '', supportHours: 0, visits: 0, contractAmount: 0 });
   useEffect(() => {
@@ -192,8 +198,9 @@ export default function ClientProductPage() {
       <section className={customerScoped ? 'space-y-3' : 'mt-8 space-y-3'}>
         <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground"><Users className="size-4" /> Consultants for this product</h2>
         <p className="text-sm text-muted-foreground">Route this client's tickets per module and track. Type a name to assign. Empty cells fall back to the module's default routing.</p>
-        <ConsultantGrid modules={cat?.modules ?? []} consultants={productConsultants} staff={staff} onAdd={addConsultant} onRemove={removeConsultant} onPrimary={setPrimaryConsultant} />
+        <ConsultantGrid modules={cat?.modules ?? []} consultants={productConsultants} staff={productAgents} onAdd={addConsultant} onRemove={removeConsultant} onPrimary={setPrimaryConsultant} />
       </section>
+
 
       <Dialog open={renewOpen} onOpenChange={setRenewOpen}>
         <DialogContent>

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TicketsService } from './tickets.service';
+import { TicketAutoCloseService } from './ticket-auto-close.service';
 import {
   TicketsController,
   FieldCatalogController,
@@ -13,7 +14,7 @@ import { CustomerCompaniesModule } from '../customer-companies/customer-companie
 
 @Module({
   imports: [TemplatesModule, ActivityModule, MailModule, ProductsModule, NotificationsModule, CustomerCompaniesModule],
-  providers: [TicketsService],
+  providers: [TicketsService, TicketAutoCloseService],
   controllers: [TicketsController, FieldCatalogController],
   exports: [TicketsService],
 })

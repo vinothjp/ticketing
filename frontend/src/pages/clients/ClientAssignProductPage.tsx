@@ -9,12 +9,14 @@ import { Input } from '@/components/ui/input';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import ConsultantGrid from '@/components/ConsultantGrid';
+import SupportHoursChoice from '@/components/SupportHoursChoice';
+import SupportHoursConfig from '@/components/SupportHoursConfig';
 
 interface CatAgent { track: string; isPrimary?: boolean; user: { id: string; username: string } }
 interface CatModule { id: string; name: string; consultants: CatAgent[] }
 interface CatProduct { id: string; name: string; imageUrl?: string | null; modules: CatModule[]; consultants: CatAgent[] }
 interface Purchased { productId: string }
-interface Client { id: string; name: string }
+interface Client { id: string; name: string; contractScope?: 'PRODUCT' | 'CUSTOMER' }
 interface StaffUser { id: string; username: string }
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -33,10 +35,22 @@ export default function ClientAssignProductPage() {
   const { data: catalog = [] } = useQuery<CatProduct[]>({ queryKey: ['products'], queryFn: async () => (await api.get('/api/products')).data });
   const { data: staff = [] } = useQuery<StaffUser[]>({ queryKey: ['users'], queryFn: async () => (await api.get('/api/users')).data });
 
+  // On one shared customer contract the per-product dates/hours/visits are never
+  // used — the contract owns them — so this form only picks the product and its
+  // consultants, the same way ClientProductPage hides its Coverage/Terms.
+  const customerScoped = client?.contractScope === 'CUSTOMER';
+
   const owned = new Set(products.map((p) => p.productId));
   const assignable = catalog.filter((c) => !owned.has(c.id));
 
-  const [assign, setAssign] = useState<{ productId: string; coverageType: 'WARRANTY' | 'AMC'; startDate: string; endDate: string; supportHours: number; visits: number; contractAmount: number }>({ productId: '', coverageType: 'WARRANTY', startDate: today(), endDate: monthsFromNow(12), supportHours: 100, visits: 4, contractAmount: 100000 });
+  // Warranty is free support, so the form opens on warranty with Unlimited hours.
+  const [assign, setAssign] = useState<{ productId: string; coverageType: 'WARRANTY' | 'AMC'; startDate: string; endDate: string; supportHoursUnlimited: boolean; supportHours: number; visits: number; contractAmount: number; hoursPeriod: 'FULL_AMC' | 'MONTHLY'; carryForward: boolean; allowTicketsAfterHours: boolean; allowExcess: boolean; excessApproval: boolean; excessApproverId: string }>({ productId: '', coverageType: 'WARRANTY', startDate: today(), endDate: monthsFromNow(12), supportHoursUnlimited: true, supportHours: 100, visits: 4, contractAmount: 100000, hoursPeriod: 'FULL_AMC', carryForward: false, allowTicketsAfterHours: true, allowExcess: false, excessApproval: false, excessApproverId: '' });
+  // Switching to warranty preselects Unlimited; AMC keeps the current choice.
+  const onCoverage = (v: string) => {
+    if (!v) return;
+    const coverageType = v as 'WARRANTY' | 'AMC';
+    setAssign((a) => ({ ...a, coverageType, supportHoursUnlimited: coverageType === 'WARRANTY' ? true : a.supportHoursUnlimited }));
+  };
 
   // Consultant draft, pre-filled from the selected product's own module/product
   // consultants (a one-time snapshot the admin can edit before assigning).
@@ -81,14 +95,32 @@ export default function ClientAssignProductPage() {
   const [saving, setSaving] = useState(false);
   const doAssign = async () => {
     if (!assign.productId) return;
-    if (assign.startDate && assign.endDate && assign.endDate <= assign.startDate) { toast.error('End date must be after the start date'); return; }
+    if (!customerScoped) {
+      if (assign.startDate && assign.endDate && assign.endDate <= assign.startDate) { toast.error('End date must be after the start date'); return; }
+      if (!assign.supportHoursUnlimited && Number(assign.supportHours) <= 0) { toast.error('Enter support hours greater than 0, or choose Unlimited'); return; }
+    }
     setSaving(true);
     try {
       await api.post(`/api/customer-companies/${companyId}/purchased-products`, {
-        productId: assign.productId, coverageType: assign.coverageType,
-        startDate: assign.startDate, endDate: assign.endDate,
-        supportHours: assign.supportHours, visits: assign.visits,
-        ...(assign.coverageType === 'AMC' ? { contractAmount: assign.contractAmount } : {}),
+        productId: assign.productId,
+        // Under a shared contract only the product itself is recorded — sending
+        // terms here would write a per-product pool nothing reads.
+        ...(customerScoped ? {} : {
+          coverageType: assign.coverageType,
+          startDate: assign.startDate, endDate: assign.endDate,
+          // Unlimited carries no allocation at all.
+          supportHoursUnlimited: assign.supportHoursUnlimited,
+          ...(assign.supportHoursUnlimited ? {} : { supportHours: assign.supportHours }),
+          visits: assign.visits,
+          ...(assign.coverageType === 'AMC' ? { contractAmount: assign.contractAmount } : {}),
+          // Support-hours config for the new pool.
+          hoursPeriod: assign.hoursPeriod,
+          carryForward: assign.hoursPeriod === 'MONTHLY' && assign.carryForward,
+          allowTicketsAfterHours: assign.allowTicketsAfterHours,
+          allowExcess: assign.allowExcess,
+          excessApproval: assign.allowExcess && assign.excessApproval,
+          excessApproverId: assign.allowExcess && assign.excessApproval && assign.excessApproverId ? assign.excessApproverId : null,
+        }),
       });
       for (const c of draftC) {
         await api.post(`/api/customer-companies/${companyId}/consultants`, {
@@ -124,20 +156,43 @@ export default function ClientAssignProductPage() {
           </Select>
         </div>
 
-        <RadioGroup value={assign.coverageType} onValueChange={(v) => setAssign({ ...assign, coverageType: v as 'WARRANTY' | 'AMC' })} className="flex gap-6">
-          <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="WARRANTY" /> Under warranty <span className="text-xs text-muted-foreground">(free)</span></label>
-          <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="AMC" /> Under AMC <span className="text-xs text-muted-foreground">(paid)</span></label>
-        </RadioGroup>
+        {customerScoped ? (
+          <p className="max-w-2xl rounded-lg border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+            This client is on <span className="font-medium text-foreground">one customer contract</span>, so coverage dates,
+            support hours and visits come from that contract — there are no per-product terms to set. Tick the product under
+            <span className="font-medium text-foreground"> Products covered</span> and save the contract to bring it under that coverage.
+          </p>
+        ) : (
+          <>
+            <RadioGroup value={assign.coverageType} onValueChange={onCoverage} className="flex gap-6">
+              <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="WARRANTY" /> Under warranty <span className="text-xs text-muted-foreground">(free)</span></label>
+              <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="AMC" /> Under AMC <span className="text-xs text-muted-foreground">(paid)</span></label>
+            </RadioGroup>
 
-        <div className="grid max-w-2xl grid-cols-2 gap-3">
-          <Field label="Start date" type="date" value={assign.startDate} onChange={(v) => setAssign({ ...assign, startDate: v })} />
-          <Field label="End date" type="date" min={assign.startDate || undefined} value={assign.endDate} onChange={(v) => setAssign({ ...assign, endDate: v })} />
-          <Field label="Support hours" value={assign.supportHours} onChange={(v) => setAssign({ ...assign, supportHours: Number(v) })} />
-          <Field label="No. of visits" value={assign.visits} onChange={(v) => setAssign({ ...assign, visits: Number(v) })} />
-          {assign.coverageType === 'AMC' && (
-            <Field label="Contract amount" value={assign.contractAmount} onChange={(v) => setAssign({ ...assign, contractAmount: Number(v) })} />
-          )}
-        </div>
+            <SupportHoursChoice unlimited={assign.supportHoursUnlimited} onChange={(u) => setAssign({ ...assign, supportHoursUnlimited: u })} />
+
+            <div className="grid max-w-2xl grid-cols-2 gap-3">
+              <Field label="Start date" type="date" value={assign.startDate} onChange={(v) => setAssign({ ...assign, startDate: v })} />
+              <Field label="End date" type="date" min={assign.startDate || undefined} value={assign.endDate} onChange={(v) => setAssign({ ...assign, endDate: v })} />
+              {!assign.supportHoursUnlimited && (
+                <Field label={assign.hoursPeriod === 'MONTHLY' ? 'Support hours / month' : 'Support hours (for the term)'} min={1} value={assign.supportHours} onChange={(v) => setAssign({ ...assign, supportHours: Number(v) })} />
+              )}
+              <Field label="No. of visits" value={assign.visits} onChange={(v) => setAssign({ ...assign, visits: Number(v) })} />
+              {assign.coverageType === 'AMC' && (
+                <Field label="Contract amount" value={assign.contractAmount} onChange={(v) => setAssign({ ...assign, contractAmount: Number(v) })} />
+              )}
+            </div>
+
+            {!assign.supportHoursUnlimited && (
+              <div className="max-w-2xl">
+                <SupportHoursConfig
+                  value={{ hoursPeriod: assign.hoursPeriod, carryForward: assign.carryForward, allowTicketsAfterHours: assign.allowTicketsAfterHours, allowExcess: assign.allowExcess, excessApproval: assign.excessApproval, excessApproverId: assign.excessApproverId }}
+                  onChange={(patch) => setAssign((a) => ({ ...a, ...patch }))}
+                  staff={staff} />
+              </div>
+            )}
+          </>
+        )}
 
         {assignProduct && (
           <div className="space-y-2">

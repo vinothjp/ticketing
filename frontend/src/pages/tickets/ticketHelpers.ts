@@ -52,6 +52,16 @@ export function isTerminalStatus(statusLabel?: string | null) {
   return s === 'resolved' || s === 'closed';
 }
 
+/** Overdue = past its due date and not yet resolved/closed (a condition, not a status). */
+export function isOverdueTicket(t: Pick<TicketSummary, 'ticketStatus' | 'dueDate'>) {
+  return !isTerminalStatus(t.ticketStatus) && !!t.dueDate && new Date(t.dueDate) < new Date();
+}
+
+/** Raised today (local day, same convention as the dashboard's "Due today") and not yet overdue. */
+export function isCreatedTodayTicket(t: Pick<TicketSummary, 'ticketStatus' | 'dueDate' | 'createdAt'>) {
+  return new Date(t.createdAt).toDateString() === new Date().toDateString() && !isOverdueTicket(t);
+}
+
 export function formatDueStatus(dueDate?: string | null, statusLabel?: string | null): { label: string; tone: 'overdue' | 'today' | 'soon' | 'ok' | 'none' } {
   if (isTerminalStatus(statusLabel)) return { label: statusLabel ?? '', tone: 'ok' };
   if (!dueDate) return { label: 'No due date', tone: 'none' };

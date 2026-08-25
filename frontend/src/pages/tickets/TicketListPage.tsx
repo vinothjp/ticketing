@@ -10,10 +10,10 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
-  DropdownMenuCheckboxItem, DropdownMenuRadioGroup, DropdownMenuRadioItem,
+  DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
-import { getPriorityMeta, isTerminalStatus, getApprovalMeta, type TicketSummary } from './ticketHelpers';
+import { getPriorityMeta, isOverdueTicket, isCreatedTodayTicket, getApprovalMeta, type TicketSummary } from './ticketHelpers';
 
 interface TemplateSummary { id: string; name: string; }
 interface CompanyOption { id: string; name: string; }
@@ -28,7 +28,7 @@ interface MyTask {
   ticket: { id: string; ticketNumber: string; subject: string; ticketStatus: string; priority?: string | null };
 }
 
-type ViewKey = 'all' | 'mine' | 'overdue' | 'unassigned' | 'tasks' | 'pending';
+type ViewKey = 'all' | 'mine' | 'today' | 'overdue' | 'unassigned' | 'tasks' | 'pending';
 type SortKey = 'newest' | 'oldest' | 'priority' | 'due';
 
 const PRIORITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -74,12 +74,13 @@ export default function TicketListPage() {
   // Initial view/status can be deep-linked from the dashboard (?view=, ?status=).
   const initialView = (searchParams.get('view') ?? 'all') as ViewKey;
   const [view, setView] = useState<ViewKey>(
-    (['all', 'mine', 'overdue', 'unassigned', 'tasks'] as string[]).includes(initialView) ? initialView : 'all',
+    (['all', 'mine', 'today', 'overdue', 'unassigned', 'tasks'] as string[]).includes(initialView) ? initialView : 'all',
   );
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>(searchParams.get('status') ?? 'all');
   const [companyFilter, setCompanyFilter] = useState<string>('all');
+  // Queue default: incoming order — newest first, so the latest arrivals lead.
   const [sort, setSort] = useState<SortKey>('newest');
 
   const { data: tickets = [], isLoading } = useQuery<TicketSummary[]>({
@@ -121,7 +122,8 @@ export default function TicketListPage() {
   const viewCounts = useMemo(() => ({
     all: byType.length,
     mine: byType.filter((t) => t.technicians.some((tt) => tt.user.id === user?.id)).length,
-    overdue: byType.filter((t) => !isTerminalStatus(t.ticketStatus) && t.dueDate && new Date(t.dueDate) < new Date()).length,
+    today: byType.filter(isCreatedTodayTicket).length,
+    overdue: byType.filter(isOverdueTicket).length,
     unassigned: byType.filter((t) => t.technicians.length === 0).length,
     tasks: myTasks.length,
   }), [byType, user?.id, myTasks.length]);
@@ -129,7 +131,8 @@ export default function TicketListPage() {
   const filtered = useMemo(() => {
     let list = byType;
     if (view === 'mine') list = list.filter((t) => t.technicians.some((tt) => tt.user.id === user?.id));
-    if (view === 'overdue') list = list.filter((t) => !isTerminalStatus(t.ticketStatus) && t.dueDate && new Date(t.dueDate) < new Date());
+    if (view === 'today') list = list.filter(isCreatedTodayTicket);
+    if (view === 'overdue') list = list.filter(isOverdueTicket);
     if (view === 'unassigned') list = list.filter((t) => t.technicians.length === 0);
     if (priorityFilter !== 'all') list = list.filter((t) => (t.priority ?? '').toLowerCase() === priorityFilter);
     if (categoryFilter !== 'all') list = list.filter((t) => t.ticketCategory === categoryFilter);
@@ -162,11 +165,12 @@ export default function TicketListPage() {
     { key: 'all', label: 'All tickets', count: viewCounts.all },
     { key: 'mine', label: 'Assigned tickets', count: viewCounts.mine },
     { key: 'tasks', label: 'Assigned tasks', count: viewCounts.tasks },
+    { key: 'today', label: 'Created today', count: viewCounts.today },
     { key: 'overdue', label: 'Overdue', count: viewCounts.overdue },
     { key: 'unassigned', label: 'Unassigned', count: viewCounts.unassigned },
   ];
   // Customers only get their own ticket views — agent/task concepts are hidden.
-  const views = isCustomer ? allViews.filter((v) => ['all', 'overdue', 'pending'].includes(v.key)) : allViews;
+  const views = isCustomer ? allViews.filter((v) => ['all', 'today', 'overdue', 'pending'].includes(v.key)) : allViews;
 
   // Export the currently filtered/sorted tickets to CSV (client-side, no backend needed).
   const exportCsv = () => {
@@ -376,26 +380,38 @@ export default function TicketListPage() {
                         label="Status"
                         value={t.ticketStatus}
                         display={<span className="text-foreground">{t.ticketStatus}</span>}
-                        options={statusOpts.filter((o) => o.isActive !== false).map((o) => ({ value: o.value, node: o.label }))}
+                        // A client's ticket closes on their acknowledgement, not from here.
+                        options={statusOpts.filter((o) => o.isActive !== false).map((o) => ({
+                          value: o.value,
+                          node: o.label,
+                          disabled: !!t.customerCompany && (o.label ?? o.value).trim().toLowerCase() === 'closed',
+                        }))}
                         onChange={(v) => updateMutation.mutate({ id: t.id, data: { ticketStatus: v } })}
                       />
-                      {sep}
-                      <InlineEdit
-                        isAdmin={isAdmin}
-                        label="Priority"
-                        value={t.priority ?? ''}
-                        display={<><span className={`inline-block size-2.5 rounded-sm ${priority.barClass}`} /><span className="text-foreground">{priority.label} ({priority.code})</span></>}
-                        options={priorityOpts.filter((o) => o.isActive !== false).map((o) => ({
-                          value: o.value,
-                          node: <span className="inline-flex items-center gap-2"><span className={`inline-block size-2.5 rounded-sm ${getPriorityMeta(o.value).barClass}`} />{o.label}</span>,
-                        }))}
-                        onChange={(v) => updateMutation.mutate({ id: t.id, data: { priority: v } })}
-                      />
+                      {/* Priority is dropped from the overdue listing — that queue is driven by the due date. */}
+                      {view !== 'overdue' && (
+                        <>
+                        {sep}
+                        <InlineEdit
+                          isAdmin={isAdmin}
+                          label="Priority"
+                          value={t.priority ?? ''}
+                          display={<><span className={`inline-block size-2.5 rounded-sm ${priority.barClass}`} /><span className="text-foreground">{priority.label} ({priority.code})</span></>}
+                          options={priorityOpts.filter((o) => o.isActive !== false).map((o) => ({
+                            value: o.value,
+                            node: <span className="inline-flex items-center gap-2"><span className={`inline-block size-2.5 rounded-sm ${getPriorityMeta(o.value).barClass}`} />{o.label}</span>,
+                          }))}
+                          onChange={(v) => updateMutation.mutate({ id: t.id, data: { priority: v } })}
+                        />
+                        </>
+                      )}
                     </div>
 
                     {/* Meta line 2 */}
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                      {t.customerCompany && (<><span>Customer : <span className="text-foreground">{t.customerCompany.name}</span></span>{sep}</>)}
+                      {/* No customer on it = an internal ticket; say so rather than
+                          leaving the line blank. */}
+                      <><span>Customer : <span className="text-foreground">{t.customerCompany?.name ?? 'Internal'}</span></span>{sep}</>
                       {t.department && (<><span>Department : <span className="text-foreground">{t.department}</span></span>{sep}</>)}
                       {t.ticketCategory && (<><span>Category : <span className="text-foreground">{t.ticketCategory}</span></span>{sep}</>)}
                       <AssignedTo
@@ -427,7 +443,7 @@ function InlineEdit({
   label: string;
   value: string;
   display: ReactNode;
-  options: { value: string; node: ReactNode }[];
+  options: { value: string; node: ReactNode; disabled?: boolean }[];
   onChange: (value: string) => void;
 }) {
   if (!isAdmin) {
@@ -448,7 +464,7 @@ function InlineEdit({
         <DropdownMenuContent align="start" className="max-h-72 w-52 overflow-y-auto">
           <DropdownMenuRadioGroup value={value} onValueChange={onChange}>
             {options.map((o) => (
-              <DropdownMenuRadioItem key={o.value} value={o.value}>{o.node}</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem key={o.value} value={o.value} disabled={o.disabled}>{o.node}</DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>
         </DropdownMenuContent>
@@ -476,8 +492,10 @@ function AssignedTo({
     return <span>Assigned To : <span className="text-foreground">{label}</span></span>;
   }
 
-  const toggle = (id: string, checked: boolean) =>
-    onAssign(checked ? [...assignedIds, id] : assignedIds.filter((x) => x !== id));
+  // A ticket carries at most one agent, so picking a name *replaces* whoever held
+  // it — this used to append, which sent two ids and bounced off the backend's
+  // "only one agent" rule whenever the ticket was already assigned.
+  const UNASSIGNED = '__none__';
 
   return (
     // Stop row navigation when interacting with the assignee control.
@@ -493,21 +511,28 @@ function AssignedTo({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="max-h-72 w-56 overflow-y-auto">
-          <DropdownMenuLabel>Assign technicians</DropdownMenuLabel>
+          <DropdownMenuLabel>Assign to</DropdownMenuLabel>
           <DropdownMenuSeparator />
           {users.length === 0 && (
             <div className="px-2 py-1.5 text-sm text-muted-foreground">No users available.</div>
           )}
-          {users.map((u) => (
-            <DropdownMenuCheckboxItem
-              key={u.id}
-              checked={assignedIds.includes(u.id)}
-              onCheckedChange={(c) => toggle(u.id, !!c)}
-              onSelect={(e) => e.preventDefault()}
-            >
-              {u.username}
-            </DropdownMenuCheckboxItem>
-          ))}
+          <DropdownMenuRadioGroup
+            value={assignedIds[0] ?? UNASSIGNED}
+            onValueChange={(v) => {
+              const next = v === UNASSIGNED ? [] : [v];
+              // Re-picking the current agent is a no-op, not a reassignment —
+              // sending it would fire a round of "reassigned" mail for nothing.
+              if (next[0] === assignedIds[0]) return;
+              onAssign(next);
+            }}
+          >
+            <DropdownMenuRadioItem value={UNASSIGNED}>Unassigned</DropdownMenuRadioItem>
+            {users.map((u) => (
+              <DropdownMenuRadioItem key={u.id} value={u.id}>
+                {u.username}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
         </DropdownMenuContent>
       </DropdownMenu>
     </span>

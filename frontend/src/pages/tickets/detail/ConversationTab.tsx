@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Mail, Lock, Paperclip, Send } from 'lucide-react';
+import { Mail, MessagesSquare, Paperclip, Send } from 'lucide-react';
 import api from '../../../lib/api';
 import { useAuth } from '../../../context/AuthContext';
 import { assetUrl } from '@/lib/assetUrl';
@@ -29,7 +29,11 @@ interface Message {
 export default function ConversationTab({ ticketId }: { ticketId: string }) {
   const qc = useQueryClient();
   const { user } = useAuth();
-  const [channel, setChannel] = useState<'EMAIL' | 'INTERNAL'>('EMAIL');
+  // Chat is a shared thread — the client sees it and can post in it too. Staff
+  // still start on Chat (their working channel), the client on Email reply
+  // (theirs), and either side can switch.
+  const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer');
+  const [channel, setChannel] = useState<'EMAIL' | 'INTERNAL'>(isStaff ? 'INTERNAL' : 'EMAIL');
   const [body, setBody] = useState('');
   const [files, setFiles] = useState<File[]>([]);
 
@@ -63,20 +67,30 @@ export default function ConversationTab({ ticketId }: { ticketId: string }) {
       <div className="rounded-lg border p-3">
         <div className="mb-2 flex items-center gap-2">
           <Select value={channel} onValueChange={(v) => setChannel(v as 'EMAIL' | 'INTERNAL')}>
-            <SelectTrigger className="h-8 w-44"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="h-8 w-44"><SelectValue placeholder="Chat" /></SelectTrigger>
             <SelectContent>
+              <SelectItem value="INTERNAL">Chat</SelectItem>
               <SelectItem value="EMAIL">Email reply</SelectItem>
-              <SelectItem value="INTERNAL">Internal note</SelectItem>
             </SelectContent>
           </Select>
-          {channel === 'INTERNAL' && <span className="text-xs text-muted-foreground">Sent to the assigned agent(s) — not the customer</span>}
+          {channel === 'INTERNAL' && (
+            <span className="text-xs text-muted-foreground">
+              {isStaff
+                ? 'Posted in the shared thread — the client sees it and can reply here'
+                : 'Posted in the shared thread — your support team sees it and can reply here'}
+            </span>
+          )}
         </div>
         <Textarea
           rows={3}
           value={body}
           onChange={(e) => setBody(e.target.value)}
-          placeholder={channel === 'EMAIL' ? 'Write a reply to the requester…' : 'Add a private note for your team…'}
-          className={channel === 'INTERNAL' ? 'bg-amber-50 dark:bg-amber-950/20' : undefined}
+          placeholder={
+            channel === 'EMAIL'
+              ? isStaff ? 'Write a reply to the requester…' : 'Write a reply to your support team…'
+              : 'Chat about this ticket…'
+          }
+          className={channel === 'INTERNAL' ? 'bg-sky-50 dark:bg-sky-950/20' : undefined}
         />
         <div className="mt-2 flex items-center justify-between gap-2">
           <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
@@ -85,7 +99,7 @@ export default function ConversationTab({ ticketId }: { ticketId: string }) {
             <input type="file" multiple className="hidden" onChange={(e) => setFiles(Array.from(e.target.files ?? []))} />
           </label>
           <Button size="sm" onClick={() => send.mutate()} disabled={!body.trim() || send.isPending}>
-            <Send className="size-4" /> {send.isPending ? 'Sending…' : channel === 'EMAIL' ? 'Send email' : 'Add note'}
+            <Send className="size-4" /> {send.isPending ? 'Sending…' : channel === 'EMAIL' ? 'Send email' : 'Send chat'}
           </Button>
         </div>
       </div>
@@ -105,18 +119,20 @@ export default function ConversationTab({ ticketId }: { ticketId: string }) {
                 <div
                   className={cn(
                     'max-w-[85%] rounded-lg border px-3 py-2 text-sm',
+                    // Chat is tinted to separate it from the emailed replies —
+                    // no longer a "private, hide from the customer" warning.
                     internal
-                      ? 'border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/20'
+                      ? 'border-sky-300 bg-sky-50 dark:border-sky-900 dark:bg-sky-950/20'
                       : mine
                         ? 'bg-primary/5'
                         : 'bg-muted',
                   )}
                 >
                   <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                    {internal ? <Lock className="size-3" /> : <Mail className="size-3" />}
+                    {internal ? <MessagesSquare className="size-3" /> : <Mail className="size-3" />}
                     <span className="font-medium text-foreground">{m.authorName ?? m.fromAddress ?? 'External'}</span>
                     <span>· {new Date(m.createdAt).toLocaleString()}</span>
-                    {internal && <span>· internal</span>}
+                    {internal && <span>· chat</span>}
                     {!internal && outbound && <span>· {m.status.toLowerCase()}</span>}
                     {!outbound && <span>· received</span>}
                   </div>

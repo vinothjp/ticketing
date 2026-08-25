@@ -8,6 +8,8 @@ type NewNotification = {
   title: string;
   body?: string;
   ticketId?: string;
+  /** In-app route the bell opens; the ticket is used when this is absent. */
+  link?: string;
 };
 
 @Injectable()

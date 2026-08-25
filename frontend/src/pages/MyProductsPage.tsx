@@ -12,7 +12,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 
 interface Coverage { end: string | null; daysLeft: number | null; label: string; pct: number; active: boolean }
 interface AmcCoverage extends Coverage { type: 'FREE' | 'PAID'; freeMonths: number }
-interface Pool { allocated: number | null; used: number; left: number | null }
+// `used` is the whole draw-down; the two `from*` halves say where it came from —
+// time consultants logged on tickets vs. usage logged straight against the pool.
+interface Pool { allocated: number | null; used: number; left: number | null; fromTickets?: number; fromLogged?: number }
 interface PaidTerms { months: number | null; monthlyCost: number | null; hours: number | null; visits: number | null }
 interface MyProduct {
   id: string; productName: string; productCode: string; status: 'ACTIVE' | 'EXPIRED' | 'TERMINATED';
@@ -73,6 +75,15 @@ function Meter({ icon, title, subtitle, pct, active, daysLeft, hideRight }: { ic
   );
 }
 
+// "80 h on tickets - 6 h logged directly" - only the halves that actually have time.
+// Site visits are not in here: they consume the visit allowance, not support hours.
+function spentBreakdown(p: Pool): string {
+  const parts: string[] = [];
+  if (p.fromTickets) parts.push(`${p.fromTickets} h logged on tickets`);
+  if (p.fromLogged) parts.push(`${p.fromLogged} h logged directly`);
+  return parts.join(' · ');
+}
+
 export default function MyProductsPage() {
   const qc = useQueryClient();
   const [requestOpen, setRequestOpen] = useState(false);
@@ -82,8 +93,8 @@ export default function MyProductsPage() {
   const { data: contract } = useQuery<{
     scope: 'PRODUCT' | 'CUSTOMER'; start: string | null; end: string | null; hours: number | null; visits: number | null;
     period?: { pct: number; daysLeft: number | null; active: boolean };
-    hoursPool?: { allocated: number | null; used: number; left: number | null };
-    visitsPool?: { allocated: number | null; used: number; left: number | null };
+    hoursPool?: Pool;
+    visitsPool?: Pool;
   }>({
     queryKey: ['my-product-contract'],
     queryFn: async () => (await api.get('/api/my-company/product-contract')).data,
@@ -173,6 +184,11 @@ export default function MyProductsPage() {
               <Stat label="Days remaining" value={cDaysLeft != null ? String(cDaysLeft) : '—'} />
               <Stat label="Products covered" value={String(products.length)} />
             </div>
+            {contract?.hoursPool && spentBreakdown(contract.hoursPool) && (
+              <p className="-mt-2 text-xs text-muted-foreground">
+                {contract.hoursPool.used} hours spent — {spentBreakdown(contract.hoursPool)}
+              </p>
+            )}
 
             {/* Covered products */}
             <div>
@@ -235,7 +251,10 @@ export default function MyProductsPage() {
 
                   {/* Live support-hours + visits pools */}
                   <Meter icon={<Clock className="size-3.5" />} title="Support hours"
-                    subtitle={p.hours.allocated == null ? 'Not included' : `${p.hours.left} of ${p.hours.allocated} hours left`}
+                    subtitle={[
+                      p.hours.allocated == null ? `${p.hours.used} hours spent` : `${p.hours.left} of ${p.hours.allocated} hours left`,
+                      spentBreakdown(p.hours),
+                    ].filter(Boolean).join(' — ')}
                     pct={p.hours.allocated ? Math.round((p.hours.used / p.hours.allocated) * 100) : 0}
                     active={(p.hours.left ?? 0) > 0} daysLeft={null} hideRight />
                   <Meter icon={<MapPin className="size-3.5" />} title="Site visits"

@@ -63,6 +63,13 @@ model Client {
   projectSequence Int @default(0)
   crSequence   Int @default(0)
   clientVisitSequence Int @default(0) @map("clientLogSequence")
+  // How many days after a ticket is resolved it may still be reopened. Tenant-
+  // editable on the Organization screen; past the window the UI sends the user
+  // to raise a fresh ticket instead.
+  ticketReopenWindowDays Int @default(30)
+  // How many days a resolved ticket waits for the client's acknowledgement
+  // before it closes itself. Tenant-editable on the Organization screen.
+  ticketAutoCloseDays Int @default(3)
 }
 
 // A logged client visit against a customer, booked to their contract pool.
@@ -77,6 +84,10 @@ model ClientVisit {
   visitDate         DateTime
   customerCompanyId String
   customerCompany   CustomerCompany @relation(fields: [customerCompanyId], references: [id], onDelete: Cascade)
+  // How many times an admin has re-dated this visit after a consultant asked for
+  // one. Drives the orange "Rescheduled" marker on a visit that is planned again:
+  // `status` says where the visit is now, this says what it has been through.
+  rescheduleCount   Int      @default(0)
   consultantId      String
   consultantName    String?  // denormalised at write time so the list needs no join
   productId         String?
@@ -177,12 +188,33 @@ model CustomerCompany {
   contractCoverageType     String   @default("AMC")        // WARRANTY | AMC
   contractStart            DateTime?
   contractEnd              DateTime?
+  // Support-hours pool. `contractHoursUnlimited` is the explicit "no cap" state:
+  // when true `contractHours` is null and nothing is deducted or alerted on.
   contractHours            Int?
+  contractHoursUnlimited   Boolean  @default(false)
   contractVisits           Int?
   contractHoursUsed        Decimal  @default(0)
   contractVisitsUsed       Int      @default(0)
   contractMonthlyCost      Decimal?
   contractAlertSentAt      DateTime?
+  excessRequests           SupportHoursExcessRequest[]
+  // How the shared-contract support-hours allowance is read: FULL_AMC = one pool
+  // for the whole term (contractHours), MONTHLY = contractHours is a per-month
+  // allowance tracked by SupportHoursLedger. The coverage window (dates) is one
+  // range regardless — only the hours figure changes meaning.
+  contractHoursPeriod      String   @default("FULL_AMC")  // FULL_AMC | MONTHLY
+  // MONTHLY only: carry an unused month's balance into the next month.
+  contractCarryForward     Boolean  @default(false)
+  // Whether time may be logged past the allowance, and whether doing so needs a
+  // named approver's sign-off. The approver is an internal staff/admin user.
+  contractAllowExcess      Boolean  @default(false)
+  contractExcessApproval   Boolean  @default(false)
+  // Whether the customer may still raise tickets once the allowance is spent.
+  // Defaults to true — support does not stop the moment the hours run out unless
+  // the tenant says so.
+  contractAllowTicketsAfterHours Boolean @default(true)
+  contractExcessApproverId String?
+  contractExcessApprover   User?    @relation("ContractExcessApprover", fields: [contractExcessApproverId], references: [id], onDelete: SetNull)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   createdBy    String?
@@ -257,6 +289,8 @@ model User {
   projectTaskWatchers ProjectTaskWatcher[]
   projectResources ProjectResource[]
   projectTimesheets ProjectTimesheet[]
+  contractExcessApprovals CustomerCompany[]        @relation("ContractExcessApprover")
+  productExcessApprovals  CustomerCompanyProduct[] @relation("ProductExcessApprover")
 }
 
 model Role {
@@ -341,10 +375,11 @@ model Notification {
   clientId  String
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type      String   // TICKET_CREATED | TICKET_ASSIGNED | TICKET_ACK
+  type      String   // TICKET_CREATED | TICKET_ASSIGNED | TICKET_ACK | TICKET_RESOLVED | TICKET_ACKNOWLEDGED | CLIENT_VISIT_ASSIGNED | CLIENT_VISIT_UPDATED
   title     String
   body      String?
   ticketId  String?
+  link      String?  // in-app route the bell opens; falls back to the ticket when null
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
 
@@ -418,21 +453,62 @@ model CustomerCompanyProduct {
   // Support-hours + site-visits allocations. Free-period pool and the paid-period
   // pool (used after subscribing). `hoursUsed`/`visitsUsed` track the current
   // period's consumption; they reset to 0 when the AMC renews into a new period.
+  // `*HoursUnlimited` is the explicit "no cap" state for that phase's hour pool:
+  // when true the matching `*AmcHours` is null and nothing is deducted or alerted
+  // on. Warranty (the free phase) defaults to unlimited.
   freeAmcHours      Int?
+  freeAmcHoursUnlimited Boolean @default(true)
   freeAmcVisits     Int?
   paidAmcMonths     Int?
   paidAmcHours      Int?
+  paidAmcHoursUnlimited Boolean @default(false)
   paidAmcVisits     Int?
   hoursUsed         Decimal  @default(0)
   visitsUsed        Int      @default(0)
   // Set when the "coverage running out" alert fires, so it goes once per period.
   expiryAlertSentAt DateTime?
   warrantyAlertSentAt DateTime?
+  // Same idea for the support-hours pool: the "hours running low" alert fires
+  // once per coverage period, cleared whenever the terms or the period change.
+  hoursAlertSentAt  DateTime?
+  // Per-product mirror of the shared-contract support-hours config. Reads the
+  // active phase's hour figure (paidAmcHours / freeAmcHours) as FULL_AMC (one
+  // pool for the term) or MONTHLY (a per-month allowance tracked by
+  // SupportHoursLedger). Coverage dates are unaffected.
+  amcHoursPeriod       String   @default("FULL_AMC")  // FULL_AMC | MONTHLY
+  amcCarryForward      Boolean  @default(false)
+  amcAllowExcess       Boolean  @default(false)
+  amcExcessApproval    Boolean  @default(false)
+  // Per-product mirror of contractAllowTicketsAfterHours.
+  amcAllowTicketsAfterHours Boolean @default(true)
+  amcExcessApproverId  String?
+  amcExcessApprover    User?    @relation("ProductExcessApprover", fields: [amcExcessApproverId], references: [id], onDelete: SetNull)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
   @@unique([customerCompanyId, productId])
   @@index([productId])
+}
+
+// One calendar-month bucket of a MONTHLY support-hours pool. Serves both scopes
+// via (scope, ownerId): a shared customer contract (scope=CONTRACT, owner =
+// CustomerCompany.id) or a per-product pool (scope=PRODUCT, owner =
+// CustomerCompanyProduct.id). Only written while the pool is on MONTHLY; the
+// monthly sweep rolls unused hours forward when carry-forward is on.
+model SupportHoursLedger {
+  id          String   @id @default(uuid())
+  clientId    String
+  scope       String            // CONTRACT | PRODUCT
+  ownerId     String            // CustomerCompany.id  or  CustomerCompanyProduct.id
+  periodStart DateTime          // first day of the calendar month
+  periodLabel String            // "2026-08"
+  allocated   Int               // month allocation (snapshot of the pool's hours)
+  carriedIn   Int      @default(0)
+  used        Decimal  @default(0)
+  createdAt   DateTime @default(now())
+
+  @@unique([scope, ownerId, periodLabel])
+  @@index([clientId])
 }
 
 // A customer's request to start using a new provider product. The provider
@@ -622,6 +698,10 @@ model Ticket {
   consultantType        String?      // TECHNICAL | FUNCTIONAL
   priority              String?
   ticketStatus          String
+  // When the status last changed. The full trail lives in TicketActivity; this is
+  // the one stamp the detail screen quotes ("in this status since …") without
+  // walking the audit log.
+  statusChangedAt       DateTime?
   ticketCategory        String?
   subCategory           String?
   notifyEmails          String[]     @default([])
@@ -641,6 +721,16 @@ model Ticket {
   resolvedAt            DateTime?
   resolvedById          String?
   reopenedCount         Int          @default(0)
+  // Why the client sent it back. Required on every reopen and pushed to the
+  // assigned agents + tenant admins; the full history lives in TicketActivity.
+  reopenReason          String?
+  reopenedAt            DateTime?
+  reopenedById          String?
+
+  // Client acknowledgement of the resolution. The customer contact confirms the
+  // fix, and that acknowledgement is what closes the ticket.
+  acknowledgedAt        DateTime?
+  acknowledgedById      String?
 
   // Customer-created ticket approval gate.
   // NONE = staff-created (no gate); PENDING = awaiting tenant-Admin approval;
@@ -668,6 +758,7 @@ model Ticket {
   approvals             TicketApproval[]
   messages              TicketMessage[]
   worklogs              TicketWorklog[]
+  comments              TicketComment[]
 
   @@unique([clientId, ticketNumber])
   @@index([clientId, customerCompanyId])
@@ -726,11 +817,59 @@ model TicketTask {
   dueDate        DateTime?
   sortOrder      Int       @default(0)
   completedAt    DateTime?
+  // Time the task stood in IN_PROGRESS, summed from its status trail. Audit only:
+  // it books no TicketWorklog and is never charged to the support-hours pool —
+  // billable time is logged by hand on the Tasks tab. Stored so the list renders
+  // without walking the events; a task that is in progress right now has its open
+  // interval added on read.
+  hoursSpent     Decimal?
   createdBy      String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
+  statusEvents   TicketTaskStatusEvent[]
+  comments       TicketComment[]
+  worklogs       TicketWorklog[]
+
   @@index([ticketId])
+}
+
+// Timestamped trail of every status change on a task. Replaces the old
+// startedAt/endedAt clock: time spent is the sum of the intervals the task stood
+// in IN_PROGRESS, and the trail itself is what the task dialog shows as its audit.
+model TicketTaskStatusEvent {
+  id          String     @id @default(uuid())
+  taskId      String
+  task        TicketTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  ticketId    String
+  fromStatus  String?
+  toStatus    String
+  actorUserId String?
+  actorName   String?
+  at          DateTime   @default(now())
+
+  @@index([taskId, at])
+  @@index([ticketId, at])
+}
+
+// Comments on a ticket and on its tasks. `taskId` null is a ticket-level comment;
+// set, a comment on that task. Both streams surface in the Comments tab, which is
+// why they share one table. Ticket-level comments are visible to the customer;
+// task ones are staff-only, because tasks themselves are.
+model TicketComment {
+  id           String      @id @default(uuid())
+  ticketId     String
+  ticket       Ticket      @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  taskId       String?
+  task         TicketTask? @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorUserId String?
+  authorName   String?
+  body         String
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([ticketId, createdAt])
+  @@index([taskId, createdAt])
 }
 
 // Approvals (Approvals tab)
@@ -789,12 +928,57 @@ model TicketWorklog {
   workDate       DateTime
   hours          Decimal
   note           String?
+  // Optionally, the task this time was spent on. SetNull rather than Cascade —
+  // the hours were really spent and stay charged to the customer's pool even if
+  // the task is later deleted — so the title is denormalised alongside it, the
+  // same way consultantName is, and the entry keeps saying what it was for.
+  taskId         String?
+  task           TicketTask? @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  taskTitle      String?
   createdBy      String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   @@index([ticketId])
   @@index([clientId, workDate])
+  @@index([taskId])
+}
+
+// A consultant asked to log time beyond a client's support-hours allowance, on a
+// pool whose config demands approval. The record is the *permission*, not the
+// entry: approving unlocks over-cap logging for that pool, it does not book any
+// hours. One live row per pool per period, so a month that restores the
+// allowance also demands fresh approval rather than riding an old one.
+model SupportHoursExcessRequest {
+  id                String   @id @default(uuid())
+  clientId          String
+  customerCompanyId String
+  company           CustomerCompany @relation(fields: [customerCompanyId], references: [id], onDelete: Cascade)
+  // Which pool. CONTRACT = the shared customer contract (ownerId is the company);
+  // PRODUCT = one CustomerCompanyProduct (ownerId is that row).
+  scope             String
+  ownerId           String
+  // MONTHLY pools re-approve each calendar month; FULL_AMC pools use the 'ALL'
+  // sentinel rather than null, or Postgres would treat every row as distinct and
+  // the unique index would let duplicates through.
+  periodLabel       String   @default("ALL")
+  // What the cap and usage were when the request was raised, so the approver sees
+  // the position they actually decided on even after more time is logged.
+  allocated         Int
+  usedAtRequest     Decimal
+  productName       String?
+  requestedById     String?
+  requestedByName   String?
+  approverUserId    String?
+  approverName      String?
+  status            String   @default("PENDING")   // PENDING | APPROVED | REJECTED
+  decisionNote      String?
+  decidedAt         DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([scope, ownerId, periodLabel])
+  @@index([clientId, status])
 }
 
 model MessageAttachment {

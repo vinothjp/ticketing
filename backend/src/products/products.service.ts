@@ -191,19 +191,37 @@ export class ProductsService {
 
   /**
    * Pick the consultant to auto-assign for a module + track (ticket routing).
-   * Prefers the primary, then the first free agent in the list.
+   * Always the primary, then list order — never load-balanced.
    */
-  async resolveConsultant(clientId: string, moduleId: string, track: 'TECHNICAL' | 'FUNCTIONAL'): Promise<string | null> {
+  async resolveConsultant(clientId: string, moduleId: string, track: 'TECHNICAL' | 'FUNCTIONAL' | null): Promise<string | null> {
     const agents = await this.prisma.moduleConsultant.findMany({
-      where: { moduleId, track, module: { product: { clientId } } },
+      // No track on the ticket (single-track or unsplit module) — any agent will do.
+      where: { moduleId, ...(track ? { track } : {}), module: { product: { clientId } } },
       orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }],
     });
-    if (agents.length === 0) return null;
-    const hasOpenTicket = async (userId: string) =>
-      (await this.prisma.ticketTechnician.count({ where: { userId, ticket: { clientId, resolvedAt: null, closedDate: null } } })) > 0;
-    for (const a of agents) {
-      if (!(await hasOpenTicket(a.userId))) return a.userId;
-    }
-    return agents[0].userId;
+    return this.firstInOrder(agents);
+  }
+
+  /**
+   * Product-screen consultants for a product that isn't split into modules
+   * (or whose module carries no list). Same primary-then-list-order rule.
+   */
+  async resolveProductConsultant(clientId: string, productId: string, track: 'TECHNICAL' | 'FUNCTIONAL' | null): Promise<string | null> {
+    const agents = await this.prisma.productConsultant.findMany({
+      where: { productId, ...(track ? { track } : {}), product: { clientId } },
+      orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }],
+    });
+    return this.firstInOrder(agents);
+  }
+
+  /**
+   * The first agent in the caller's order — the primary, since every query sorts
+   * `isPrimary desc, sortOrder asc`. Routing is deliberately NOT balanced by
+   * workload: a consultant who already holds open tickets still gets the next
+   * one, so the same product/module always lands on the same person. The only
+   * reason to move down a tier is an empty list, never a busy agent.
+   */
+  private firstInOrder(agents: { userId: string }[]): string | null {
+    return agents[0]?.userId ?? null;
   }
 }

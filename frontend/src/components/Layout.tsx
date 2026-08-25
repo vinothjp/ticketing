@@ -147,10 +147,16 @@ export default function Layout({ children }: { children: ReactNode }) {
               }
               return { ...group, items };
             }
-            // Client Visits is admin-only on the API (ClientVisitsController @Roles('Admin')),
-            // so agents shouldn't see a link that would just 403.
-            if (group.label === 'Workspace' && !isAdmin) {
-              return { ...group, items: group.items.filter((i) => i.to !== '/client-visits') };
+            // Agents keep Client Visits: the API gives them their own assigned
+            // visits so they can report hours and status back. They also get
+            // Clients, read-only — a consultant named as an excess-hours approver
+            // decides those requests on the client's product screen, so the page
+            // has to be reachable from their login.
+            if (group.label === 'Workspace' && !isAdmin && !isCustomer) {
+              return {
+                ...group,
+                items: [...group.items, { to: '/admin/customer-companies', label: 'Clients', icon: Building2 }],
+              };
             }
             return group;
           });

@@ -57,10 +57,25 @@ export class CustomerCompaniesService {
       supportPeriodStart: c.supportPeriodStart,
       supportPeriodEnd: c.supportPeriodEnd,
       supportAlertThresholdPct: c.supportAlertThresholdPct,
+      // Which coverage model this client is on — the tiles badge it.
+      contractScope: c.contractScope,
       contactCount: c._count.users,
       ticketCount: c._count.tickets,
       createdAt: c.createdAt,
     }));
+  }
+
+  /**
+   * Bare id+name list of the tenant's clients, for the ticket form's client picker.
+   * `list()` above is Admin-only and exposes contract/contact detail; an agent
+   * raising a ticket needs to name the client and nothing more.
+   */
+  async ticketClients(clientId: string) {
+    return this.prisma.customerCompany.findMany({
+      where: { clientId, status: 'ACTIVE' },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true },
+    });
   }
 
   private async getOwned(id: string, clientId: string) {
@@ -97,20 +112,32 @@ export class CustomerCompaniesService {
   }
 
   /**
-   * Products (with modules, no consultant detail) a viewer may raise tickets for:
-   * a customer sees only their company's products; staff see all active products.
+   * Products (with modules, no consultant detail) a viewer may raise tickets for.
+   * Always scoped to one customer company — the products actually assigned to it,
+   * never the whole catalogue. A customer's company is their own; staff pass the
+   * client they picked on the ticket form, so with no client chosen there is
+   * nothing to offer yet.
    */
-  async ticketProducts(clientId: string, customerCompanyId: string | null, isStaff: boolean) {
-    let idFilter: { id: { in: string[] } } | undefined;
-    if (!isStaff) {
-      if (!customerCompanyId) return [];
-      // Only products whose AMC is still active — expired/terminated ones drop off.
-      const links = await this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId, status: 'ACTIVE' } });
-      if (links.length === 0) return [];
-      idFilter = { id: { in: links.map((l) => l.productId) } };
-    }
+  /**
+   * The tenant's whole active catalogue, for an INTERNAL ticket — one raised with
+   * no client on it, so no customer contract scopes the list. Same projection as
+   * `ticketProducts` so the ticket form renders both the same way.
+   */
+  internalTicketProducts(clientId: string) {
     return this.prisma.product.findMany({
-      where: { clientId, isActive: true, ...(idFilter ?? {}) },
+      where: { clientId, isActive: true },
+      orderBy: [{ sortOrder: 'asc' }],
+      select: { id: true, name: true, code: true, autoAssign: true, modules: { select: { id: true, name: true, tracks: true }, orderBy: [{ sortOrder: 'asc' }] } },
+    });
+  }
+
+  async ticketProducts(clientId: string, customerCompanyId: string | null) {
+    if (!customerCompanyId) return [];
+    // Only products whose AMC is still active — expired/terminated ones drop off.
+    const links = await this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId, status: 'ACTIVE' } });
+    if (links.length === 0) return [];
+    return this.prisma.product.findMany({
+      where: { clientId, isActive: true, id: { in: links.map((l) => l.productId) } },
       orderBy: [{ sortOrder: 'asc' }],
       select: { id: true, name: true, code: true, autoAssign: true, modules: { select: { id: true, name: true, tracks: true }, orderBy: [{ sortOrder: 'asc' }] } },
     });

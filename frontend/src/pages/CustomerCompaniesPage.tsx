@@ -8,6 +8,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import CompanyLogo from '@/components/CompanyLogo';
+import { useAuth } from '../context/AuthContext';
+import { MyExcessApprovals } from '@/components/ExcessHoursApprovals';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 
 interface Company {
@@ -22,6 +24,7 @@ interface Company {
   maxContacts: number;
   contactCount: number;
   ticketCount: number;
+  contractScope?: 'PRODUCT' | 'CUSTOMER';
 }
 interface Contact { id: string; username: string; email: string; isActive: boolean; }
 
@@ -33,6 +36,8 @@ const empty = {
 };
 
 export default function CustomerCompaniesPage() {
+  const { user } = useAuth();
+  const isAdmin = !!user?.roles.includes('Admin');
   const qc = useQueryClient();
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Company | null>(null);
@@ -134,6 +139,10 @@ export default function CustomerCompaniesPage() {
     });
     setFormOpen(true);
   };
+  // Admins manage the client from the tile's dialog; a consultant is here only to
+  // decide an excess-hours request, so their tile goes straight to the client.
+  const open = (c: Company) =>
+    isAdmin ? openEdit(c) : navigate(`/admin/clients/${c.id}`);
 
   const hasLogo = editing ? !!current?.logoUrl : !!pendingPreview;
 
@@ -144,7 +153,7 @@ export default function CustomerCompaniesPage() {
           <h1 className="text-2xl font-bold text-foreground">Clients</h1>
           <p className="text-sm text-muted-foreground">External clients whose contacts can log in and raise tickets.</p>
         </div>
-        <Button onClick={openCreate}><Plus className="size-4" /> New Client</Button>
+        {isAdmin && <Button onClick={openCreate}><Plus className="size-4" /> New Client</Button>}
       </div>
 
       <div className="relative mb-5 max-w-sm">
@@ -205,13 +214,13 @@ export default function CustomerCompaniesPage() {
 
             {editing && (
               <>
-                <ContactsSection companyId={editing.id} maxContacts={form.maxContacts} />
                 <Button variant="outline" className="w-full" onClick={() => { const id = editing.id; closeForm(); navigate(`/admin/clients/${id}`); }}>
                   <Boxes className="size-4" /> Products &amp; consultants
                 </Button>
                 <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
                   Products, warranty, AMC and default consultants are managed there.
                 </p>
+                <ContactsSection companyId={editing.id} maxContacts={form.maxContacts} />
               </>
             )}
 
@@ -237,6 +246,10 @@ export default function CustomerCompaniesPage() {
         </DialogContent>
       </Dialog>
 
+      {/* What is waiting on this user, wherever it lives — an approver should not
+          have to guess which client raised the request. */}
+      <MyExcessApprovals />
+
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
       ) : filtered.length === 0 ? (
@@ -252,25 +265,36 @@ export default function CustomerCompaniesPage() {
               key={c.id}
               role="button"
               tabIndex={0}
-              onClick={() => openEdit(c)}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openEdit(c); } }}
+              onClick={() => open(c)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(c); } }}
               className="relative flex cursor-pointer flex-col items-center gap-3 rounded-xl border bg-card p-6 text-center transition-colors hover:border-primary/50 hover:bg-muted/40"
             >
-              <Button
-                variant="ghost"
-                size="icon"
-                className="absolute top-2 right-2 size-7 text-muted-foreground hover:text-destructive"
-                title={`Delete ${c.name}`}
-                onClick={(e) => { e.stopPropagation(); if (confirm(`Delete ${c.name}?`)) deleteMutation.mutate(c.id); }}
-              >
-                <Trash2 className="size-4" />
-              </Button>
+              {isAdmin && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute top-2 right-2 size-7 text-muted-foreground hover:text-destructive"
+                  title={`Delete ${c.name}`}
+                  onClick={(e) => { e.stopPropagation(); if (confirm(`Delete ${c.name}?`)) deleteMutation.mutate(c.id); }}
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              )}
               <CompanyLogo logoUrl={c.logoUrl} />
               <div className="min-w-0">
                 <div className="truncate font-semibold text-foreground">{c.name}</div>
                 <div className="text-xs text-muted-foreground">{c.code || '—'}</div>
               </div>
-              <Badge variant={c.status === 'ACTIVE' ? 'success' : 'secondary'}>{c.status}</Badge>
+              <div className="flex flex-wrap items-center justify-center gap-1.5">
+                <Badge variant={c.status === 'ACTIVE' ? 'success' : 'secondary'}>{c.status}</Badge>
+                {/* Which coverage model this client is on. A client is always on
+                    exactly one, so this reads as a fact, not a toggle. */}
+                <Badge variant="outline" title={c.contractScope === 'CUSTOMER'
+                  ? 'One shared contract covering every product'
+                  : 'Each product carries its own warranty/AMC coverage'}>
+                  {c.contractScope === 'CUSTOMER' ? 'One contract' : 'Per product'}
+                </Badge>
+              </div>
               <div className="text-xs text-muted-foreground">
                 {c.contactCount}/{c.maxContacts} people · {c.ticketCount} tickets
               </div>
@@ -305,9 +329,6 @@ function ContactsSection({ companyId, maxContacts }: { companyId: string; maxCon
           {!c.isActive && <span className="text-xs text-muted-foreground">Inactive</span>}
         </div>
       ))}
-      <p className="text-xs text-muted-foreground">
-        People are managed by this company’s own admin. You only seed the first admin at creation.
-      </p>
     </div>
   );
 }

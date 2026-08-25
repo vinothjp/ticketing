@@ -20,6 +20,8 @@ interface License {
 interface MyClientDetail {
   id: string; name: string; code: string; status: 'ACTIVE' | 'SUSPENDED' | 'TRIAL';
   contactEmail?: string | null; contactPhone?: string | null; logoUrl?: string | null;
+  ticketReopenWindowDays: number;
+  ticketAutoCloseDays: number;
   license: License | null; _count: { users: number };
 }
 
@@ -27,6 +29,16 @@ const orgSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   contactEmail: z.string().email('Enter a valid email').optional().or(z.literal('')),
   contactPhone: z.string().optional(),
+  // Days a resolved ticket stays reopenable. Kept as a string so the input can be
+  // cleared while typing; coerced on submit.
+  ticketReopenWindowDays: z
+    .string()
+    .refine((v) => Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 3650, 'Enter 1 to 3650 days'),
+  // Days a resolved ticket waits for the client's acknowledgement before it
+  // closes itself. Same string-then-coerce treatment as the reopen window.
+  ticketAutoCloseDays: z
+    .string()
+    .refine((v) => Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 365, 'Enter 1 to 365 days'),
 });
 type OrgValues = z.infer<typeof orgSchema>;
 
@@ -47,7 +59,7 @@ export default function OrganizationPage() {
 
   const form = useForm<OrgValues>({
     resolver: zodResolver(orgSchema),
-    defaultValues: { name: '', contactEmail: '', contactPhone: '' },
+    defaultValues: { name: '', contactEmail: '', contactPhone: '', ticketReopenWindowDays: '30', ticketAutoCloseDays: '3' },
   });
 
   useEffect(() => {
@@ -56,6 +68,8 @@ export default function OrganizationPage() {
       name: client.name,
       contactEmail: client.contactEmail ?? '',
       contactPhone: client.contactPhone ?? '',
+      ticketReopenWindowDays: String(client.ticketReopenWindowDays ?? 30),
+      ticketAutoCloseDays: String(client.ticketAutoCloseDays ?? 3),
     });
   }, [client, form]);
 
@@ -65,6 +79,8 @@ export default function OrganizationPage() {
         ...values,
         contactEmail: values.contactEmail || undefined,
         contactPhone: values.contactPhone || undefined,
+        ticketReopenWindowDays: Number(values.ticketReopenWindowDays),
+        ticketAutoCloseDays: Number(values.ticketAutoCloseDays),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['my-client-detail'] });
@@ -195,6 +211,40 @@ export default function OrganizationPage() {
                     <FormItem>
                       <FormLabel>Contact Phone</FormLabel>
                       <FormControl><Input {...field} /></FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="ticketReopenWindowDays"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Ticket reopen window (days)</FormLabel>
+                      <FormControl>
+                        <Input type="number" min={1} max={3650} step={1} className="max-w-40" {...field} />
+                      </FormControl>
+                      <p className="text-xs text-muted-foreground">
+                        How long after a ticket is resolved it can still be reopened. Past this window
+                        the ticket screen asks the user to raise a new ticket instead.
+                      </p>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="ticketAutoCloseDays"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Auto-close after (days)</FormLabel>
+                      <FormControl>
+                        <Input type="number" min={1} max={365} step={1} className="max-w-40" {...field} />
+                      </FormControl>
+                      <p className="text-xs text-muted-foreground">
+                        How long a resolved ticket waits for the client's acknowledgement before it
+                        closes itself. Only client tickets wait — internal ones are closed by staff.
+                      </p>
                       <FormMessage />
                     </FormItem>
                   )}

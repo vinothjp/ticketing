@@ -114,7 +114,7 @@ export default function App() {
                         <Route path="/projects" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectListPage /></RoleGate>} />
                         <Route path="/projects/analytics" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectAnalyticsPage /></RoleGate>} />
                         <Route path="/timesheet" element={<RoleGate allow={isStaff} redirectTo="/tickets"><TimesheetPage /></RoleGate>} />
-                        <Route path="/client-visits" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientVisitsPage /></RoleGate>} />
+                        <Route path="/client-visits" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ClientVisitsPage /></RoleGate>} />
                         <Route path="/client-visits/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientVisitFormPage /></RoleGate>} />
                         <Route path="/client-visits/:id/edit" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientVisitFormPage /></RoleGate>} />
                         <Route path="/projects/:id" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectDetailPage /></RoleGate>} />
@@ -124,10 +124,10 @@ export default function App() {
                         <Route path="/change-requests/:id" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ChangeRequestDetailPage /></RoleGate>} />
                         {/* Admin-only sections — non-admins are redirected to their tickets */}
                         <Route path="/users" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><UsersPage /></RoleGate>} />
-                        <Route path="/admin/customer-companies" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><CustomerCompaniesPage /></RoleGate>} />
-                        <Route path="/admin/clients/:companyId" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientDetailPage /></RoleGate>} />
+                        <Route path="/admin/customer-companies" element={<RoleGate allow={isStaff} redirectTo="/tickets"><CustomerCompaniesPage /></RoleGate>} />
+                        <Route path="/admin/clients/:companyId" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ClientDetailPage /></RoleGate>} />
                         <Route path="/admin/clients/:companyId/assign" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientAssignProductPage /></RoleGate>} />
-                        <Route path="/admin/clients/:companyId/products/:cpId" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientProductPage /></RoleGate>} />
+                        <Route path="/admin/clients/:companyId/products/:cpId" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ClientProductPage /></RoleGate>} />
                         <Route path="/roles" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><RolesPage /></RoleGate>} />
                         <Route path="/organization" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><OrganizationPage /></RoleGate>} />
                         <Route path="/admin/templates" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><TemplatesListPage /></RoleGate>} />

@@ -26,24 +26,40 @@ export class SupportHoursService {
     private notifications: NotificationsService,
   ) {}
 
-  /** Consumed vs agreed support hours for a company. `hasPool:false` when no pool is set. */
+  /**
+   * A company-wide support-hours figure, reported from the pool the customer's
+   * coverage scope actually uses.
+   *
+   * Only a shared customer contract HAS a company-wide pool. Under per-product
+   * coverage each product carries its own pool, so there is no single company
+   * total to report and this answers `hasPool:false` — the per-product figures
+   * come from `CustomerProductsService.productSupportHours` instead.
+   *
+   * The legacy `agreedSupportHours` / `supportPeriod*` columns are deliberately
+   * NOT read here: they belong to neither scope, so reporting them let a customer
+   * see (and be alerted on) a pool that governs nothing. They remain on the model
+   * and the DTO as dormant data — see CLAUDE.md.
+   */
   async usageForCompany(company: CustomerCompany): Promise<SupportUsage> {
-    if (company.agreedSupportHours == null) return { hasPool: false };
-    const agreed = Number(company.agreedSupportHours);
+    if (company.contractScope !== 'CUSTOMER') return { hasPool: false };
+    if (company.contractHoursUnlimited || company.contractHours == null) return { hasPool: false };
+    const agreed = Number(company.contractHours);
 
+    // Same two sources the contract view shows: usage logged straight against the
+    // pool, plus time consultants logged on this company's tickets in the period.
     const where: Prisma.TicketWorklogWhereInput = {
       clientId: company.clientId,
       ticket: { customerCompanyId: company.id },
     };
-    if (company.supportPeriodStart || company.supportPeriodEnd) {
+    if (company.contractStart || company.contractEnd) {
       const workDate: Prisma.DateTimeFilter = {};
-      if (company.supportPeriodStart) workDate.gte = company.supportPeriodStart;
-      if (company.supportPeriodEnd) workDate.lte = company.supportPeriodEnd;
+      if (company.contractStart) workDate.gte = company.contractStart;
+      if (company.contractEnd) workDate.lte = company.contractEnd;
       where.workDate = workDate;
     }
 
     const agg = await this.prisma.ticketWorklog.aggregate({ where, _sum: { hours: true } });
-    const used = Number(agg._sum.hours ?? 0);
+    const used = Number(company.contractHoursUsed) + Number(agg._sum.hours ?? 0);
     const pct = agreed > 0 ? Math.round((used / agreed) * 100) : 0;
     return {
       hasPool: true,
@@ -52,8 +68,8 @@ export class SupportHoursService {
       remainingHours: Math.max(0, agreed - used),
       pct,
       thresholdPct: company.supportAlertThresholdPct,
-      periodStart: company.supportPeriodStart,
-      periodEnd: company.supportPeriodEnd,
+      periodStart: company.contractStart,
+      periodEnd: company.contractEnd,
       overThreshold: pct >= company.supportAlertThresholdPct,
     };
   }
@@ -65,8 +81,13 @@ export class SupportHoursService {
   }
 
   /**
-   * Recompute a company's usage after time is logged, and fire the "hours running
-   * low" alert (in-app + email) once per period when the threshold is first crossed.
+   * Recompute a company's usage and fire the "hours running low" alert (in-app +
+   * email) once per period when the threshold is first crossed.
+   *
+   * No longer called on the ticket-worklog path — that alert is raised by
+   * `CustomerProductsService.alertOnLoggedHours`, which measures against the
+   * ticket's own product pool under per-product coverage. This remains for
+   * callers that want the company-wide contract figure.
    */
   async recomputeAndAlert(companyId: string | null | undefined, clientId: string) {
     if (!companyId) return;

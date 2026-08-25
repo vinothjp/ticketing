@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ListChecks } from 'lucide-react';
@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { getPriorityMeta, formatDueStatus, isTerminalStatus, type TicketSummary } from './tickets/ticketHelpers';
+import { getPriorityMeta, formatDueStatus, isTerminalStatus, isOverdueTicket, isCreatedTodayTicket, type TicketSummary } from './tickets/ticketHelpers';
 
 interface UserOption { id: string; username: string; }
 interface MyTask {
@@ -105,10 +105,10 @@ export default function DashboardPage() {
   }, [scoped]);
 
   // Overdue = past due date and not yet resolved/closed (a condition, not a status).
-  const overdueCount = useMemo(
-    () => scoped.filter((t) => !isTerminalStatus(t.ticketStatus) && t.dueDate && new Date(t.dueDate) < new Date()).length,
-    [scoped],
-  );
+  const overdueCount = useMemo(() => scoped.filter(isOverdueTicket).length, [scoped]);
+
+  // Raised today and not already overdue — the fresh half of the queue.
+  const createdTodayCount = useMemo(() => scoped.filter(isCreatedTodayTicket).length, [scoped]);
 
 
   const stats = useMemo(() => {
@@ -133,12 +133,12 @@ export default function DashboardPage() {
     return { open, dueToday, slaAtRisk, avgResolutionHrs };
   }, [scoped]);
 
+  // Incoming order — newest arrivals lead, matching the ticket list default. Sorting by due
+  // date instead pinned the overdue backlog to the top and buried anything just raised.
   const queue = useMemo(
-    () => [...stats.open].sort((a, b) => {
-      if (!a.dueDate) return 1;
-      if (!b.dueDate) return -1;
-      return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime();
-    }).slice(0, 6),
+    () => [...stats.open]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 6),
     [stats.open],
   );
 
@@ -194,11 +194,17 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Per-status breakdown — same card style/size as the KPI row, click to filter the list */}
+      {/* Per-status breakdown — same card style/size as the KPI row, click to filter the list.
+          The two condition tiles (Created today / Overdue) ride along at the end, so the desktop
+          column count is taken from the real tile count: one evenly-sized row, no wrapping,
+          however many statuses the tenant actually uses. */}
       {statusBreakdown.length > 0 && (
         <div className="mb-8">
           <div className="mb-2 text-sm font-medium text-muted-foreground">By status</div>
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+          <div
+            className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:[grid-template-columns:repeat(var(--status-tiles),minmax(0,1fr))]"
+            style={{ '--status-tiles': statusBreakdown.length + 2 } as CSSProperties}
+          >
             {statusBreakdown.map((s) => (
               <Link
                 key={s.status}
@@ -209,6 +215,10 @@ export default function DashboardPage() {
                 <div className="mt-1 text-3xl font-bold text-foreground">{s.count}</div>
               </Link>
             ))}
+            <Link to="/tickets?view=today" className="rounded-lg bg-muted/50 p-4 transition-colors hover:bg-muted">
+              <div className="truncate text-sm text-muted-foreground">Created today</div>
+              <div className="mt-1 text-3xl font-bold text-foreground">{createdTodayCount}</div>
+            </Link>
             <Link to="/tickets?view=overdue" className="rounded-lg bg-muted/50 p-4 transition-colors hover:bg-muted">
               <div className="truncate text-sm text-muted-foreground">Overdue</div>
               <div className="mt-1 text-3xl font-bold text-foreground">{overdueCount}</div>

@@ -11,7 +11,7 @@ import { CustomerProductsService } from './customer-products.service';
 import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto } from './dto/customer-company.dto';
 import {
   AssignProductDto, UpdateProductTermsDto, RenewAmcDto, GrantRequestDto, DeclineRequestDto, SetContractDto,
-  RenewContractDto, AddCustomerConsultantDto, LogUsageDto,
+  RenewContractDto, AddCustomerConsultantDto, LogUsageDto, DecideExcessDto,
 } from './dto/customer-product.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
@@ -19,7 +19,10 @@ import { RolesGuard } from '../auth/roles.guard';
 import { StaffGuard } from '../auth/staff.guard';
 import { Roles } from '../auth/roles.decorator';
 
-type AuthedRequest = { user: { id: string; clientId: string } };
+type AuthedRequest = { user: { id: string; clientId: string; roles: string[] } };
+
+/** Consultants read the client screens; only a tenant Admin sees what a client pays. */
+const isAdmin = (req: AuthedRequest) => req.user.roles.includes('Admin');
 
 @UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
 @Controller('api/customer-companies')
@@ -29,6 +32,38 @@ export class CustomerCompaniesController {
     private supportHours: SupportHoursService,
     private customerProducts: CustomerProductsService,
   ) {}
+
+  // ---- Excess support-hours approvals ------------------------------------
+  // Readable by any internal staff (the client screens are read-only for
+  // consultants); the decision itself is checked in the service, where only the
+  // named approver or a tenant Admin gets through.
+
+  /** Open requests this user must decide, across every client — for the bell//badge. */
+  @Get('excess-requests/mine')
+  @UseGuards(StaffGuard)
+  myExcessRequests(@Request() req: AuthedRequest) {
+    return this.customerProducts.myPendingExcessRequests(req.user.clientId, req.user.id);
+  }
+
+  @Post('excess-requests/:reqId/approve')
+  @UseGuards(StaffGuard)
+  approveExcess(
+    @Param('reqId') reqId: string,
+    @Body() body: DecideExcessDto,
+    @Request() req: AuthedRequest,
+  ) {
+    return this.customerProducts.decideExcessRequest(reqId, req.user.clientId, req.user, true, body?.note);
+  }
+
+  @Post('excess-requests/:reqId/reject')
+  @UseGuards(StaffGuard)
+  rejectExcess(
+    @Param('reqId') reqId: string,
+    @Body() body: DecideExcessDto,
+    @Request() req: AuthedRequest,
+  ) {
+    return this.customerProducts.decideExcessRequest(reqId, req.user.clientId, req.user, false, body?.note);
+  }
 
   // ---- Provider: product requests queue (declared before :id routes) ----
   @Get('product-requests')
@@ -58,9 +93,9 @@ export class CustomerCompaniesController {
 
   // ---- Provider: a company's purchased products + AMC/warranty terms ----
   @Get(':id/product-contract')
-  @Roles('Admin')
+  @Roles('Admin', 'Viewer')
   getContract(@Param('id') id: string, @Request() req: AuthedRequest) {
-    return this.customerProducts.getContract(id, req.user.clientId);
+    return this.customerProducts.getContract(id, req.user.clientId, !isAdmin(req));
   }
 
   @Put(':id/product-contract')
@@ -82,9 +117,9 @@ export class CustomerCompaniesController {
   }
 
   @Get(':id/purchased-products')
-  @Roles('Admin')
+  @Roles('Admin', 'Viewer')
   purchasedProducts(@Param('id') id: string, @Request() req: AuthedRequest) {
-    return this.customerProducts.listCompanyProducts(id, req.user.clientId);
+    return this.customerProducts.listCompanyProducts(id, req.user.clientId, !isAdmin(req));
   }
 
   @Post(':id/purchased-products')
@@ -118,8 +153,14 @@ export class CustomerCompaniesController {
   }
 
   // ---- Provider: customer-level consultants (auto-assignment overrides) ----
+  @Get(':id/excess-requests')
+  @Roles('Admin', 'Viewer')
+  excessRequests(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.customerProducts.listExcessRequests(req.user.clientId, id);
+  }
+
   @Get(':id/consultants')
-  @Roles('Admin')
+  @Roles('Admin', 'Viewer')
   listConsultants(@Param('id') id: string, @Request() req: AuthedRequest) {
     return this.customerProducts.listCustomerConsultants(id, req.user.clientId);
   }
@@ -176,7 +217,7 @@ export class CustomerCompaniesController {
 
   // One client's core details (declared last so it doesn't shadow static routes).
   @Get(':id')
-  @Roles('Admin')
+  @Roles('Admin', 'Viewer')
   getOne(@Param('id') id: string, @Request() req: AuthedRequest) {
     return this.service.getOne(id, req.user.clientId);
   }

@@ -45,6 +45,7 @@ export default function DynamicTicketField({
   systemDisplayValue,
   files,
   onFilesChange,
+  hideHelperText,
 }: {
   field: MergedTemplateField;
   value: any;
@@ -55,6 +56,8 @@ export default function DynamicTicketField({
   systemDisplayValue?: string;
   files?: File[];
   onFilesChange?: (files: File[]) => void;
+  /** The Create Ticket form suppresses per-field hints; the designer preview keeps them. */
+  hideHelperText?: boolean;
 }) {
   const required = field.requirement === 'MANDATORY';
   const disabled = field.readOnly;
@@ -224,7 +227,7 @@ export default function DynamicTicketField({
       {error ? (
         <p className="text-xs text-destructive">{error}</p>
       ) : (
-        field.helperText && <p className="text-xs text-muted-foreground">{field.helperText}</p>
+        !hideHelperText && field.helperText && <p className="text-xs text-muted-foreground">{field.helperText}</p>
       )}
     </div>
   );

@@ -3,7 +3,6 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { ArrowLeft, ShieldCheck, Wrench, Clock, MapPin, RefreshCw, Trash2, Users } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,14 +10,25 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import ProductIcon from '@/components/ProductIcon';
 import ConsultantGrid from '@/components/ConsultantGrid';
+import SupportHoursChoice from '@/components/SupportHoursChoice';
+import SupportHoursConfig from '@/components/SupportHoursConfig';
+import CoverageMeter from '@/components/CoverageMeter';
+import ExcessHoursApprovals from '@/components/ExcessHoursApprovals';
+import { useAuth } from '../../context/AuthContext';
 
-interface Pool { allocated: number | null; used: number; left: number | null }
+interface Pool { allocated: number | null; used: number; left: number | null; unlimited?: boolean }
 interface Cov { end: string | null; label: string; pct: number; active: boolean }
+interface Support {
+  period: 'FULL_AMC' | 'MONTHLY'; carryForward: boolean; allowTicketsAfterHours: boolean; allowExcess: boolean; excessApproval: boolean;
+  approverId: string | null; approverName: string | null;
+  currentAllocated: number | null; carriedIn: number; currentUsed: number; available: number | null;
+}
 interface Purchased {
   id: string; productId: string; productName: string; productCode: string; status: string; purchaseDate: string | null; agents: string[];
   warranty: Cov & { months: number }; amc: Cov & { start: string | null; type: 'FREE' | 'PAID'; freeMonths: number; daysLeft: number | null };
   hours: Pool; visits: Pool;
-  paidTerms: { months: number | null; monthlyCost: number | null; hours: number | null; visits: number | null };
+  paidTerms: { months: number | null; monthlyCost: number | null; hoursUnlimited?: boolean; hours: number | null; visits: number | null };
+  support?: Support;
 }
 interface Consultant { id: string; userId: string; username: string | null; productId: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
 interface CatAgent { user: { id: string; username: string } }
@@ -32,21 +42,6 @@ const statusCls = (s: string) =>
   : s === 'EXPIRED' ? 'bg-destructive/15 text-destructive border-destructive/30'
   : 'bg-muted text-muted-foreground border-border';
 
-function Meter({ icon, title, subtitle, pct, active, right }: { icon: React.ReactNode; title: string; subtitle: string; pct: number; active: boolean; right?: string }) {
-  const warn = active && pct >= 85;
-  return (
-    <div className="space-y-1.5 rounded-lg border p-3">
-      <div className="flex items-center justify-between text-sm">
-        <span className="flex items-center gap-1.5 font-medium text-foreground">{icon} {title}</span>
-        <span className={cn('text-xs', !active ? 'text-destructive' : warn ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground')}>{right ?? (active ? '' : 'Ended')}</span>
-      </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-        <div className={cn('h-full rounded-full', !active ? 'bg-destructive' : warn ? 'bg-amber-500' : 'bg-primary')} style={{ width: `${Math.min(100, pct)}%` }} />
-      </div>
-      <div className="text-xs text-muted-foreground">{subtitle}</div>
-    </div>
-  );
-}
 function Num({ label, value, onChange, type = 'number', min }: { label: string; value: string | number; onChange: (v: string) => void; type?: string; min?: string | number }) {
   return (
     <div className="space-y-1">
@@ -66,6 +61,7 @@ export default function ClientProductPage() {
   const { data: products = [] } = useQuery<Purchased[]>({ queryKey: ['client-products', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}/purchased-products`)).data });
   const { data: consultants = [] } = useQuery<Consultant[]>({ queryKey: ['client-consultants', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}/consultants`)).data });
   const { data: catalog = [] } = useQuery<CatProduct[]>({ queryKey: ['products'], queryFn: async () => (await api.get('/api/products')).data });
+  const { data: staff = [] } = useQuery<StaffUser[]>({ queryKey: ['users'], queryFn: async () => (await api.get('/api/users')).data });
 
   const cp = products.find((p) => p.id === cpId);
   const cat = catalog.find((c) => c.id === cp?.productId);
@@ -78,33 +74,67 @@ export default function ClientProductPage() {
     return [...byId.values()];
   })();
 
-  const [terms, setTerms] = useState({ coverageType: 'WARRANTY' as 'WARRANTY' | 'AMC', startDate: '', endDate: '', supportHours: 0, visits: 0, contractAmount: 0 });
+  // Warranty is free support, so a new/unsaved coverage starts Unlimited.
+  const [terms, setTerms] = useState({ coverageType: 'WARRANTY' as 'WARRANTY' | 'AMC', startDate: '', endDate: '', supportHoursUnlimited: true, supportHours: 0, visits: 0, contractAmount: 0,
+    hoursPeriod: 'FULL_AMC' as 'FULL_AMC' | 'MONTHLY', carryForward: false, allowTicketsAfterHours: true, allowExcess: false, excessApproval: false, excessApproverId: '' });
+  // Hydrate from the saved coverage once the products query lands. Guarded on a
+  // real row, so an in-flight refetch never blanks an already-hydrated form.
   useEffect(() => {
     if (cp) setTerms({
       coverageType: cp.amc.type === 'FREE' ? 'WARRANTY' : 'AMC',
       startDate: cp.amc.start ? cp.amc.start.slice(0, 10) : '',
       endDate: cp.amc.end ? cp.amc.end.slice(0, 10) : '',
+      supportHoursUnlimited: cp.hours.unlimited ?? cp.hours.allocated == null,
       supportHours: cp.hours.allocated ?? 0,
       visits: cp.visits.allocated ?? 0,
       contractAmount: cp.paidTerms.monthlyCost ?? 0,
+      hoursPeriod: cp.support?.period ?? 'FULL_AMC',
+      carryForward: cp.support?.carryForward ?? false,
+      allowTicketsAfterHours: cp.support?.allowTicketsAfterHours ?? true,
+      allowExcess: cp.support?.allowExcess ?? false,
+      excessApproval: cp.support?.excessApproval ?? false,
+      excessApproverId: cp.support?.approverId ?? '',
     });
   }, [cp]);
+  // Switching to warranty preselects Unlimited (free support); AMC keeps the
+  // current choice.
+  const onCoverage = (v: string) => {
+    if (!v) return;
+    const coverageType = v as 'WARRANTY' | 'AMC';
+    setTerms((t) => ({ ...t, coverageType, supportHoursUnlimited: coverageType === 'WARRANTY' ? true : t.supportHoursUnlimited }));
+  };
 
   const invalidate = () => { qc.invalidateQueries({ queryKey: ['client-products', companyId] }); qc.invalidateQueries({ queryKey: ['client-consultants', companyId] }); };
   const run = async (p: Promise<unknown>, ok?: string) => { try { await p; invalidate(); if (ok) toast.success(ok); } catch (e: any) { toast.error(e.response?.data?.message || 'Error'); } };
 
   const saveTerms = () => {
     if (terms.startDate && terms.endDate && terms.endDate <= terms.startDate) { toast.error('End date must be after the start date'); return; }
+    if (!terms.supportHoursUnlimited && Number(terms.supportHours) <= 0) { toast.error('Enter support hours greater than 0, or choose Unlimited'); return; }
     run(api.patch(`/api/customer-companies/purchased-products/${cpId}`, {
       coverageType: terms.coverageType,
       startDate: terms.startDate || undefined,
       endDate: terms.endDate || undefined,
-      supportHours: Number(terms.supportHours),
+      // Unlimited carries no allocation at all.
+      supportHoursUnlimited: terms.supportHoursUnlimited,
+      ...(terms.supportHoursUnlimited ? {} : { supportHours: Number(terms.supportHours) }),
       visits: Number(terms.visits),
       ...(terms.coverageType === 'AMC' ? { contractAmount: Number(terms.contractAmount) } : {}),
+      // Support-hours config; approver cleared → explicit null so the API disconnects it.
+      hoursPeriod: terms.hoursPeriod,
+      carryForward: terms.hoursPeriod === 'MONTHLY' && terms.carryForward,
+      allowTicketsAfterHours: terms.allowTicketsAfterHours,
+      allowExcess: terms.allowExcess,
+      excessApproval: terms.allowExcess && terms.excessApproval,
+      excessApproverId: terms.allowExcess && terms.excessApproval && terms.excessApproverId ? terms.excessApproverId : null,
     }), 'Terms saved');
   };
 
+  // Consultants reach this screen read-only — they are here to decide an
+  // excess-hours request, not to change the contract. Every write behind these
+  // controls is Admin-only on the API; hiding them keeps the page honest rather
+  // than offering buttons that 403.
+  const { user } = useAuth();
+  const isAdmin = !!user?.roles.includes('Admin');
   const [renewOpen, setRenewOpen] = useState(false);
   const [renew, setRenew] = useState({ months: 12, amcMonthlyCost: 0 });
   const doRenew = useMutation({
@@ -128,6 +158,12 @@ export default function ClientProductPage() {
   // product page is only for its consultants. Driven by the saved scope, or by
   // navigating here from the customer-contract view (?view=consultants).
   const customerScoped = company?.contractScope === 'CUSTOMER' || searchParams.get('view') === 'consultants';
+  // Support-hours meter figures: MONTHLY reads this month's ledger, else the whole-term pool.
+  const monthlyHrs = cp.support?.period === 'MONTHLY' && !cp.hours.unlimited;
+  const hAlloc = monthlyHrs ? (cp.support!.currentAllocated ?? 0) + cp.support!.carriedIn : cp.hours.allocated;
+  const hUsed = monthlyHrs ? cp.support!.currentUsed : cp.hours.used;
+  const hLeft = monthlyHrs ? cp.support!.available : cp.hours.left;
+  const hUnlimited = monthlyHrs ? false : !!cp.hours.unlimited;
 
   return (
     <div>
@@ -146,51 +182,87 @@ export default function ClientProductPage() {
           <div className="text-sm text-muted-foreground">Purchased {fmt(cp.purchaseDate)}</div>
         </div>
         <div className="flex gap-2">
-          {!customerScoped && (
+          {!customerScoped && isAdmin && (
             <Button variant="outline" disabled={cp.amc.active && (cp.amc.daysLeft ?? 0) > 30}
               title={cp.amc.active && (cp.amc.daysLeft ?? 0) > 30 ? 'Available within 30 days of expiry' : undefined}
               onClick={() => { setRenew({ months: cp.paidTerms.months ?? 12, amcMonthlyCost: cp.paidTerms.monthlyCost ?? 0 }); setRenewOpen(true); }}>
               <RefreshCw className="size-4" /> Renew AMC
             </Button>
           )}
-          <Button variant="outline" className="text-destructive hover:text-destructive" onClick={doRemove}><Trash2 className="size-4" /> Remove</Button>
+          {isAdmin && (
+            <Button variant="outline" className="text-destructive hover:text-destructive" onClick={doRemove}><Trash2 className="size-4" /> Remove</Button>
+          )}
         </div>
       </div>
 
       {!customerScoped && (
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Coverage — one timeline: Warranty (free) → AMC (paid) */}
+      <div className="space-y-6">
+        {/* Coverage — one timeline: Warranty (free) → AMC (paid). The three meters
+            run across the top so the terms and their settings can sit side by
+            side beneath them. */}
         <section className="space-y-3">
           <h2 className="text-base font-semibold text-foreground">Coverage</h2>
-          <Meter
-            icon={cp.amc.type === 'FREE' ? <ShieldCheck className="size-4" /> : <Wrench className="size-4" />}
-            title={cp.amc.type === 'FREE' ? 'Warranty (free)' : 'AMC (paid)'}
-            subtitle={`ends ${fmt(cp.amc.end)}`} pct={cp.amc.pct} active={cp.amc.active}
-            right={cp.amc.active ? cp.amc.label + ' left' : 'Ended'} />
-          <Meter icon={<Clock className="size-4" />} title="Support hours" subtitle={cp.hours.allocated == null ? 'Not included' : `${cp.hours.left} of ${cp.hours.allocated} left`} pct={cp.hours.allocated ? Math.round((cp.hours.used / cp.hours.allocated) * 100) : 0} active={(cp.hours.left ?? 0) > 0} right="" />
-          <Meter icon={<MapPin className="size-4" />} title="Site visits" subtitle={cp.visits.allocated == null ? 'Not included' : `${cp.visits.left} of ${cp.visits.allocated} left`} pct={cp.visits.allocated ? Math.round((cp.visits.used / cp.visits.allocated) * 100) : 0} active={(cp.visits.left ?? 0) > 0} right="" />
+          <div className="grid gap-3 md:grid-cols-3">
+            <CoverageMeter
+              icon={cp.amc.type === 'FREE' ? <ShieldCheck className="size-4" /> : <Wrench className="size-4" />}
+              title={cp.amc.type === 'FREE' ? 'Warranty (free)' : 'AMC (paid)'}
+              subtitle={`ends ${fmt(cp.amc.end)}`} pct={cp.amc.pct} active={cp.amc.active}
+              right={cp.amc.active ? cp.amc.label + ' left' : 'Ended'} />
+            <CoverageMeter icon={<Clock className="size-4" />} title={monthlyHrs ? 'Support hours (this month)' : 'Support hours'}
+              subtitle={hUnlimited ? `Unlimited — ${hUsed} spent` : hAlloc == null ? 'Not included' : `${hLeft} of ${hAlloc} left${monthlyHrs ? ' this month' : ''}`}
+              pct={hAlloc ? Math.round((hUsed / hAlloc) * 100) : 0}
+              active={hUnlimited || (hLeft ?? 0) > 0} right={hUnlimited ? 'Unlimited' : ''} />
+            <CoverageMeter icon={<MapPin className="size-4" />} title="Site visits" subtitle={cp.visits.allocated == null ? 'Not included' : `${cp.visits.left} of ${cp.visits.allocated} left`} pct={cp.visits.allocated ? Math.round((cp.visits.used / cp.visits.allocated) * 100) : 0} active={(cp.visits.left ?? 0) > 0} right="" />
+          </div>
         </section>
 
-        {/* Terms + consultants */}
-        <div className="space-y-6">
+        {/* What was agreed (left) and how the hours are governed (right). Both
+            halves are written by the one Save terms button below — admins only. */}
+        {isAdmin && (
+        <>
+        <div className="grid gap-6 lg:grid-cols-2">
           <section className="space-y-3">
             <h2 className="text-base font-semibold text-foreground">Terms</h2>
-            <RadioGroup value={terms.coverageType} onValueChange={(v) => setTerms({ ...terms, coverageType: v as 'WARRANTY' | 'AMC' })} className="flex gap-5">
+            <RadioGroup value={terms.coverageType} onValueChange={onCoverage} className="flex gap-5">
               <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="WARRANTY" /> Under warranty <span className="text-xs text-muted-foreground">(free)</span></label>
               <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="AMC" /> Under AMC <span className="text-xs text-muted-foreground">(paid)</span></label>
             </RadioGroup>
-            <div className="grid max-w-lg grid-cols-2 gap-2">
+            <SupportHoursChoice unlimited={terms.supportHoursUnlimited} onChange={(u) => setTerms({ ...terms, supportHoursUnlimited: u })} />
+            <div className="grid grid-cols-2 gap-2">
               <Num label="Start date" type="date" value={terms.startDate} onChange={(v) => setTerms({ ...terms, startDate: v })} />
               <Num label="End date" type="date" min={terms.startDate || undefined} value={terms.endDate} onChange={(v) => setTerms({ ...terms, endDate: v })} />
-              <Num label="Support hours" value={terms.supportHours} onChange={(v) => setTerms({ ...terms, supportHours: Number(v) })} />
+              {!terms.supportHoursUnlimited && (
+                <Num label={terms.hoursPeriod === 'MONTHLY' ? 'Support hours / month' : 'Support hours (for the term)'} min={1} value={terms.supportHours} onChange={(v) => setTerms({ ...terms, supportHours: Number(v) })} />
+              )}
               <Num label="No. of visits" value={terms.visits} onChange={(v) => setTerms({ ...terms, visits: Number(v) })} />
               {terms.coverageType === 'AMC' && (
                 <Num label="Contract amount" value={terms.contractAmount} onChange={(v) => setTerms({ ...terms, contractAmount: Number(v) })} />
               )}
             </div>
-            <Button size="sm" onClick={saveTerms}>Save terms</Button>
+          </section>
+
+          <section className="space-y-3">
+            <h2 className="text-base font-semibold text-foreground">Support hours settings</h2>
+            {terms.supportHoursUnlimited ? (
+              <p className="rounded-lg border bg-muted/20 p-3 text-sm text-muted-foreground">
+                Support hours are Unlimited — there is no allowance to count, cap or carry forward.
+              </p>
+            ) : (
+              <SupportHoursConfig
+                value={{ hoursPeriod: terms.hoursPeriod, carryForward: terms.carryForward, allowTicketsAfterHours: terms.allowTicketsAfterHours, allowExcess: terms.allowExcess, excessApproval: terms.excessApproval, excessApproverId: terms.excessApproverId }}
+                onChange={(patch) => setTerms((t) => ({ ...t, ...patch }))}
+                staff={staff}
+                live={cp.support ?? null} />
+            )}
           </section>
         </div>
+
+        <Button size="sm" onClick={saveTerms}>Save terms</Button>
+        </>
+        )}
+
+        {/* The one thing a consultant is here to do. */}
+        <ExcessHoursApprovals companyId={companyId!} ownerId={cp.id} />
       </div>
       )}
 
@@ -198,7 +270,7 @@ export default function ClientProductPage() {
       <section className={customerScoped ? 'space-y-3' : 'mt-8 space-y-3'}>
         <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground"><Users className="size-4" /> Consultants for this product</h2>
         <p className="text-sm text-muted-foreground">Route this client's tickets per module and track. Type a name to assign. Empty cells fall back to the module's default routing.</p>
-        <ConsultantGrid modules={cat?.modules ?? []} consultants={productConsultants} staff={productAgents} onAdd={addConsultant} onRemove={removeConsultant} onPrimary={setPrimaryConsultant} />
+        <ConsultantGrid modules={cat?.modules ?? []} consultants={productConsultants} staff={productAgents} onAdd={addConsultant} onRemove={removeConsultant} onPrimary={setPrimaryConsultant} readOnly={!isAdmin} />
       </section>
 
 

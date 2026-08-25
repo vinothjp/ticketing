@@ -16,6 +16,7 @@ import { PicklistsModule } from './picklists/picklists.module';
 import { SlaModule } from './sla/sla.module';
 import { TicketsModule } from './tickets/tickets.module';
 import { TasksModule } from './tasks/tasks.module';
+import { CommentsModule } from './comments/comments.module';
 import { ApprovalsModule } from './approvals/approvals.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { CustomerCompaniesModule } from './customer-companies/customer-companies.module';
@@ -49,6 +50,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     SlaModule,
     TicketsModule,
     TasksModule,
+    CommentsModule,
     ApprovalsModule,
     MessagingModule,
     CustomerCompaniesModule,

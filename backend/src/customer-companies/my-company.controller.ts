@@ -1,10 +1,11 @@
-import { Controller, Get, Post, Body, Param, UseGuards, Request, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, UseGuards, Request, BadRequestException } from '@nestjs/common';
 import { CustomerCompaniesService } from './customer-companies.service';
 import { SupportHoursService } from './support-hours.service';
 import { CustomerProductsService } from './customer-products.service';
 import { CreateProductRequestDto } from './dto/customer-product.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
+import { StaffGuard } from '../auth/staff.guard';
 
 type AuthedRequest = { user: { id: string; clientId: string; roles: string[]; customerCompanyId?: string | null } };
 
@@ -19,11 +20,44 @@ export class MyCompanyController {
     private customerProducts: CustomerProductsService,
   ) {}
 
+  // Scoped to one customer company: a customer always gets their own, staff pass
+  // the client they picked on the ticket form.
   @Get('products')
-  products(@Request() req: AuthedRequest) {
+  products(@Request() req: AuthedRequest, @Query('customerCompanyId') customerCompanyId?: string) {
     const roles = req.user.roles ?? [];
     const isStaff = roles.includes('Admin') || roles.includes('Viewer');
-    return this.service.ticketProducts(req.user.clientId, req.user.customerCompanyId ?? null, isStaff);
+    const companyId = isStaff ? customerCompanyId || null : (req.user.customerCompanyId ?? null);
+    // Staff who picked no client are raising an INTERNAL ticket — there is no
+    // customer contract to scope the list, so they get the tenant's catalogue.
+    // A customer with no company still gets nothing.
+    if (isStaff && !companyId) return this.service.internalTicketProducts(req.user.clientId);
+    return this.service.ticketProducts(req.user.clientId, companyId);
+  }
+
+  // Clients an agent may raise a ticket for. Admins already have the full list at
+  // `api/customer-companies`, but that route is Admin-only — a Viewer needs the
+  // names to pick a client (and therefore a product) on the ticket form.
+  @Get('clients')
+  @UseGuards(StaffGuard)
+  clients(@Request() req: AuthedRequest) {
+    return this.service.ticketClients(req.user.clientId);
+  }
+
+  // Read-only support-hours pool for one product, shown on the ticket form as soon
+  // as a product is picked. Deliberately on this controller so every side sees the
+  // same number: provider admin, agent, customer admin and customer contact.
+  @Get('product-support-hours')
+  productSupportHours(
+    @Request() req: AuthedRequest,
+    @Query('productId') productId?: string,
+    @Query('customerCompanyId') customerCompanyId?: string,
+  ) {
+    const roles = req.user.roles ?? [];
+    const isStaff = roles.includes('Admin') || roles.includes('Viewer');
+    const companyId = isStaff ? customerCompanyId || null : (req.user.customerCompanyId ?? null);
+    const empty = { hasPool: false as const, allocated: null, used: 0, left: null };
+    if (!companyId || !productId) return empty;
+    return this.customerProducts.productSupportHours(req.user.clientId, companyId, productId);
   }
 
   // The signed-in customer's own support-hours usage (drives the ticket banner).

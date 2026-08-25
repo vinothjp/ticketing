@@ -147,7 +147,14 @@ export class ClientsService {
     return this.findOne(clientId);
   }
 
-  async update(id: string, dto: UpdateClientDto, actorId: string) {
+  // `UpdateMyClientDto` adds tenant-only settings (the ticket reopen and
+  // auto-close windows) that the super-admin DTO has no business carrying —
+  // widen here rather than duplicating the update.
+  async update(
+    id: string,
+    dto: UpdateClientDto & { ticketReopenWindowDays?: number; ticketAutoCloseDays?: number },
+    actorId: string,
+  ) {
     await this.findOne(id);
     if (dto.code) {
       const existing = await this.prisma.client.findUnique({ where: { code: dto.code } });

@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TicketsService, TicketViewer } from '../tickets/tickets.service';
 import { ActivityService } from '../activity/activity.service';
 import { MailerService } from '../mail/mailer.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const escapeHtml = (s: string) =>
@@ -46,14 +47,16 @@ export class ChannelService {
     private tickets: TicketsService,
     private activity: ActivityService,
     private mailer: MailerService,
+    private notifications: NotificationsService,
   ) {}
 
   async listMessages(ticketId: string, clientId: string, viewer: TicketViewer) {
     await this.tickets.findOne(ticketId, clientId, viewer);
-    // Customers must never see internal (agent-only) notes.
-    const isCustomer = viewer.roles.includes('Customer') && !viewer.roles.includes('Admin');
+    // The chat thread (`isInternal`, channel INTERNAL) is shared with the client,
+    // not agent-only: everyone who can see the ticket sees the whole thread. The
+    // flag now only separates in-app chat from the emailed replies.
     return this.prisma.ticketMessage.findMany({
-      where: { ticketId, ...(isCustomer ? { isInternal: false } : {}) },
+      where: { ticketId },
       orderBy: { createdAt: 'asc' },
       include: { attachments: true },
     });
@@ -86,7 +89,7 @@ export class ChannelService {
   }
 
 
-  /** Email the ticket's assigned technicians about an internal note (excludes the note's author). */
+  /** Email the ticket's assigned technicians about a chat message (excludes its author). */
   private async notifyAssignedTechnicians(
     ticketId: string,
     ticketSubject: string,
@@ -108,7 +111,7 @@ export class ChannelService {
     );
     if (recipients.length === 0) return;
 
-    const subject = `Internal note · ${ticketSubject}`;
+    const subject = `Chat · ${ticketSubject}`;
     try {
       if (await this.mailer.isConfigured(clientId)) {
         await this.mailer.sendMail({
@@ -124,8 +127,89 @@ export class ChannelService {
         console.log(`[MOCK EMAIL] to=${recipients.join(', ')} subject="${subject}"\n${body}`);
       }
     } catch (e) {
-      // An internal-note email failure must not block saving the note.
-      console.warn('[internal-note] failed to email assigned technicians:', e);
+      // A chat email failure must not block saving the message.
+      console.warn('[chat] failed to email assigned technicians:', e);
+    }
+  }
+
+  /**
+   * In-app bell notification for every provider-side user when a chat is posted:
+   * the ticket's assigned agent(s) plus every tenant Admin, minus the author.
+   * Never throws — a notification failure must not block saving the chat.
+   */
+  private async notifyProviderSideOfChat(
+    ticket: { id: string; ticketNumber: string; subject: string; clientId: string },
+    body: string,
+    author: { id: string; username: string | null },
+  ) {
+    try {
+      const [techs, admins] = await Promise.all([
+        this.prisma.ticketTechnician.findMany({ where: { ticketId: ticket.id }, select: { userId: true } }),
+        this.prisma.user.findMany({
+          where: { clientId: ticket.clientId, isActive: true, userRoles: { some: { role: { name: 'Admin' } } } },
+          select: { id: true },
+        }),
+      ]);
+      const recipients = [...techs.map((t) => t.userId), ...admins.map((a) => a.id)].filter(
+        (uid) => uid !== author.id,
+      );
+      const preview = body.trim().replace(/\s+/g, ' ');
+      await this.notifications.notifyMany(recipients, {
+        clientId: ticket.clientId,
+        type: 'TICKET_CHAT',
+        ticketId: ticket.id,
+        // Land on the Conversation tab — the chat is not on the default tab.
+        link: `/tickets/${ticket.id}?tab=conversation`,
+        title: `New chat on ${ticket.ticketNumber}`,
+        body: `${author.username ?? 'A colleague'} on ${ticket.ticketNumber} — ${ticket.subject}: ${
+          preview.length > 140 ? `${preview.slice(0, 140)}…` : preview
+        }`,
+      });
+    } catch (e) {
+      console.warn('[chat] failed to notify provider-side users:', e);
+    }
+  }
+
+  /**
+   * In-app bell notification for the client's own people when staff post a chat:
+   * the requester plus their company's admins. The chat is shared with the client
+   * now, so a message they can see is a message they get told about.
+   * Never throws — a notification failure must not block saving the chat.
+   */
+  private async notifyCustomerSideOfChat(
+    ticket: { id: string; ticketNumber: string; subject: string; clientId: string; requestorUserId: string | null; customerCompanyId: string | null },
+    body: string,
+    authorName: string | null,
+  ) {
+    try {
+      const recipients = new Set<string>();
+      if (ticket.requestorUserId) recipients.add(ticket.requestorUserId);
+      if (ticket.customerCompanyId) {
+        const admins = await this.prisma.user.findMany({
+          where: {
+            clientId: ticket.clientId,
+            customerCompanyId: ticket.customerCompanyId,
+            isActive: true,
+            userRoles: { some: { role: { name: 'CustomerAdmin' } } },
+          },
+          select: { id: true },
+        });
+        for (const a of admins) recipients.add(a.id);
+      }
+      if (recipients.size === 0) return;
+      const preview = body.trim().replace(/\s+/g, ' ');
+      await this.notifications.notifyMany([...recipients], {
+        clientId: ticket.clientId,
+        type: 'TICKET_CHAT',
+        ticketId: ticket.id,
+        link: `/tickets/${ticket.id}?tab=conversation`,
+        title: `New chat on ${ticket.ticketNumber}`,
+        body: `${authorName ?? 'Support'} on ${ticket.ticketNumber} — ${ticket.subject}: ${
+          preview.length > 140 ? `${preview.slice(0, 140)}…` : preview
+        }`,
+      });
+    } catch (e) {
+      console.warn('[chat] failed to notify the customer side:', e);
     }
   }
 
@@ -140,6 +224,11 @@ export class ChannelService {
     const ticket = await this.tickets.findOne(ticketId, clientId, viewer);
     if (!input.body?.trim()) throw new BadRequestException('Message body is required');
     const internal = input.channel === 'INTERNAL';
+    // Customer side = a company's own admin + its employees (a tenant Admin who
+    // also carries a customer role is still staff).
+    const viewerIsCustomerSide =
+      (viewer.roles.includes('Customer') || viewer.roles.includes('CustomerAdmin')) &&
+      !viewer.roles.includes('Admin');
     const author = await this.prisma.user.findUnique({
       where: { id: actor.id },
       select: { username: true, email: true },
@@ -156,8 +245,14 @@ export class ChannelService {
     }));
 
     if (internal) {
-      // Internal notes go ONLY to the assigned technician(s) — never the customer.
+      // The chat is shared with the client, so both sides hear about it: the
+      // provider side always (assigned agents + tenant admins, minus the author),
+      // and the client's own people whenever staff posted.
       await this.notifyAssignedTechnicians(ticket.id, subject, input.body, author, attachments, ticket.clientId);
+      await this.notifyProviderSideOfChat(ticket, input.body, { id: actor.id, username: author?.username ?? null });
+      if (!viewerIsCustomerSide) {
+        await this.notifyCustomerSideOfChat(ticket, input.body, author?.username ?? null);
+      }
     }
 
     if (!internal) {
@@ -261,7 +356,7 @@ export class ChannelService {
       ticketId,
       actorUserId: actor.id,
       type: 'MESSAGE_SENT',
-      summary: internal ? 'Internal note added' : `Email reply sent${toAddress ? ` to ${toAddress}` : ''}`,
+      summary: internal ? 'Chat message posted' : `Email reply sent${toAddress ? ` to ${toAddress}` : ''}`,
     });
 
     if (!internal && status === 'SENT' && !ticket.firstResponseAt) {

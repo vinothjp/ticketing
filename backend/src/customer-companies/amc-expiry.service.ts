@@ -28,5 +28,11 @@ export class AmcExpiryService implements OnModuleInit, OnModuleDestroy {
     } catch (e) {
       this.logger.error(`AMC expiry sweep failed: ${(e as Error).message}`);
     }
+    try {
+      const { created } = await this.customerProducts.rollForwardLedgers();
+      if (created) this.logger.log(`Support-hours ledger: opened ${created} new month bucket(s)`);
+    } catch (e) {
+      this.logger.error(`Support-hours ledger roll-forward failed: ${(e as Error).message}`);
+    }
   }
 }

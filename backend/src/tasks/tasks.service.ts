@@ -1,8 +1,58 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { TicketsService, TicketViewer } from '../tickets/tickets.service';
 import { ActivityService } from '../activity/activity.service';
 import { CreateTaskDto, UpdateTaskDto } from './dto/task.dto';
+import {
+  RUNNING_TASK_STATUS,
+  SETTLED_TASK_STATUSES,
+  TASK_STATUS_LABELS,
+} from './task-status';
+
+/** Hours between two stamps, to two decimals. */
+function hoursBetween(start: Date, end: Date): number {
+  return Math.round(((end.getTime() - start.getTime()) / 3_600_000) * 100) / 100;
+}
+
+interface StatusEvent {
+  toStatus: string;
+  at: Date;
+}
+
+/**
+ * Time the task stood in IN_PROGRESS, summed over its status trail.
+ *
+ * `openUntil` closes a stretch that is still running — pass `now` to show live
+ * elapsed on a read, and leave it out when computing the figure to store, so the
+ * stored number only ever counts finished stretches and never drifts.
+ */
+export function hoursFromEvents(events: StatusEvent[], openUntil?: Date): number {
+  const ordered = [...events].sort((a, b) => a.at.getTime() - b.at.getTime());
+  let total = 0;
+  let startedAt: Date | null = null;
+  for (const e of ordered) {
+    if (e.toStatus === RUNNING_TASK_STATUS) {
+      // Two events into IN_PROGRESS in a row can't happen — a change is only
+      // recorded on a real transition — but keep the first stamp if they did.
+      startedAt ??= e.at;
+      continue;
+    }
+    if (startedAt) {
+      total += hoursBetween(startedAt, e.at);
+      startedAt = null;
+    }
+  }
+  if (startedAt && openUntil) total += hoursBetween(startedAt, openUntil);
+  return Math.round(total * 100) / 100;
+}
+
+/** The activity type a transition is logged under, so History keeps its icons. */
+const ACTIVITY_TYPE: Record<string, string> = {
+  DONE: 'TASK_COMPLETED',
+  CANCELLED: 'TASK_CANCELLED',
+  IN_PROGRESS: 'TASK_STARTED',
+  OPEN: 'TASK_REOPENED',
+};
 
 @Injectable()
 export class TasksService {
@@ -18,12 +68,59 @@ export class TasksService {
     return u?.username ?? null;
   }
 
+  /**
+   * A task's status belongs to the consultant doing the work: only the assignee
+   * moves it, with a tenant Admin able to correct it. Other agents can see the
+   * task but not rewrite someone else's timeline — the status trail is the
+   * timesheet now, so the rule that guarded the old clock guards this instead.
+   */
+  private assertMayTrack(task: { assigneeUserId: string | null }, viewer: TicketViewer) {
+    if (viewer.roles.includes('Admin')) return;
+    if (task.assigneeUserId && task.assigneeUserId === viewer.id) return;
+    throw new ForbiddenException(
+      'Only the consultant this task is assigned to can change its status',
+    );
+  }
+
+  /**
+   * Hours to show for a task: the stored figure, plus the stretch still running
+   * if the task is in progress right now.
+   */
+  private liveHours(task: { status: string; hoursSpent: unknown }, events: StatusEvent[]) {
+    if (task.status !== RUNNING_TASK_STATUS) return Number(task.hoursSpent ?? 0);
+    return hoursFromEvents(events, new Date());
+  }
+
   async list(ticketId: string, clientId: string, viewer: TicketViewer) {
     await this.tickets.findOne(ticketId, clientId, viewer);
-    return this.prisma.ticketTask.findMany({
+    const tasks = await this.prisma.ticketTask.findMany({
       where: { ticketId },
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      include: {
+        _count: { select: { comments: true } },
+        // Only what the live-hours sum needs — the full trail is the dialog's job.
+        statusEvents: { select: { toStatus: true, at: true }, orderBy: { at: 'asc' } },
+      },
     });
+    return tasks.map(({ statusEvents, _count, ...t }) => ({
+      ...t,
+      hoursSpent: this.liveHours(t, statusEvents),
+      commentCount: _count.comments,
+    }));
+  }
+
+  /** One task with its full status trail and comments — the task detail dialog. */
+  async findOne(ticketId: string, taskId: string, clientId: string, viewer: TicketViewer) {
+    await this.tickets.findOne(ticketId, clientId, viewer);
+    const task = await this.prisma.ticketTask.findFirst({
+      where: { id: taskId, ticketId },
+      include: {
+        statusEvents: { orderBy: { at: 'asc' } },
+        comments: { orderBy: { createdAt: 'asc' } },
+      },
+    });
+    if (!task) throw new NotFoundException('Task not found');
+    return { ...task, hoursSpent: this.liveHours(task, task.statusEvents) };
   }
 
   /**
@@ -37,7 +134,9 @@ export class TasksService {
     return this.prisma.ticketTask.findMany({
       where: {
         assigneeUserId: assignee,
-        status: { not: 'DONE' },
+        // A cancelled task is settled, so it leaves the queue the same way a
+        // completed one does.
+        status: { notIn: SETTLED_TASK_STATUSES },
         ticket: { clientId },
       },
       orderBy: [{ dueDate: 'asc' }, { createdAt: 'asc' }],
@@ -77,7 +176,16 @@ export class TasksService {
     const existing = await this.prisma.ticketTask.findFirst({ where: { id: taskId, ticketId } });
     if (!existing) throw new NotFoundException('Task not found');
 
-    const becomingDone = dto.status === 'DONE' && existing.status !== 'DONE';
+    // Only a real transition counts. The status control emits on every pick,
+    // including the option already selected, and re-recording that would stamp a
+    // zero-length event and muddy the audit.
+    const movingTo = dto.status && dto.status !== existing.status ? dto.status : null;
+    if (movingTo) this.assertMayTrack(existing, viewer);
+
+    const hours = movingTo
+      ? await this.recordStatusChange(existing, movingTo, actorId)
+      : undefined;
+
     const task = await this.prisma.ticketTask.update({
       where: { id: taskId },
       data: {
@@ -87,22 +195,70 @@ export class TasksService {
           assigneeUserId: dto.assigneeUserId || null,
           assigneeName: await this.assigneeName(dto.assigneeUserId),
         }),
-        ...(dto.status !== undefined && { status: dto.status }),
         ...(dto.dueDate !== undefined && { dueDate: dto.dueDate ? new Date(dto.dueDate) : null }),
         ...(dto.sortOrder !== undefined && { sortOrder: dto.sortOrder }),
-        ...(dto.status !== undefined && { completedAt: dto.status === 'DONE' ? new Date() : null }),
+        ...(movingTo && {
+          status: movingTo,
+          completedAt: movingTo === 'DONE' ? new Date() : null,
+          hoursSpent: hours || null,
+        }),
       },
     });
-    if (becomingDone) {
-      await this.activity.log({ ticketId, actorUserId: actorId, type: 'TASK_COMPLETED', summary: `Task completed: ${task.title}` });
+
+    if (movingTo) {
+      const label = (s: string) => TASK_STATUS_LABELS[s] ?? s;
+      await this.activity.log({
+        ticketId,
+        actorUserId: actorId,
+        type: ACTIVITY_TYPE[movingTo] ?? 'TASK_STATUS_CHANGED',
+        summary: `Task "${task.title}": ${label(existing.status)} → ${label(movingTo)}`,
+        meta: { taskId, from: existing.status, to: movingTo },
+      });
     }
     return task;
+  }
+
+  /**
+   * Stamp one status change and re-derive the task's hours from the whole trail.
+   *
+   * The stamp is taken **here**, server-side, rather than sent by the client —
+   * the record is of when the status actually moved, not of what a browser
+   * claimed. Re-deriving from the full trail rather than adding to a counter
+   * means a corrected event fixes itself, the same way ticket worklog hours are
+   * an on-read aggregate rather than a stored total.
+   */
+  private async recordStatusChange(
+    existing: { id: string; ticketId: string; status: string },
+    toStatus: string,
+    actorId: string,
+  ): Promise<number> {
+    await this.prisma.ticketTaskStatusEvent.create({
+      data: {
+        taskId: existing.id,
+        ticketId: existing.ticketId,
+        fromStatus: existing.status,
+        toStatus,
+        actorUserId: actorId,
+        // Denormalised, like TicketMessage.authorName — the trail then renders
+        // without a join, and keeps naming whoever acted even if they leave.
+        actorName: await this.assigneeName(actorId),
+        at: new Date(),
+      },
+    });
+    const events = await this.prisma.ticketTaskStatusEvent.findMany({
+      where: { taskId: existing.id },
+      select: { toStatus: true, at: true },
+      orderBy: { at: 'asc' },
+    });
+    return hoursFromEvents(events);
   }
 
   async remove(ticketId: string, taskId: string, clientId: string, viewer: TicketViewer) {
     await this.tickets.findOne(ticketId, clientId, viewer);
     const existing = await this.prisma.ticketTask.findFirst({ where: { id: taskId, ticketId } });
     if (!existing) throw new NotFoundException('Task not found');
+    // The task's time is audit only, so deleting it charges nothing back — its
+    // status events and comments go with it by cascade.
     await this.prisma.ticketTask.delete({ where: { id: taskId } });
     return { message: 'Task deleted' };
   }

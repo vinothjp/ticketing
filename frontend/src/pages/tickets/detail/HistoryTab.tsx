@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import {
   Circle, Flag, UserPlus, CheckCircle2, RefreshCw, ListTodo, Stamp, Mail, Paperclip,
+  Play, Ban, MessageSquare,
 } from 'lucide-react';
 import api from '../../../lib/api';
 
@@ -20,14 +21,26 @@ const ICON: Record<string, typeof Circle> = {
   RESOLVED: CheckCircle2,
   REOPENED: RefreshCw,
   CLOSED: CheckCircle2,
+  ACKNOWLEDGED: CheckCircle2,
   TASK_ADDED: ListTodo,
+  TASK_STARTED: Play,
   TASK_COMPLETED: CheckCircle2,
+  TASK_CANCELLED: Ban,
+  TASK_REOPENED: RefreshCw,
+  TASK_STATUS_CHANGED: ListTodo,
+  COMMENT_ADDED: MessageSquare,
   APPROVAL_REQUESTED: Stamp,
   APPROVAL_DECIDED: Stamp,
   MESSAGE_SENT: Mail,
   MESSAGE_RECEIVED: Mail,
   ATTACHMENT_ADDED: Paperclip,
 };
+
+/** The stamp itself. A history is a record of *when*, so never only "2h ago". */
+const stamp = (iso: string) =>
+  new Date(iso).toLocaleString(undefined, {
+    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
 
 function relTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -59,7 +72,9 @@ export default function HistoryTab({ ticketId }: { ticketId: string }) {
             </div>
             <div className="min-w-0">
               <div className="text-sm text-foreground">{a.summary}</div>
-              <div className="text-xs text-muted-foreground">{a.actorName ?? 'System'} · {relTime(a.createdAt)}</div>
+              <div className="text-xs text-muted-foreground">
+                {a.actorName ?? 'System'} · {stamp(a.createdAt)} · {relTime(a.createdAt)}
+              </div>
             </div>
           </li>
         );

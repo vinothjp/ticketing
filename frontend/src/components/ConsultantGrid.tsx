@@ -14,7 +14,7 @@ export interface GridModule { id: string; name: string }
 export interface GridConsultant { id: string; userId: string; username: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
 interface StaffUser { id: string; username: string }
 
-export default function ConsultantGrid({ modules, consultants, staff, onAdd, onRemove, onPrimary, emptyRowLabel = 'Whole product' }: {
+export default function ConsultantGrid({ modules, consultants, staff, onAdd, onRemove, onPrimary, emptyRowLabel = 'Whole product', readOnly = false }: {
   modules: GridModule[];
   consultants: GridConsultant[];
   staff: StaffUser[];
@@ -22,6 +22,8 @@ export default function ConsultantGrid({ modules, consultants, staff, onAdd, onR
   onRemove: (id: string) => void;
   onPrimary?: (id: string) => void;
   emptyRowLabel?: string;
+  /** Consultants read the client screens but may not change routing on them. */
+  readOnly?: boolean;
 }) {
   // One row per module when split into modules; otherwise a single catch-all row.
   const rows = modules.length > 0
@@ -56,12 +58,13 @@ export default function ConsultantGrid({ modules, consultants, staff, onAdd, onR
                         <div key={a.id} className="group flex items-center gap-1 rounded bg-muted px-1.5 py-1 text-xs">
                           {a.isPrimary
                             ? <Star className="size-3 shrink-0 fill-amber-500 text-amber-500" />
+                            : readOnly ? null
                             : <button title="Make primary" className="shrink-0 text-muted-foreground hover:text-amber-500" onClick={() => onPrimary?.(a.id)}><Star className="size-3" /></button>}
                           <span className="flex-1 truncate text-foreground">{a.username}</span>
-                          <button className="shrink-0 text-muted-foreground hover:text-destructive" onClick={() => onRemove(a.id)}><X className="size-3" /></button>
+                          {!readOnly && <button className="shrink-0 text-muted-foreground hover:text-destructive" onClick={() => onRemove(a.id)}><X className="size-3" /></button>}
                         </div>
                       ))}
-                      <ConsultantTypeahead staff={staff} exclude={taken} onPick={(uid) => onAdd(row.moduleId, c.key, uid)} />
+                      {!readOnly && <ConsultantTypeahead staff={staff} exclude={taken} onPick={(uid) => onAdd(row.moduleId, c.key, uid)} />}
                     </div>
                   </td>
                 );

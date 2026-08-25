@@ -19,13 +19,19 @@ import { Roles } from '../auth/roles.decorator';
 
 type AuthedRequest = { user: { id: string; clientId: string; roles: string[]; username?: string } };
 
+/**
+ * Admins plan and own visits; consultants (`Viewer`) get a read-only-plus-report
+ * slice — their own visits, and only the hours/status/notes on them. The service
+ * enforces both halves, so the class-level role here is deliberately the wider one.
+ */
 @UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
-@Roles('Admin')
+@Roles('Admin', 'Viewer')
 @Controller('api/client-visits')
 export class ClientVisitsController {
   constructor(private readonly clientVisitsService: ClientVisitsService) {}
 
   @Post()
+  @Roles('Admin')
   create(@Request() req: AuthedRequest, @Body() createDto: CreateClientVisitDto) {
     return this.clientVisitsService.create(req.user.clientId, createDto, req.user.id);
   }
@@ -49,12 +55,12 @@ export class ClientVisitsController {
       status,
       from,
       to,
-    });
+    }, req.user);
   }
 
   @Get(':id')
   findOne(@Request() req: AuthedRequest, @Param('id') id: string) {
-    return this.clientVisitsService.findOne(req.user.clientId, id);
+    return this.clientVisitsService.findOne(req.user.clientId, id, req.user);
   }
 
   @Patch(':id')
@@ -63,10 +69,11 @@ export class ClientVisitsController {
     @Param('id') id: string,
     @Body() updateDto: UpdateClientVisitDto,
   ) {
-    return this.clientVisitsService.update(req.user.clientId, id, updateDto, req.user.id);
+    return this.clientVisitsService.update(req.user.clientId, id, updateDto, req.user);
   }
 
   @Delete(':id')
+  @Roles('Admin')
   remove(@Request() req: AuthedRequest, @Param('id') id: string) {
     return this.clientVisitsService.remove(req.user.clientId, id);
   }

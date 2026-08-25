@@ -1,9 +1,26 @@
-export const VISIT_STATUSES = ['PLANNED', 'VISITED', 'RESCHEDULED'] as const;
+/**
+ * Where a visit is *now*. Being rescheduled is two states, not one:
+ * `RESCHEDULE_REQUESTED` is the consultant asking, waiting on a date from an
+ * admin; once the admin sets one the visit is `PLANNED` again and the fact that
+ * it slipped is carried by `rescheduleCount`, not by the status. Leaving it on
+ * "Rescheduled" forever would hide that it is a normal upcoming visit again.
+ */
+export const VISIT_STATUSES = ['PLANNED', 'VISITED', 'RESCHEDULE_REQUESTED'] as const;
 export const VISIT_STATUS_LABELS: Record<string, string> = {
   PLANNED: 'Planned',
   VISITED: 'Visited',
-  RESCHEDULED: 'Rescheduled',
+  RESCHEDULE_REQUESTED: 'Reschedule requested',
 };
+
+/** A visit is waiting on an admin to give it a new date. */
+export const needsNewDate = (v: { status: string }) => v.status === 'RESCHEDULE_REQUESTED';
+
+/**
+ * A visit that has already been re-dated at least once — shown as an orange
+ * "Rescheduled" marker beside its current status, not instead of it.
+ */
+export const wasRescheduled = (v: { status: string; rescheduleCount?: number }) =>
+  !needsNewDate(v) && (v.rescheduleCount ?? 0) > 0;
 
 export interface ClientVisit {
   id: string;
@@ -19,6 +36,8 @@ export interface ClientVisit {
   purpose: string;
   notes: string | null;
   status: string;
+  /** Times an admin has re-dated this visit after a consultant asked. */
+  rescheduleCount?: number;
   ticketId: string | null;
   contractDeducted: boolean;
   createdAt: string;
@@ -27,11 +46,14 @@ export interface ClientVisit {
 export interface CustomerCompanyOption {
   id: string;
   name: string;
+  /** Coverage model — PRODUCT makes the visit's product field mandatory. */
+  contractScope?: 'PRODUCT' | 'CUSTOMER';
 }
 
 export interface UserOption {
   id: string;
   username: string;
+  isActive?: boolean;
 }
 
 /** A product the customer has actually purchased (`:id/purchased-products`). */
@@ -57,5 +79,5 @@ export interface TicketOption {
   customerCompanyId?: string | null;
 }
 
-export const statusVariant = (s: string): 'success' | 'destructive' | 'secondary' | 'outline' =>
-  s === 'VISITED' ? 'success' : s === 'RESCHEDULED' ? 'outline' : 'secondary';
+export const statusVariant = (s: string): 'success' | 'destructive' | 'secondary' | 'outline' | 'warning' =>
+  s === 'VISITED' ? 'success' : s === 'RESCHEDULE_REQUESTED' ? 'warning' : 'secondary';

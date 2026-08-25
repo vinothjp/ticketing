@@ -25,6 +25,16 @@ export class TasksController {
     return this.tasksService.create(ticketId, req.user.clientId, dto, req.user.id, req.user);
   }
 
+  /** One task with its status trail and comments — the task detail dialog. */
+  @Get(':taskId')
+  findOne(
+    @Param('ticketId') ticketId: string,
+    @Param('taskId') taskId: string,
+    @Request() req: AuthedRequest,
+  ) {
+    return this.tasksService.findOne(ticketId, taskId, req.user.clientId, req.user);
+  }
+
   @Patch(':taskId')
   @UseGuards(StaffGuard)
   update(

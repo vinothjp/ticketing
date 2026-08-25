@@ -24,8 +24,11 @@ export class CreateTicketDto {
   @IsOptional() @IsString() ticketCategory?: string;
   @IsOptional() @IsString() subCategory?: string;
 
-  // SAP routing (drives auto-assignment).
-  @IsOptional() @IsString() productId?: string;
+  // SAP routing (drives auto-assignment). The product is mandatory — every ticket
+  // is raised against one of the client's assigned products.
+  @IsString()
+  @IsNotEmpty()
+  productId: string;
   @IsOptional() @IsString() moduleId?: string;
   @IsOptional() @IsIn(['TECHNICAL', 'FUNCTIONAL']) consultantType?: 'TECHNICAL' | 'FUNCTIONAL';
 

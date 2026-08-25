@@ -15,6 +15,7 @@ import type {
   CustomerProductOption,
   CustomerConsultantOption,
   TicketOption,
+  UserOption,
 } from './clientVisitsMeta';
 import {
   VISIT_STATUSES,
@@ -44,7 +45,8 @@ export function ClientVisitFormPage() {
 
   const [purpose, setPurpose] = useState('');
   const [notes, setNotes] = useState('');
-  const [visitDate, setVisitDate] = useState(new Date().toISOString().split('T')[0]);
+  const todayIso = new Date().toISOString().split('T')[0];
+  const [visitDate, setVisitDate] = useState(todayIso);
   const [customerCompanyId, setCustomerCompanyId] = useState(() => preset('customerCompanyId'));
   const [productId, setProductId] = useState(() => preset('productId', 'none'));
   const [consultantId, setConsultantId] = useState('');
@@ -78,6 +80,20 @@ export function ClientVisitFormPage() {
     queryFn: async () => (await api.get('/api/customer-companies')).data,
   });
 
+  /**
+   * Whether the picked client is on per-product coverage. Their visits draw down
+   * the named product's own allowance, so the product is required; a client on one
+   * shared contract pools every visit, so it stays optional. The backend enforces
+   * the same rule — this just stops the user reaching a 400.
+   */
+  // A visit the consultant sent back: the admin's job here is to give it a new
+  // date, so the same date is refused and the form says what happens next.
+  const originalDate = visit?.visitDate ? visit.visitDate.split('T')[0] : '';
+  const awaitingNewDate = visit?.status === 'RESCHEDULE_REQUESTED';
+
+  const selectedCompany = customerCompanies.find((c) => c.id === customerCompanyId);
+  const productRequired = selectedCompany?.contractScope === 'PRODUCT';
+
   // Product + consultant choices are whatever this client actually has — the
   // products assigned to them and the consultants assigned to them on the
   // client screen, not the full catalogue or every staff user.
@@ -93,33 +109,55 @@ export function ClientVisitFormPage() {
     enabled: !!customerCompanyId,
   });
 
+  // Every internal staff member — the fallback when the visit isn't about a
+  // product, so it can't be limited to the client's product consultants.
+  const { data: staff = [] } = useQuery<UserOption[]>({
+    queryKey: ['users'],
+    queryFn: async () => (await api.get('/api/users')).data,
+  });
+
   const { data: tickets = [] } = useQuery<TicketOption[]>({
     queryKey: ['tickets-options'],
     queryFn: async () => (await api.get('/api/tickets')).data,
   });
 
-  // Assignments are per product+module+track; a contract-level row (productId
-  // null) covers every product. Collapse them to one entry per person.
-  const relevantConsultants = customerConsultants.filter(
-    (c) => productId === 'none' || !c.productId || c.productId === productId,
-  );
-  const consultantOptions = Array.from(
-    relevantConsultants
-      .reduce((acc, c) => {
-        if (!acc.has(c.userId)) acc.set(c.userId, c.username || c.userId);
-        return acc;
-      }, new Map<string, string>()),
-    ([userId, username]) => ({ userId, username }),
-  );
+  // A visit isn't necessarily about a product — it can be a general call or a
+  // ticket follow-up — so the consultant list is only narrowed once a product is
+  // actually picked. With no product, any internal staff member can be sent.
+  //
+  // With a product: the client's own assignments for it, where a contract-level
+  // row (productId null) covers every product. Collapsed to one entry per person.
+  const productPicked = productId !== 'none';
+  const consultantOptions = productPicked
+    ? Array.from(
+        customerConsultants
+          .filter((c) => !c.productId || c.productId === productId)
+          .reduce((acc, c) => {
+            if (!acc.has(c.userId)) acc.set(c.userId, c.username || c.userId);
+            return acc;
+          }, new Map<string, string>()),
+        ([userId, username]) => ({ userId, username }),
+      )
+    : staff
+        .filter((u) => u.isActive !== false)
+        .map((u) => ({ userId: u.id, username: u.username }));
 
   // Tickets narrow to the chosen client once one is picked.
   const customerTickets = customerCompanyId
     ? tickets.filter((t) => !t.customerCompanyId || t.customerCompanyId === customerCompanyId)
     : tickets;
 
-  // Keep the dependent picks honest when the client changes. Ticket now sits
-  // above the client, so a blanket reset would wipe a deliberate pick — only
-  // drop it when the chosen ticket belongs to a different client.
+  // Options carry "TCK-000099 - subject" so the choice is unambiguous, but a long
+  // subject would blow out the closed trigger. Show just the number there.
+  // Looked up against the unfiltered list so an edit form still resolves the
+  // saved ticket while the client-scoped filter is settling.
+  const ticketLabel = ticketId === 'none'
+    ? 'None'
+    : tickets.find((t) => t.id === ticketId)?.ticketNumber ?? '';
+
+  // Keep the dependent picks honest when the client changes. A blanket reset
+  // would wipe a deliberate ticket pick — only drop it when the chosen ticket
+  // belongs to a different client.
   const onCustomerChange = (next: string) => {
     setCustomerCompanyId(next);
     setProductId('none');
@@ -133,11 +171,22 @@ export function ClientVisitFormPage() {
   // Narrowing by product can drop the chosen consultant out of the list. Only
   // once the list has actually loaded — mid-hydration it is still empty, and
   // clearing then would discard the consultant restored from the saved visit.
+  //
+  // Consultant sits above Product on the form, so this clears a field the user
+  // already filled in from one they touched later. Say so rather than letting
+  // the pick quietly disappear.
   useEffect(() => {
-    if (!consultantsLoaded || !consultantId) return;
-    if (!consultantOptions.some((c) => c.userId === consultantId)) {
-      setConsultantId('');
-    }
+    // Only narrowing can invalidate a pick, and only a product narrows.
+    if (!productPicked || !consultantsLoaded || !consultantId) return;
+    if (consultantOptions.some((c) => c.userId === consultantId)) return;
+    const dropped = customerConsultants.find((c) => c.userId === consultantId)?.username
+      ?? staff.find((u) => u.id === consultantId)?.username;
+    setConsultantId('');
+    toast.info(
+      dropped
+        ? `${dropped} isn't assigned to this product — pick a consultant again.`
+        : 'Consultant cleared — pick one for this product.',
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productId, customerConsultants, consultantsLoaded]);
 
@@ -161,8 +210,20 @@ export function ClientVisitFormPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!visitDate || !customerCompanyId || !consultantId || !hours || !purpose.trim()) {
+    if (!visitDate || !customerCompanyId || !consultantId || !purpose.trim()) {
       toast.error('Please fill in all required fields');
+      return;
+    }
+    if (status !== 'VISITED' && visitDate < todayIso) {
+      toast.error('A visit that has not happened yet cannot be scheduled in the past');
+      return;
+    }
+    if (awaitingNewDate && visitDate === originalDate) {
+      toast.error('Pick a date other than the one this visit already has');
+      return;
+    }
+    if (productRequired && productId === 'none') {
+      toast.error(`${selectedCompany?.name ?? 'This client'} is on per-product coverage — pick the product this visit is booked against`);
       return;
     }
     mutation.mutate({
@@ -170,7 +231,9 @@ export function ClientVisitFormPage() {
       customerCompanyId,
       consultantId,
       productId: productId === 'none' ? null : productId,
-      hours: parseFloat(hours),
+      // Optional when an admin books a visit — nobody knows the hours until the
+      // consultant reports back, and the report dialog is where they are required.
+      hours: hours === '' ? 0 : parseFloat(hours),
       purpose: purpose.trim(),
       notes,
       status,
@@ -180,82 +243,45 @@ export function ClientVisitFormPage() {
 
   return (
     <div className="w-full">
-      <Button variant="ghost" size="sm" onClick={() => navigate('/client-visits')} className="mb-2 -ml-2">
+      <Button variant="ghost" size="sm" onClick={() => navigate('/client-visits')} className="mb-1 -ml-2">
         <ArrowLeft className="size-4" /> All client visits
       </Button>
 
-      <div className="mb-4">
-        <h1 className="text-2xl font-bold tracking-tight">{isEditing ? 'Edit Client Visit' : 'New Client Visit'}</h1>
-        <p className="text-sm text-muted-foreground">
-          Record a client visit. Fields marked <Req /> are required.
-        </p>
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">{isEditing ? 'Edit Client Visit' : 'New Client Visit'}</h1>
+          <p className="text-sm text-muted-foreground">
+            Record a client visit. Fields marked <Req /> are required.
+          </p>
+        </div>
+
+        {/* Client scopes every other choice on this form, so it leads from the
+            header rather than sitting in the grid as one field among many. */}
+        <div className="flex items-center gap-2">
+          <Label htmlFor="client" className="whitespace-nowrap">Client <Req /></Label>
+          <Select value={customerCompanyId} onValueChange={pick(onCustomerChange)}>
+            <SelectTrigger id="client" className="w-[260px]">
+              <SelectValue placeholder="Select client" />
+            </SelectTrigger>
+            <SelectContent>
+              {customerCompanies.map((c) => (
+                <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-6">
-        <div className="grid gap-4 sm:grid-cols-2">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-[13fr_7fr]">
           <div className="space-y-1.5">
-            <Label>Client <Req /></Label>
-            <Select value={customerCompanyId} onValueChange={pick(onCustomerChange)}>
-              <SelectTrigger className="w-full"><SelectValue placeholder="Select client" /></SelectTrigger>
-              <SelectContent>
-                {customerCompanies.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label>Ticket</Label>
-            <Select value={ticketId} onValueChange={pick(setTicketId)}>
-              <SelectTrigger className="w-full"><SelectValue placeholder="Select ticket" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">None</SelectItem>
-                {customerTickets.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>{t.ticketNumber} - {t.subject}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-
-        <div className="space-y-1.5">
-          <Label htmlFor="purpose">Purpose <Req /></Label>
-          <Input
-            id="purpose"
-            value={purpose}
-            onChange={(e) => setPurpose(e.target.value)}
-            placeholder="Short summary of why the visit happened"
-          />
-        </div>
-
-        <div className="space-y-1.5">
-          <Label htmlFor="notes">Description</Label>
-          <Textarea id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={5} />
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label htmlFor="visitDate">Visit Date <Req /></Label>
-            <Input id="visitDate" type="date" value={visitDate} onChange={(e) => setVisitDate(e.target.value)} />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label>Product</Label>
-            <Select value={productId} onValueChange={pick(setProductId)} disabled={!customerCompanyId}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder={customerCompanyId ? 'Select product' : 'Select a client first'} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">None</SelectItem>
-                {customerProducts.map((p) => (
-                  <SelectItem key={p.productId} value={p.productId}>{p.productName ?? p.productId}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {customerCompanyId && customerProducts.length === 0 && (
-              <p className="text-xs text-muted-foreground">No products assigned to this client.</p>
-            )}
+            <Label htmlFor="purpose">Purpose <Req /></Label>
+            <Input
+              id="purpose"
+              value={purpose}
+              onChange={(e) => setPurpose(e.target.value)}
+              placeholder="Short summary of why the visit happened"
+            />
           </div>
 
           <div className="space-y-1.5">
@@ -272,14 +298,36 @@ export function ClientVisitFormPage() {
             </Select>
             {customerCompanyId && consultantOptions.length === 0 && (
               <p className="text-xs text-muted-foreground">
-                No consultants assigned to this client{productId !== 'none' ? ' for this product' : ''}.
+                {productPicked
+                  ? 'No consultants assigned to this client for this product.'
+                  : 'No staff available.'}
               </p>
             )}
           </div>
+        </div>
+
+        {/* When / how much / how it went, then what it was about. Five columns on
+            a wide screen, folding to three then two as it narrows.
+            Weighted 18/12/20/30/20: a date and an hours figure are short and
+            fixed-width, so the space they give up goes to the product name,
+            which is the longest value in the row. */}
+        <div className="grid gap-4 grid-cols-2 md:grid-cols-3 xl:grid-cols-[9fr_6fr_10fr_15fr_10fr]">
+          <div className="space-y-1.5">
+            <Label htmlFor="visitDate">Visit date <Req /></Label>
+            {/* A visit still to come cannot be booked in the past; a VISITED row
+                records what already happened, so back-dating that one is fine. */}
+            <Input
+              id="visitDate"
+              type="date"
+              min={status === 'VISITED' ? undefined : todayIso}
+              value={visitDate}
+              onChange={(e) => setVisitDate(e.target.value)}
+            />
+          </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="hours">Hours <Req /></Label>
-            <Input id="hours" type="number" min="0" step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} />
+            <Label htmlFor="hours">Hours</Label>
+            <Input id="hours" type="number" min="0" step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} placeholder="Set by the consultant" />
           </div>
 
           <div className="space-y-1.5">
@@ -294,12 +342,66 @@ export function ClientVisitFormPage() {
             </Select>
           </div>
 
+          <div className="space-y-1.5">
+            <Label>Product {productRequired && <Req />}</Label>
+            <Select value={productId} onValueChange={pick(setProductId)} disabled={!customerCompanyId}>
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder={customerCompanyId ? 'Select product' : 'Select a client first'} />
+              </SelectTrigger>
+              <SelectContent>
+                {/* Only a pooled customer contract can absorb a visit with no
+                    product; on per-product coverage there is nowhere to book it. */}
+                {!productRequired && <SelectItem value="none">None</SelectItem>}
+                {customerProducts.map((p) => (
+                  <SelectItem key={p.productId} value={p.productId}>{p.productName ?? p.productId}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {customerCompanyId && customerProducts.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No products assigned to this client.</p>
+            ) : productRequired ? (
+              <p className="text-xs text-muted-foreground">
+                This client is on per-product coverage — the visit is deducted from this product's allowance.
+              </p>
+            ) : null}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Related ticket</Label>
+            <Select value={ticketId} onValueChange={pick(setTicketId)}>
+              {/* min-w-0 lets the value span shrink inside the flex trigger so
+                  `truncate` can clip it instead of pushing the chevron out. */}
+              <SelectTrigger className="w-full [&>span]:min-w-0 [&>span]:truncate">
+                <SelectValue placeholder="Optional">{ticketLabel}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None</SelectItem>
+                {customerTickets.map((t) => (
+                  <SelectItem key={t.id} value={t.id}>{t.ticketNumber} - {t.subject}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
-        <div className="flex justify-end gap-2 border-t pt-4">
+        <div className="space-y-1.5">
+          <Label htmlFor="notes">Description</Label>
+          {/* 20% taller than the 3 rows it falls back to: 3.6 lines at text-sm's
+              1.25rem line-height, plus py-2 and the 1px borders. */}
+          <Textarea
+            id="notes"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={3}
+            className="h-[calc(3.6*1.25rem_+_1rem_+_2px)]"
+            placeholder="Add visit notes…"
+          />
+        </div>
+
+        <div className="flex justify-end gap-2 border-t pt-3">
           <Button type="button" variant="outline" onClick={() => navigate('/client-visits')}>Cancel</Button>
           <Button type="submit" disabled={mutation.isPending}>
-            {mutation.isPending ? 'Saving...' : 'Save'}
+            {mutation.isPending ? 'Saving…' : 'Save visit'}
           </Button>
         </div>
       </form>

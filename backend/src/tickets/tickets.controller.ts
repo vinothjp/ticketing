@@ -21,11 +21,13 @@ import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { AssignTechniciansDto } from './dto/assign-technicians.dto';
 import { SetResolutionDto } from './dto/set-resolution.dto';
 import { RejectTicketDto } from './dto/reject-ticket.dto';
+import { ReopenTicketDto } from './dto/reopen-ticket.dto';
 import { CreateWorklogDto } from './dto/worklog.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
 import { StaffGuard } from '../auth/staff.guard';
 import { CustomerAdminGuard } from '../auth/customer-admin.guard';
+import { CustomerContactGuard } from '../auth/customer-contact.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { FIELD_CATALOG } from './field-catalog';
@@ -53,6 +55,14 @@ export class TicketsController {
   }
 
   // ---- Worklog / support-hours time tracking (staff only) ----
+  // The pool the ticket's logged time is drawn from — the product's own AMC/
+  // warranty hours, or the customer's shared contract. Read-only.
+  @Get(':id/support-hours')
+  @UseGuards(StaffGuard)
+  ticketSupportHours(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.ticketSupportHours(id, req.user.clientId, req.user);
+  }
+
   @Get(':id/worklogs')
   @UseGuards(StaffGuard)
   listWorklogs(@Param('id') id: string, @Request() req: AuthedRequest) {
@@ -81,9 +91,21 @@ export class TicketsController {
     return this.ticketsService.setResolution(id, req.user.clientId, dto, req.user.id, req.user);
   }
 
+  // Reopening is the client's judgement that the fix didn't hold, so a provider
+  // admin or consultant cannot revive a customer's ticket on their behalf. Not a
+  // guard: the rule depends on whether the ticket has a customer, so it lives in
+  // the service where the row is loaded.
   @Post(':id/reopen')
-  reopen(@Param('id') id: string, @Request() req: AuthedRequest) {
-    return this.ticketsService.reopen(id, req.user.clientId, req.user.id, req.user);
+  reopen(@Param('id') id: string, @Body() dto: ReopenTicketDto, @Request() req: AuthedRequest) {
+    return this.ticketsService.reopen(id, req.user.clientId, dto, req.user.id, req.user);
+  }
+
+  // The client signs off a resolved ticket, which closes it. Customer contacts
+  // only — staff must not acknowledge on the client's behalf.
+  @Post(':id/acknowledge')
+  @UseGuards(CustomerContactGuard)
+  acknowledge(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.acknowledge(id, req.user.clientId, req.user.id, req.user);
   }
 
   // Creation-approval gate — tenant Admin only.

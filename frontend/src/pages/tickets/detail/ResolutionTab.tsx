@@ -148,7 +148,7 @@ export default function ResolutionTab({
 
       {needsTime && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-300">
-          <span>No time has been logged on this ticket yet — log it on the Tasks tab before resolving.</span>
+          <span>No time has been logged on this ticket yet — log it against a task on the Tasks tab before resolving.</span>
           {onLogTime && <Button variant="outline" size="sm" onClick={onLogTime}>Log time</Button>}
         </div>
       )}

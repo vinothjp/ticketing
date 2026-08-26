@@ -257,9 +257,14 @@ export class TasksService {
     await this.tickets.findOne(ticketId, clientId, viewer);
     const existing = await this.prisma.ticketTask.findFirst({ where: { id: taskId, ticketId } });
     if (!existing) throw new NotFoundException('Task not found');
-    // The task's time is audit only, so deleting it charges nothing back — its
-    // status events and comments go with it by cascade.
+    // The hours logged against the task go with it, credited back to the
+    // customer's support-hours pool. Must run *before* the delete: the worklog
+    // link is `SetNull`, so once the task is gone there is nothing left to find
+    // them by. The task's own `hoursSpent` is audit only and charges nothing, so
+    // there is no second reversal to make — its status events and comments go by
+    // cascade.
+    const removed = await this.tickets.dropWorklogsForTask(ticketId, taskId, clientId, viewer);
     await this.prisma.ticketTask.delete({ where: { id: taskId } });
-    return { message: 'Task deleted' };
+    return { message: 'Task deleted', worklogsRemoved: removed.count, hoursRemoved: removed.hours };
   }
 }

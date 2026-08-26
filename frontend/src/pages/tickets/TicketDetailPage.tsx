@@ -143,6 +143,9 @@ export default function TicketDetailPage() {
     next.set('tab', value);
     setSearchParams(next, { replace: true });
   };
+  // Tasks is a wide grid — SLA, status, requester and the rest step aside there
+  // so its columns are not squeezed into a horizontal scroll.
+  const showOverview = tab !== 'tasks';
   const { user } = useAuth();
   const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer');
   const isTenantAdmin = !!user?.roles.includes('Admin');
@@ -494,19 +497,28 @@ export default function TicketDetailPage() {
           min-content, which pushed the fixed side column off-screen. The side
           column narrows a step at lg so both fit beside the sidebar. */}
       <Tabs value={tab} onValueChange={setTab} className="min-w-0">
-        <TabsList className="h-auto flex-wrap">
-          <TabsTrigger value="details">Details</TabsTrigger>
-          <TabsTrigger value="conversation">Conversation</TabsTrigger>
-          <TabsTrigger value="resolution">Resolution</TabsTrigger>
+        {/* Full width, evenly divided: the primitive is `inline-flex w-fit`, which
+            left the strip stopping after History with the rest of the row empty.
+            `flex-1` on each trigger shares the width out, so the set stays even
+            however many tabs the viewer's roles actually show. `flex-wrap` is
+            what keeps it usable narrow — the labels are `whitespace-nowrap`, so
+            below a certain width they wrap to a second evenly-divided row rather
+            than crushing. Scoped to this page: `tabs.tsx` is shared. */}
+        <TabsList className="h-auto w-full flex-wrap">
+          <TabsTrigger className="flex-1" value="details">Details</TabsTrigger>
+          <TabsTrigger className="flex-1" value="conversation">Conversation</TabsTrigger>
+          <TabsTrigger className="flex-1" value="resolution">Resolution</TabsTrigger>
           {/* Tasks & Approvals are internal staff workflows — hidden from customers. */}
-          {isStaff && <TabsTrigger value="tasks">Tasks</TabsTrigger>}
-          {isStaff && <TabsTrigger value="approvals">Approvals</TabsTrigger>}
+          {isStaff && <TabsTrigger className="flex-1" value="tasks">Tasks</TabsTrigger>}
+          {isStaff && <TabsTrigger className="flex-1" value="approvals">Approvals</TabsTrigger>}
           {/* Client logs are Admin-only on the API — don't offer the tab to anyone else. */}
-          {isTenantAdmin && <TabsTrigger value="client-visits">Client Visits</TabsTrigger>}
-          <TabsTrigger value="comments">Comments</TabsTrigger>
-          <TabsTrigger value="history">History</TabsTrigger>
+          {isTenantAdmin && <TabsTrigger className="flex-1" value="client-visits">Client Visits</TabsTrigger>}
+          <TabsTrigger className="flex-1" value="comments">Comments</TabsTrigger>
+          <TabsTrigger className="flex-1" value="history">History</TabsTrigger>
         </TabsList>
-        <div className="grid grid-cols-1 gap-6 pt-4 lg:grid-cols-[minmax(0,1fr)_18rem] xl:grid-cols-[minmax(0,1fr)_20rem]">
+        <div className={`grid grid-cols-1 gap-6 pt-4 ${showOverview
+          ? 'lg:grid-cols-[minmax(0,1fr)_18rem] xl:grid-cols-[minmax(0,1fr)_20rem]'
+          : ''}`}>
           <div className="min-w-0">
 
             <TabsContent value="details" className="space-y-4">
@@ -625,6 +637,10 @@ export default function TicketDetailPage() {
             </TabsContent>
           </div>
 
+          {/* The overview column is dropped on Tasks: that grid needs every
+              pixel it can get, and its columns were being squeezed into a
+              horizontal scroll beside a fixed 18-20rem sidebar. */}
+          {showOverview && (
           <div className="min-w-0 space-y-4">
             {slaClockRunning && (
               <Card className={countdown.overdue ? 'border-destructive/40 bg-destructive/5' : undefined}>
@@ -666,7 +682,7 @@ export default function TicketDetailPage() {
                           return;
                         }
                         if (signingOff && loggedHours <= 0) {
-                          toast.error(`Log the time spent on this ticket before marking it ${meaning} — use Log time on the Tasks tab`);
+                          toast.error(`Log the time spent on this ticket before marking it ${meaning} — add a task on the Tasks tab and log against it`);
                           setTab('tasks');
                           return;
                         }
@@ -826,6 +842,7 @@ export default function TicketDetailPage() {
               </CardContent>
             </Card>
           </div>
+          )}
         </div>
       </Tabs>
     </div>

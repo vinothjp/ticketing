@@ -32,3 +32,16 @@ export const stampLabel = (iso: string | Date) =>
 
 /** Hours, in the shape every ticket screen quotes them. */
 export const hrs = (n: number) => `${Math.round(n * 100) / 100} h`;
+
+/**
+ * The status pill in the task grid: bold and colour-coded by where the task
+ * stands, so a column of them reads at a glance. Distinct from
+ * `taskStatusVariant`, which maps onto the shared Badge variants — these are the
+ * grid's own palette (grey / blue / green), and a cancelled task keeps the
+ * strike-through it carries everywhere else.
+ */
+export const taskStatusPill = (status?: string | null) =>
+  status === 'DONE' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+  : status === 'IN_PROGRESS' ? 'bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-300'
+  : status === 'CANCELLED' ? 'bg-muted text-muted-foreground line-through'
+  : 'bg-muted text-foreground';

@@ -1806,6 +1806,34 @@ Please acknowledge the resolution to close the ticket, or reopen it if the issue
     });
   }
 
+  /**
+   * Drop every hour booked against one task, reversing each from the support-hours
+   * ledger, and report what was removed. Called when the task itself is deleted:
+   * the hours go with the work they were logged against, and the customer's pool
+   * is credited back.
+   *
+   * Deliberately not `onDelete: Cascade` on the FK — the database would delete the
+   * rows without ever telling the ledger, silently leaving a `MONTHLY` pool
+   * showing hours it no longer holds any entry for. The link stays `SetNull` so
+   * any other path that removes a task keeps the entries (and their denormalised
+   * `taskTitle`) rather than losing them unreversed; this method is the one door
+   * that means "these hours were logged in error too".
+   */
+  async dropWorklogsForTask(ticketId: string, taskId: string, clientId: string, viewer: TicketViewer) {
+    const ticket = await this.findOne(ticketId, clientId, viewer);
+    const logs = await this.prisma.ticketWorklog.findMany({
+      where: { ticketId, taskId },
+      select: { id: true, hours: true },
+    });
+    let hours = 0;
+    for (const wl of logs) {
+      // Through `dropWorklog`, so the ledger reversal can never drift from the
+      // one the time list's own delete performs.
+      if (await this.dropWorklog(clientId, ticket, wl.id)) hours += Number(wl.hours);
+    }
+    return { count: logs.length, hours };
+  }
+
   async deleteWorklog(id: string, worklogId: string, clientId: string, viewer: TicketViewer) {
     const ticket = await this.findOne(id, clientId, viewer);
     if (!(await this.dropWorklog(clientId, ticket, worklogId))) {

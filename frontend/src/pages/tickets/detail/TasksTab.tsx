@@ -1,17 +1,23 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type SyntheticEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Plus, Trash2, Clock, MessageSquare } from 'lucide-react';
+import { Plus, Trash2, MessageSquare, AlignLeft, CircleDot, AtSign, Calendar, Clock, Timer } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import api from '../../../lib/api';
 import { useAuth } from '../../../context/AuthContext';
+import { useConfirm } from '@/hooks/useConfirm';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { CellPopover } from '@/components/ui/cell-popover';
 import WorklogSection from './WorklogSection';
-import { useWorklogs } from './ticketQueries';
+import TaskTimePopover from './TaskTimePopover';
+import TaskComments from './TaskComments';
+import { useWorklogInvalidate, useWorklogs } from './ticketQueries';
 import TicketTaskDialog from './TicketTaskDialog';
-import { TASK_STATUSES, hrs, isSettledTask } from './taskMeta';
+import { TASK_STATUSES, hrs, isSettledTask, taskStatusLabel, taskStatusPill } from './taskMeta';
 
 export interface Task {
   id: string;
@@ -28,8 +34,8 @@ export interface UserOption { id: string; username: string; }
 export default function TasksTab({ ticketId }: { ticketId: string }) {
   const qc = useQueryClient();
   const { user } = useAuth();
+  const { confirm, ConfirmDialog } = useConfirm();
   const [addOpen, setAddOpen] = useState(false);
-  const [logOpen, setLogOpen] = useState(false);
   // Which task's detail dialog is up. Null closes it.
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
@@ -50,8 +56,9 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
     queryKey: ['users'],
     queryFn: async () => (await api.get('/api/users')).data,
   });
+  // Not a total for display — the per-row Time spent figures and the delete
+  // confirmation are filtered out of this one cache entry.
   const { data: logs = [] } = useWorklogs(ticketId);
-  const loggedHours = logs.reduce((sum, l) => sum + Number(l.hours), 0);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['ticket-tasks', ticketId] });
@@ -76,28 +83,42 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
     onSuccess: invalidate,
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error updating task'),
   });
+  const invalidateWorklogs = useWorklogInvalidate(ticketId);
   const remove = useMutation({
     mutationFn: (taskId: string) => api.delete(`/api/tickets/${ticketId}/tasks/${taskId}`),
-    onSuccess: () => { invalidate(); setOpenTaskId(null); },
+    // The task takes its logged hours with it, so this has to clear everything a
+    // worklog delete clears — the header chip, the support-hours pool and the
+    // customer's own product screens all read those.
+    onSuccess: (res) => {
+      invalidate();
+      invalidateWorklogs();
+      setOpenTaskId(null);
+      const { worklogsRemoved = 0, hoursRemoved = 0 } = res.data ?? {};
+      toast.success(worklogsRemoved
+        ? `Task deleted · ${hrs(hoursRemoved)} credited back to the support hours`
+        : 'Task deleted');
+    },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error removing task'),
   });
+
+  // Deleting a task destroys the hours booked against it and credits them back to
+  // the customer's pool, so say what will go before it goes.
+  const confirmRemove = async (t: Task) => {
+    const booked = logs.filter((l) => l.taskId === t.id).reduce((sum, l) => sum + Number(l.hours), 0);
+    const ok = await confirm({
+      title: `Delete "${t.title}"?`,
+      description: booked > 0
+        ? `${hrs(booked)} logged against this task will be deleted too and credited back to the customer's support hours. This cannot be undone.`
+        : 'This also removes its comments and status history. This cannot be undone.',
+      destructive: true,
+      confirmText: 'Delete',
+    });
+    if (ok) remove.mutate(t.id);
+  };
 
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Clock className="size-4" />
-            <span><span className="font-semibold text-foreground">{loggedHours}</span> hours logged on this ticket</span>
-          </div>
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={() => setLogOpen(true)}>
-              <Plus className="size-4" /> Log time
-            </Button>
-            <Button size="sm" onClick={() => setAddOpen(true)}><Plus className="size-4" /> Add task</Button>
-          </div>
-        </div>
-
         <Dialog open={addOpen} onOpenChange={setAddOpen}>
           <DialogContent>
             <DialogHeader><DialogTitle>Add task</DialogTitle></DialogHeader>
@@ -128,36 +149,81 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
           </DialogContent>
         </Dialog>
 
-        {tasks.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No tasks yet.</p>
-        ) : (
-          <div className="divide-y border-y">
-            {tasks.map((t) => {
+        {/* A grid, so the figures that matter per task — the hours booked against
+            it and the size of its thread — read down a column instead of being
+            buried in a run of interpuncts. */}
+        <div className="overflow-hidden rounded-lg border">
+        <Table>
+          <TableHeader>
+            {/* Task takes w-full so it absorbs the slack: the rest size to their
+                content instead of the table spreading a gap through every cell.
+                Everything is left-aligned so each heading sits over its own
+                values. The ticket's running total isn't repeated here — the page
+                header's "Time spent" chip already carries it. */}
+            <TableRow className="bg-muted/50 hover:bg-muted/50">
+              <TableHead className="w-full border-r"><HeadLabel icon={AlignLeft}>Task</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={CircleDot}>Status</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={AtSign}>Assignee</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={Calendar}>Due</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={Clock}>Log time</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={Timer}>Time spent</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={MessageSquare}>Comments</HeadLabel></TableHead>
+              <TableHead className="w-10" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {tasks.length === 0 ? (
+              <TableRow className="hover:bg-transparent">
+                <TableCell colSpan={8} className="text-center text-muted-foreground">No tasks yet.</TableCell>
+              </TableRow>
+            ) : tasks.map((t) => {
               const canTrack = mayTrack(t);
-              const hours = Number(t.hoursSpent ?? 0);
+              // What Time spent reports: the hours hand-logged against this task
+              // and charged to the contract. Filtered out of the one cache entry
+              // that already holds the whole ticket's entries — no request of its
+              // own. `hoursSpent` is the other figure entirely: how long the task
+              // stood in progress, derived from the status trail and never
+              // billed, so it rides along in the tooltip rather than competing
+              // for the column.
+              const logged = logs
+                .filter((l) => l.taskId === t.id)
+                .reduce((sum, l) => sum + Number(l.hours), 0);
+              const elapsed = Number(t.hoursSpent ?? 0);
+              // Every cell that carries a control stops the click, or using it
+              // also pops the task dialog the row opens.
+              const stop = {
+                onClick: (e: SyntheticEvent) => e.stopPropagation(),
+                onKeyDown: (e: SyntheticEvent) => e.stopPropagation(),
+              };
               return (
-                // The row opens the task's detail dialog. It carries its own
-                // controls, so it is a div with a button role rather than a
-                // <button> — a button cannot nest one.
-                <div
+                <TableRow
                   key={t.id}
-                  role="button"
-                  tabIndex={0}
-                  className="flex cursor-pointer items-start gap-3 py-2.5 hover:bg-muted/40"
+                  className="cursor-pointer"
                   onClick={() => setOpenTaskId(t.id)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenTaskId(t.id); } }}
                 >
+                  <TableCell className={`w-full border-r whitespace-normal ${isSettledTask(t.status) ? 'text-muted-foreground line-through' : 'text-foreground'}`}>
+                    {t.title}
+                    {t.status === 'CANCELLED' && <span className="ml-2 text-xs no-underline">(cancelled)</span>}
+                  </TableCell>
+
                   {/* The status is the task's clock: every change is stamped, and
-                      the trail is what the dialog shows as its audit. Stop the
-                      click here, or picking a status also pops the dialog. */}
-                  <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                      the trail is what the dialog shows as its audit. Rendered as
+                      a bare pill — the select's box, padding and shadow are
+                      stripped so a column of these reads at a glance, and the
+                      chevron fades in on hover to say it is still editable. */}
+                  <TableCell className="border-r" {...stop}>
                     <Select
                       value={t.status}
                       disabled={!canTrack}
                       onValueChange={(v) => { if (v && v !== t.status) patch.mutate({ taskId: t.id, data: { status: v } }); }}
                     >
-                      <SelectTrigger size="sm" className="w-36">
-                        <SelectValue placeholder="Status" />
+                      <SelectTrigger
+                        size="sm"
+                        className="w-auto gap-1 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 disabled:opacity-100 [&>svg]:opacity-0 [&>svg]:transition-opacity hover:[&>svg]:opacity-60 data-[state=open]:[&>svg]:opacity-60"
+                      >
+                        <span className={`rounded px-1.5 py-0.5 text-xs font-bold uppercase ${taskStatusPill(t.status)}`}>
+                          {taskStatusLabel(t.status)}
+                        </span>
                       </SelectTrigger>
                       <SelectContent>
                         {TASK_STATUSES.map((s) => (
@@ -165,49 +231,102 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
                         ))}
                       </SelectContent>
                     </Select>
-                  </div>
+                  </TableCell>
 
-                  <div className="min-w-0 flex-1 space-y-1">
-                    <div className={`text-sm ${isSettledTask(t.status) ? 'text-muted-foreground line-through' : 'text-foreground'}`}>
-                      {t.title}
-                      {t.status === 'CANCELLED' && <span className="ml-2 text-xs no-underline">(cancelled)</span>}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
-                      <span>{t.assigneeName ?? 'Unassigned'}</span>
-                      {t.dueDate && <span>· due {new Date(t.dueDate).toLocaleDateString()}</span>}
-                      {hours > 0 && (
-                        <span title="Time this task stood in progress — audit only, not charged to the contract">
-                          · <span className="font-semibold text-foreground">{hrs(hours)}</span>
+                  <TableCell className="border-r">
+                    {t.assigneeName ? (
+                      <span className="flex items-center gap-2">
+                        <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
+                          {t.assigneeName.slice(0, 2).toUpperCase()}
                         </span>
-                      )}
-                      {!!t.commentCount && (
-                        <span className="flex items-center gap-1">
-                          · <MessageSquare className="size-3" />{t.commentCount}
-                        </span>
-                      )}
-                    </div>
-                  </div>
+                        <span className="text-foreground">{t.assigneeName}</span>
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">Unassigned</span>
+                    )}
+                  </TableCell>
 
-                  <Button
-                    size="icon" variant="ghost" className="size-8 text-destructive hover:text-destructive"
-                    title="Delete task"
-                    onClick={(e) => { e.stopPropagation(); remove.mutate(t.id); }}
+                  <TableCell className="border-r">
+                    {t.dueDate
+                      ? <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">{new Date(t.dueDate).toLocaleDateString()}</span>
+                      : <span className="text-muted-foreground">—</span>}
+                  </TableCell>
+
+                  <TableCell className="border-r" {...stop}>
+                    <TaskTimePopover ticketId={ticketId} task={t} />
+                  </TableCell>
+
+                  <TableCell
+                    className={`border-r tabular-nums ${logged > 0 ? 'font-semibold text-foreground' : 'text-muted-foreground'}`}
+                    title={
+                      'Hours logged against this task and charged to the contract'
+                      + (elapsed > 0 ? ` · stood in progress for ${hrs(elapsed)}, audit only` : '')
+                    }
                   >
-                    <Trash2 className="size-4" />
-                  </Button>
-                </div>
+                    {logged > 0 ? hrs(logged) : '—'}
+                  </TableCell>
+
+                  <TableCell className="border-r" {...stop}>
+                    <CellPopover
+                      width={380}
+                      estimatedHeight={320}
+                      trigger={({ toggle }) => (
+                        <Button
+                          size="sm" variant="outline" className="h-7 px-2"
+                          onClick={toggle} title="Comments on this task"
+                        >
+                          <MessageSquare className="size-3.5" />
+                          {t.commentCount ? <span className="tabular-nums">{t.commentCount}</span> : 'Comment'}
+                        </Button>
+                      )}
+                    >
+                      {() => (
+                        <div className="space-y-2">
+                          <div className="text-xs font-medium text-muted-foreground">
+                            Comments on <span className="text-foreground">{t.title}</span>
+                          </div>
+                          <TaskCommentsPanel ticketId={ticketId} taskId={t.id} />
+                        </div>
+                      )}
+                    </CellPopover>
+                  </TableCell>
+
+                  <TableCell {...stop}>
+                    <Button
+                      size="icon" variant="ghost" className="size-8 text-destructive hover:text-destructive"
+                      title="Delete task"
+                      onClick={() => confirmRemove(t)}
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
               );
             })}
-          </div>
-        )}
+            {/* The foot of the grid is where a new row is added, so that is where
+                the control lives — not in a band of its own above the table. */}
+            <TableRow className="hover:bg-transparent">
+              <TableCell colSpan={8} className="p-0">
+                <button
+                  type="button"
+                  onClick={() => setAddOpen(true)}
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-sm text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+                >
+                  <Plus className="size-4" /> Add task
+                </button>
+              </TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
+        </div>
       </div>
 
-      {/* Time is logged by hand and lives with the work it was spent on — this is
-          the whole of what used to be the Time tab. */}
-      <div className="space-y-3">
-        <h3 className="text-sm font-medium text-foreground">Time logged</h3>
-        <WorklogSection ticketId={ticketId} tasks={tasks} logOpen={logOpen} onLogOpenChange={setLogOpen} />
-      </div>
+      {/* Only the entries that belong to no task — task time is already totalled
+          in its own row. Renders nothing at all when there are none, so it owns
+          its heading rather than leaving an empty one behind. */}
+      <WorklogSection ticketId={ticketId} />
+
+      {ConfirmDialog}
 
       <TicketTaskDialog
         ticketId={ticketId}
@@ -215,8 +334,46 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
         users={users}
         canTrack={(t) => mayTrack(t)}
         onClose={() => setOpenTaskId(null)}
-        onDelete={(taskId) => remove.mutate(taskId)}
+        onDelete={(taskId) => {
+          const t = tasks.find((x) => x.id === taskId);
+          if (t) confirmRemove(t);
+        }}
       />
+    </div>
+  );
+}
+
+/**
+ * A column heading: its icon, then its label. Muted and small, so the headings
+ * read as chrome and the values below them carry the weight.
+ */
+function HeadLabel({ icon: Icon, children }: { icon: LucideIcon; children: ReactNode }) {
+  return (
+    <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+      <Icon className="size-3.5 shrink-0" />
+      {children}
+    </span>
+  );
+}
+
+/**
+ * The task's thread inside a popover, scrolled to its foot on open.
+ *
+ * `TaskComments` orders oldest-first with the composer below it — the same
+ * thread the task dialog and the Comments tab render, off the same cache entry,
+ * so a count can never disagree with the list it labels. In a panel this short
+ * that puts both the newest comments and the box you type in below the fold,
+ * hence the nudge.
+ */
+function TaskCommentsPanel({ ticketId, taskId }: { ticketId: string; taskId: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+  return (
+    <div ref={ref} className="max-h-64 overflow-y-auto">
+      <TaskComments ticketId={ticketId} taskId={taskId} />
     </div>
   );
 }

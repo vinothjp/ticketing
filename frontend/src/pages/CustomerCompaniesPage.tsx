@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2, Building2, Boxes, Search, Upload } from 'lucide-react';
+import { Plus, Pencil, Trash2, Building2, Boxes, Search, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import CompanyLogo from '@/components/CompanyLogo';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAuth } from '../context/AuthContext';
 import { MyExcessApprovals } from '@/components/ExcessHoursApprovals';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
@@ -22,7 +23,6 @@ interface Company {
   logoUrl?: string | null;
   status: string;
   maxContacts: number;
-  contactCount: number;
   ticketCount: number;
   contractScope?: 'PRODUCT' | 'CUSTOMER';
 }
@@ -139,10 +139,6 @@ export default function CustomerCompaniesPage() {
     });
     setFormOpen(true);
   };
-  // Admins manage the client from the tile's dialog; a consultant is here only to
-  // decide an excess-hours request, so their tile goes straight to the client.
-  const open = (c: Company) =>
-    isAdmin ? openEdit(c) : navigate(`/admin/clients/${c.id}`);
 
   const hasLogo = editing ? !!current?.logoUrl : !!pendingPreview;
 
@@ -258,48 +254,97 @@ export default function CustomerCompaniesPage() {
           <p className="text-sm text-muted-foreground">{companies.length === 0 ? 'No clients yet.' : 'No clients match your search.'}</p>
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-          {filtered.map((c) => (
-            // A div, not a button — the delete control below cannot nest in one.
-            <div
-              key={c.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => open(c)}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(c); } }}
-              className="relative flex cursor-pointer flex-col items-center gap-3 rounded-xl border bg-card p-6 text-center transition-colors hover:border-primary/50 hover:bg-muted/40"
-            >
-              {isAdmin && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute top-2 right-2 size-7 text-muted-foreground hover:text-destructive"
-                  title={`Delete ${c.name}`}
-                  onClick={(e) => { e.stopPropagation(); if (confirm(`Delete ${c.name}?`)) deleteMutation.mutate(c.id); }}
-                >
-                  <Trash2 className="size-4" />
-                </Button>
-              )}
-              <CompanyLogo logoUrl={c.logoUrl} />
-              <div className="min-w-0">
-                <div className="truncate font-semibold text-foreground">{c.name}</div>
-                <div className="text-xs text-muted-foreground">{c.code || '—'}</div>
-              </div>
-              <div className="flex flex-wrap items-center justify-center gap-1.5">
-                <Badge variant={c.status === 'ACTIVE' ? 'success' : 'secondary'}>{c.status}</Badge>
-                {/* Which coverage model this client is on. A client is always on
-                    exactly one, so this reads as a fact, not a toggle. */}
-                <Badge variant="outline" title={c.contractScope === 'CUSTOMER'
-                  ? 'One shared contract covering every product'
-                  : 'Each product carries its own warranty/AMC coverage'}>
-                  {c.contractScope === 'CUSTOMER' ? 'One contract' : 'Per product'}
-                </Badge>
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {c.contactCount}/{c.maxContacts} people · {c.ticketCount} tickets
-              </div>
-            </div>
-          ))}
+        <div className="border-t">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Client</TableHead>
+                <TableHead>Code</TableHead>
+                <TableHead>Contact</TableHead>
+                <TableHead>Email</TableHead>
+                <TableHead>Phone</TableHead>
+                <TableHead>Contract</TableHead>
+                <TableHead className="text-right">Tickets</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.map((c) => (
+                <TableRow key={c.id}>
+                  {/* The wide text columns cap their own width and ellipsize, so a long
+                      name or address can't push the table into a horizontal scroll. */}
+                  <TableCell className="font-medium">
+                    <span className="block max-w-[16rem] truncate text-foreground" title={c.name}>{c.name}</span>
+                  </TableCell>
+                  <TableCell className="w-px">
+                    {c.code
+                      ? <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{c.code}</code>
+                      : <span className="text-muted-foreground">—</span>}
+                  </TableCell>
+                  <TableCell>
+                    {c.contactPerson
+                      ? <span className="block max-w-[11rem] truncate" title={c.contactPerson}>{c.contactPerson}</span>
+                      : <span className="text-muted-foreground">—</span>}
+                  </TableCell>
+                  <TableCell>
+                    {c.contactEmail
+                      ? <span className="block max-w-[16rem] truncate" title={c.contactEmail}>{c.contactEmail}</span>
+                      : <span className="text-muted-foreground">—</span>}
+                  </TableCell>
+                  <TableCell>
+                    {c.contactNumber
+                      ? <span className="block max-w-[10rem] truncate" title={c.contactNumber}>{c.contactNumber}</span>
+                      : <span className="text-muted-foreground">—</span>}
+                  </TableCell>
+                  <TableCell className="w-px">
+                    {/* Which coverage model this client is on. A client is always on
+                        exactly one, so this reads as a fact, not a toggle. */}
+                    <Badge variant="outline" title={c.contractScope === 'CUSTOMER'
+                      ? 'One shared contract covering every product'
+                      : 'Each product carries its own warranty/AMC coverage'}>
+                      {c.contractScope === 'CUSTOMER' ? 'One contract' : 'Per product'}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="w-px text-right tabular-nums text-muted-foreground">{c.ticketCount}</TableCell>
+                  <TableCell className="w-px">
+                    <Badge variant={c.status === 'ACTIVE' ? 'success' : 'secondary'}>{c.status}</Badge>
+                  </TableCell>
+                  <TableCell className="w-px text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      {/* A consultant is here only to decide an excess-hours request,
+                          so the client workspace is the one action they get. */}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-8"
+                        title="Products & consultants"
+                        onClick={() => navigate(`/admin/clients/${c.id}`)}
+                      >
+                        <Boxes className="size-4" />
+                      </Button>
+                      {isAdmin && (
+                        <Button variant="ghost" size="icon" className="size-8" title={`Edit ${c.name}`} onClick={() => openEdit(c)}>
+                          <Pencil className="size-4" />
+                        </Button>
+                      )}
+                      {isAdmin && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-8 text-muted-foreground hover:text-destructive"
+                          title={`Delete ${c.name}`}
+                          onClick={() => { if (confirm(`Delete ${c.name}?`)) deleteMutation.mutate(c.id); }}
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </div>
       )}
     </div>

@@ -9,6 +9,10 @@ import { useConfirm } from '@/hooks/useConfirm';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { CellPopover } from '@/components/ui/cell-popover';
@@ -36,6 +40,9 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
   const { user } = useAuth();
   const { confirm, ConfirmDialog } = useConfirm();
   const [addOpen, setAddOpen] = useState(false);
+  // The rows ticked for a bulk action. Kept as ids rather than indexes so a
+  // refetch that reorders or drops a task can't silently retarget the selection.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   // Which task's detail dialog is up. Null closes it.
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
@@ -59,6 +66,18 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
   // Not a total for display — the per-row Time spent figures and the delete
   // confirmation are filtered out of this one cache entry.
   const { data: logs = [] } = useWorklogs(ticketId);
+
+  // A task deleted elsewhere must fall out of the selection, or a bulk action
+  // would fire at an id that no longer exists.
+  const chosen = tasks.filter((t) => selected.has(t.id));
+  const allChosen = tasks.length > 0 && chosen.length === tasks.length;
+  const toggleOne = (id: string, on: boolean) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (on) next.add(id); else next.delete(id);
+    return next;
+  });
+  const toggleAll = (on: boolean) => setSelected(on ? new Set(tasks.map((t) => t.id)) : new Set());
+  const clearSelection = () => setSelected(new Set());
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['ticket-tasks', ticketId] });
@@ -116,6 +135,54 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
     if (ok) remove.mutate(t.id);
   };
 
+  // Bulk actions run one at a time, not in parallel: deleting a task reverses its
+  // hours against the customer's support-hours ledger, and concurrent writes to
+  // the same month's row would race each other.
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const runBulk = async (label: string, fn: (t: Task) => Promise<unknown>) => {
+    setBulkBusy(true);
+    let done = 0;
+    const failures: string[] = [];
+    for (const t of chosen) {
+      try { await fn(t); done += 1; } catch (e: any) {
+        failures.push(e?.response?.data?.message || t.title);
+      }
+    }
+    setBulkBusy(false);
+    clearSelection();
+    invalidate();
+    invalidateWorklogs();
+    if (done) toast.success(`${label} ${done} task${done === 1 ? '' : 's'}`);
+    // Named rather than counted — a refusal is nearly always a permission rule,
+    // and the reason is the useful half.
+    if (failures.length) toast.error(`${failures.length} failed · ${failures[0]}`);
+  };
+
+  const bulkStatus = (status: string) =>
+    runBulk('Updated', (t) => api.patch(`/api/tickets/${ticketId}/tasks/${t.id}`, { status }));
+  const bulkAssign = (assigneeUserId: string) =>
+    runBulk('Reassigned', (t) => api.patch(`/api/tickets/${ticketId}/tasks/${t.id}`, { assigneeUserId }));
+  const bulkDelete = async () => {
+    const booked = chosen.reduce(
+      (sum, t) => sum + logs.filter((l) => l.taskId === t.id).reduce((n, l) => n + Number(l.hours), 0),
+      0,
+    );
+    const ok = await confirm({
+      title: `Delete ${chosen.length} task${chosen.length === 1 ? '' : 's'}?`,
+      description: booked > 0
+        ? `${hrs(booked)} logged against them will be deleted too and credited back to the customer's support hours. This cannot be undone.`
+        : 'This also removes their comments and status history. This cannot be undone.',
+      destructive: true,
+      confirmText: 'Delete',
+    });
+    if (ok) await runBulk('Deleted', (t) => api.delete(`/api/tickets/${ticketId}/tasks/${t.id}`));
+  };
+
+  // Mirrors `assertMayTrack`: only a task's own assignee or a tenant Admin moves
+  // its status, so the bulk control is offered only when every ticked row
+  // qualifies — rather than firing and collecting 403s.
+  const mayTrackAll = chosen.length > 0 && chosen.every(mayTrack);
+
   return (
     <div className="space-y-6">
       <div className="space-y-3">
@@ -152,6 +219,51 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
         {/* A grid, so the figures that matter per task — the hours booked against
             it and the size of its thread — read down a column instead of being
             buried in a run of interpuncts. */}
+        {/* Only present while something is ticked, so the grid is uncluttered at
+            rest and the actions appear exactly when they can be used. */}
+        {chosen.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2">
+            <span className="text-sm font-medium text-foreground">
+              {chosen.length} selected
+            </span>
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm" variant="outline" disabled={bulkBusy || !mayTrackAll}
+                    title={mayTrackAll ? undefined : 'Only a task\u2019s assignee or an admin can move its status'}>
+                    Status
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {TASK_STATUSES.map((st) => (
+                    <DropdownMenuItem key={st.value} onSelect={() => bulkStatus(st.value)}>
+                      {st.label}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm" variant="outline" disabled={bulkBusy}>Assign</Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="max-h-64 overflow-y-auto">
+                  <DropdownMenuItem onSelect={() => bulkAssign('')}>Unassigned</DropdownMenuItem>
+                  {users.map((u) => (
+                    <DropdownMenuItem key={u.id} onSelect={() => bulkAssign(u.id)}>{u.username}</DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              <Button size="sm" variant="outline" disabled={bulkBusy}
+                className="text-destructive hover:text-destructive" onClick={bulkDelete}>
+                <Trash2 className="size-4" /> Delete
+              </Button>
+              <Button size="sm" variant="ghost" disabled={bulkBusy} onClick={clearSelection}>Clear</Button>
+            </div>
+          </div>
+        )}
+
         <div className="overflow-hidden rounded-lg border">
         <Table>
           <TableHeader>
@@ -161,6 +273,18 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
                 values. The ticket's running total isn't repeated here — the page
                 header's "Time spent" chip already carries it. */}
             <TableRow className="bg-muted/50 hover:bg-muted/50">
+              <TableHead className="border-r p-0">
+                <div className="flex w-14 items-center justify-center">
+                  <Checkbox
+                    aria-label="Select all tasks"
+                    disabled={tasks.length === 0}
+                    // Indeterminate whenever the tick is partial, so the header
+                    // never claims everything is selected when it isn't.
+                    checked={allChosen ? true : chosen.length > 0 ? 'indeterminate' : false}
+                    onCheckedChange={(v) => toggleAll(v === true)}
+                  />
+                </div>
+              </TableHead>
               <TableHead className="w-full border-r"><HeadLabel icon={AlignLeft}>Task</HeadLabel></TableHead>
               <TableHead className="border-r"><HeadLabel icon={CircleDot}>Status</HeadLabel></TableHead>
               <TableHead className="border-r"><HeadLabel icon={AtSign}>Assignee</HeadLabel></TableHead>
@@ -174,7 +298,7 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
           <TableBody>
             {tasks.length === 0 ? (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={8} className="text-center text-muted-foreground">No tasks yet.</TableCell>
+                <TableCell colSpan={9} className="text-center text-muted-foreground">No tasks yet.</TableCell>
               </TableRow>
             ) : tasks.map((t) => {
               const canTrack = mayTrack(t);
@@ -199,8 +323,18 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
                 <TableRow
                   key={t.id}
                   className="cursor-pointer"
+                  data-state={selected.has(t.id) ? 'selected' : undefined}
                   onClick={() => setOpenTaskId(t.id)}
                 >
+                  <TableCell className="border-r p-0" {...stop}>
+                    <div className="flex w-14 items-center justify-center py-3">
+                      <Checkbox
+                        aria-label={`Select ${t.title}`}
+                        checked={selected.has(t.id)}
+                        onCheckedChange={(v) => toggleOne(t.id, v === true)}
+                      />
+                    </div>
+                  </TableCell>
                   <TableCell className={`w-full border-r whitespace-normal ${isSettledTask(t.status) ? 'text-muted-foreground line-through' : 'text-foreground'}`}>
                     {t.title}
                     {t.status === 'CANCELLED' && <span className="ml-2 text-xs no-underline">(cancelled)</span>}
@@ -215,7 +349,17 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
                     <Select
                       value={t.status}
                       disabled={!canTrack}
-                      onValueChange={(v) => { if (v && v !== t.status) patch.mutate({ taskId: t.id, data: { status: v } }); }}
+                      onValueChange={(v) => {
+                        if (!v || v === t.status) return;
+                        // Done means the work is finished *and booked*. Mirrors
+                        // the backend gate so the agent hears why here rather
+                        // than bouncing off a 400. Cancelling stays free.
+                        if (v === 'DONE' && logged <= 0) {
+                          toast.error(`Log the time spent on "${t.title}" before marking it done`);
+                          return;
+                        }
+                        patch.mutate({ taskId: t.id, data: { status: v } });
+                      }}
                     >
                       <SelectTrigger
                         size="sm"
@@ -306,7 +450,7 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
             {/* The foot of the grid is where a new row is added, so that is where
                 the control lives — not in a band of its own above the table. */}
             <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={8} className="p-0">
+              <TableCell colSpan={9} className="p-0">
                 <button
                   type="button"
                   onClick={() => setAddOpen(true)}

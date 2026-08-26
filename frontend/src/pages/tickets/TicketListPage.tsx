@@ -13,7 +13,7 @@ import {
   DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
-import { getPriorityMeta, isOverdueTicket, isCreatedTodayTicket, getApprovalMeta, type TicketSummary } from './ticketHelpers';
+import { getPriorityMeta, getSlaMeta, isOverdueTicket, isCreatedTodayTicket, getApprovalMeta, type TicketSummary } from './ticketHelpers';
 
 interface TemplateSummary { id: string; name: string; }
 interface CompanyOption { id: string; name: string; }
@@ -337,6 +337,7 @@ export default function TicketListPage() {
             {sorted.length === 0 && <p className="p-6 text-center text-muted-foreground">No tickets match this view.</p>}
             {sorted.map((t) => {
               const priority = getPriorityMeta(t.priority);
+              const sla = getSlaMeta(t);
               const due = t.dueDate
                 ? new Date(t.dueDate).toLocaleString(undefined, { month: 'short', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
                 : '—';
@@ -396,7 +397,7 @@ export default function TicketListPage() {
                           isAdmin={isAdmin}
                           label="Priority"
                           value={t.priority ?? ''}
-                          display={<><span className={`inline-block size-2.5 rounded-sm ${priority.barClass}`} /><span className="text-foreground">{priority.label} ({priority.code})</span></>}
+                          display={<span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${priority.badgeClass}`}>{priority.label}</span>}
                           options={priorityOpts.filter((o) => o.isActive !== false).map((o) => ({
                             value: o.value,
                             node: <span className="inline-flex items-center gap-2"><span className={`inline-block size-2.5 rounded-sm ${getPriorityMeta(o.value).barClass}`} />{o.label}</span>,
@@ -420,6 +421,16 @@ export default function TicketListPage() {
                         users={assignableUsers}
                         onAssign={(userIds) => assignMutation.mutate({ id: t.id, userIds })}
                       />
+                      {sep}
+                      <span className="inline-flex items-center gap-1.5">
+                        SLA :
+                        <span
+                          title={sla.title}
+                          className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${sla.className}`}
+                        >
+                          {sla.label}
+                        </span>
+                      </span>
                     </div>
                   </div>
                 </div>

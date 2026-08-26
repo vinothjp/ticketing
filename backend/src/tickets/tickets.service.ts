@@ -492,6 +492,11 @@ export class TicketsService {
       if (label === 'resolved' || label === 'closed') {
         await this.assertTasksComplete(id, label);
         await this.assertTimeLogged(id, label);
+        // Only on the way in: a ticket resolved before this rule existed must
+        // still be closable, and re-closing a resolved one is not a new sign-off.
+        if (!ticket.resolvedAt) {
+          this.assertResolutionNotes(ticket.resolution, label);
+        }
       }
       if (label === 'closed' && !closedDate) closedDate = new Date();
       // Resolving from the status dropdown must stamp the same fields the
@@ -699,6 +704,7 @@ export class TicketsService {
     if (!wasResolved) {
       await this.assertTasksComplete(id, 'resolved');
       await this.assertTimeLogged(id, 'resolved');
+      this.assertResolutionNotes(dto.resolution, 'resolved');
     }
     const resolvedStatus = dto.ticketStatus || 'Resolved';
     // This endpoint takes a status, so it is a second door into Closed — same rule.
@@ -978,6 +984,22 @@ export class TicketsService {
     if (open > 0) {
       throw new BadRequestException(
         `${open} task${open === 1 ? ' is' : 's are'} still open on this ticket — complete or cancel ${open === 1 ? 'it' : 'them'} before marking it ${action}`,
+      );
+    }
+  }
+
+  /**
+   * A ticket cannot be signed off with nothing said about how. The notes are what
+   * the client is asked to acknowledge, and what they judge a reopen on, so an
+   * empty resolution makes the whole acknowledge/close loop meaningless.
+   */
+  private assertResolutionNotes(
+    resolution: string | null | undefined,
+    action: 'resolved' | 'closed',
+  ) {
+    if (!resolution?.trim()) {
+      throw new BadRequestException(
+        `Write a resolution message before marking this ticket ${action}`,
       );
     }
   }

@@ -31,6 +31,8 @@ const ICON: Record<string, typeof Circle> = {
   COMMENT_ADDED: MessageSquare,
   APPROVAL_REQUESTED: Stamp,
   APPROVAL_DECIDED: Stamp,
+  APPROVAL_UPDATED: Stamp,
+  APPROVAL_CANCELLED: Stamp,
   MESSAGE_SENT: Mail,
   MESSAGE_RECEIVED: Mail,
   ATTACHMENT_ADDED: Paperclip,

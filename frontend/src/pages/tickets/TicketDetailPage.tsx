@@ -8,12 +8,12 @@ import { useAuth } from '../../context/AuthContext';
 import { assetUrl } from '@/lib/assetUrl';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
-import { getPriorityMeta, formatCountdown, getApprovalMeta, type TicketTechnicianRow } from './ticketHelpers';
+import { getPriorityMeta, formatCountdown, getApprovalMeta, SLA_PANEL_CLASS, type TicketTechnicianRow } from './ticketHelpers';
 import type { MergedTemplateField } from './DynamicTicketField';
 import HistoryTab from './detail/HistoryTab';
 import ResolutionTab from './detail/ResolutionTab';
@@ -296,6 +296,7 @@ export default function TicketDetailPage() {
 
   const priority = getPriorityMeta(ticket.priority);
   const countdown = formatCountdown(ticket.dueDate, ticket.slaHours);
+  const slaPanel = SLA_PANEL_CLASS[countdown.tone];
   // Statuses are tenant-configurable, so read the meaning off the picklist label —
   // the same rule the backend uses to decide what may be acknowledged.
   const statusMeaningOf = (value: string) =>
@@ -521,9 +522,12 @@ export default function TicketDetailPage() {
           : ''}`}>
           <div className="min-w-0">
 
-            <TabsContent value="details" className="space-y-4">
+            <TabsContent value="details" className="space-y-3">
               <Card>
-                <CardContent className="py-4">
+                {/* No top padding: this card has no border of its own, so `py-4` only
+                    pushed the requestor row below the top of the bordered SLA panel
+                    beside it. Every other tab starts flush — this one now does too. */}
+                <CardContent className="pb-4">
                   <div className="mb-2 flex items-center gap-2">
                     <div className="flex size-8 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
                       {(ticket.requestorName || '??').slice(0, 2).toUpperCase()}
@@ -556,45 +560,123 @@ export default function TicketDetailPage() {
                 </CardContent>
               </Card>
 
-              {(ticket.productName || ticket.moduleName || ticket.consultantType) && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-sm">Product &amp; routing</CardTitle>
-                  </CardHeader>
-                  <CardContent className="grid grid-cols-1 gap-4 pb-4 sm:grid-cols-3">
-                    <div>
-                      <div className="text-xs text-muted-foreground">Product</div>
-                      <div className="text-sm text-foreground">{ticket.productName ?? '—'}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">Module</div>
-                      <div className="text-sm text-foreground">{ticket.moduleName ?? '—'}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">Type</div>
-                      <div className="text-sm text-foreground">
-                        {ticket.consultantType ? ticket.consultantType.charAt(0) + ticket.consultantType.slice(1).toLowerCase() : '—'}
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
+              {/* One flat facts grid: routing, template, the people on the
+                  ticket, then the project link. Field labels rather than card
+                  headings, so the whole block reads as one set of ticket facts
+                  instead of four competing panels. */}
+              <Card>
+                <CardContent className="space-y-4 py-4">
+                  {/* A single grid — repeat(3, minmax(0,1fr)) — owns every cell,
+                      so labels and values line up column-for-column across all
+                      three rows. Each field is exactly one grid item; none of
+                      them sets its own width or offset, so the Assigned agent
+                      dropdown cannot shift Requester or Company. Rows that do
+                      not fill their three columns are ended by `sm:col-start-1`
+                      on the next field, which is what keeps the template fields
+                      (however many the template defines) off the people row. */}
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                    {(ticket.productName || ticket.moduleName || ticket.consultantType) && (
+                      <>
+                        <div>
+                          <div className="mb-1 text-xs text-muted-foreground">Product</div>
+                          <div className="text-sm text-foreground">{ticket.productName ?? '—'}</div>
+                        </div>
+                        <div>
+                          <div className="mb-1 text-xs text-muted-foreground">Module</div>
+                          <div className="text-sm text-foreground">{ticket.moduleName ?? '—'}</div>
+                        </div>
+                        <div>
+                          <div className="mb-1 text-xs text-muted-foreground">Type</div>
+                          <div className="text-sm text-foreground">
+                            {ticket.consultantType ? ticket.consultantType.charAt(0) + ticket.consultantType.slice(1).toLowerCase() : '—'}
+                          </div>
+                        </div>
+                      </>
+                    )}
 
-              {templateFieldRows.length > 0 && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-sm">Template fields · {template?.name}</CardTitle>
-                  </CardHeader>
-                  <CardContent className="grid grid-cols-1 gap-4 pb-4 sm:grid-cols-2">
+                    {/* The template, then the values captured for its own fields. */}
+                    <div className="sm:col-start-1">
+                      <div className="mb-1 text-xs text-muted-foreground">Template</div>
+                      <div className="text-sm text-foreground">{ticket.template.name}</div>
+                    </div>
                     {templateFieldRows.map(({ field, value }) => (
                       <div key={field.fieldKey}>
-                        <div className="text-xs text-muted-foreground">{field.label}</div>
+                        <div className="mb-1 text-xs text-muted-foreground">{field.label}</div>
                         <div className="text-sm text-foreground">{value}</div>
                       </div>
                     ))}
-                  </CardContent>
-                </Card>
-              )}
+
+                    <div className="sm:col-start-1">
+                      <div className="mb-1 text-xs text-muted-foreground">Assigned agent</div>
+                      {isStaff ? (
+                        // A ticket has at most one agent. Selecting a name (re)assigns; "Unassigned" clears it.
+                        (() => {
+                          const assignedId = ticket.technicians[0]?.user.id ?? 'none';
+                          const pending = ticket.approvalStatus === 'PENDING' || ticket.approvalStatus === 'REJECTED';
+                          if (pending) {
+                            return <p className="text-sm text-muted-foreground">Assignable once the ticket is approved.</p>;
+                          }
+                          return (
+                            <Select
+                              value={assignedId}
+                              onValueChange={(v) => assignMutation.mutate(v === 'none' ? [] : [v])}
+                            >
+                              <SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="none">Unassigned</SelectItem>
+                                {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                          );
+                        })()
+                      ) : (
+                        // Customers see who is handling their ticket, but cannot change it.
+                        ticket.technicians.length > 0
+                          ? <div className="text-sm text-foreground">{ticket.technicians[0].user.username}</div>
+                          : <p className="text-sm text-muted-foreground">Not yet assigned.</p>
+                      )}
+                    </div>
+                    <div>
+                      <div className="mb-1 text-xs text-muted-foreground">Requester</div>
+                      <div className="text-sm text-foreground">{ticket.requestorName || '—'}</div>
+                      {ticket.requestorContact && <div className="text-xs text-muted-foreground">{ticket.requestorContact}</div>}
+                    </div>
+                    <div>
+                      <div className="mb-1 text-xs text-muted-foreground">Company</div>
+                      <div className="text-sm text-foreground">{ticket.customerCompany?.name ?? 'Internal'}</div>
+                      {ticket.customerName && <div className="text-xs text-muted-foreground">Customer: {ticket.customerName}</div>}
+                    </div>
+                  </div>
+
+                  {/* Its own full-width row beneath the grid. */}
+                  {isStaff && (
+                    <div>
+                      <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <FolderKanban className="size-3.5" /> Project
+                      </div>
+                      {ticket.project ? (
+                        <div className="flex items-center justify-between gap-2 rounded-md border p-2">
+                          <Link to={`/projects/${ticket.project.id}`} className="min-w-0">
+                            <div className="truncate text-sm font-medium text-foreground hover:underline">{ticket.project.name}</div>
+                            <div className="text-xs text-muted-foreground">{ticket.project.projectNumber}</div>
+                          </Link>
+                          <Button size="icon" variant="ghost" className="size-7 shrink-0"
+                            onClick={() => unlinkProject.mutate(ticket.project!.id)} title="Unlink">
+                            <X className="size-4" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <Select value="" onValueChange={(v) => linkProject.mutate(v)}>
+                          <SelectTrigger className="w-full"><SelectValue placeholder="Associate a project… (optional)" /></SelectTrigger>
+                          <SelectContent>
+                            {projectOptions.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
             </TabsContent>
 
             <TabsContent value="conversation">
@@ -614,7 +696,12 @@ export default function TicketDetailPage() {
               <TasksTab ticketId={ticket.id} />
             </TabsContent>
             <TabsContent value="approvals">
-              <ApprovalsTab ticketId={ticket.id} />
+              <ApprovalsTab
+                ticketId={ticket.id}
+                // Editing/withdrawing a request belongs to the side that asked for it:
+                // a tenant Admin or the agent holding this ticket. Mirrors the server gate.
+                canManage={isTenantAdmin || ticket.technicians.some((t) => t.user.id === user?.id)}
+              />
             </TabsContent>
             <TabsContent value="client-visits">
               <ClientVisitsPanel
@@ -641,17 +728,20 @@ export default function TicketDetailPage() {
               pixel it can get, and its columns were being squeezed into a
               horizontal scroll beside a fixed 18-20rem sidebar. */}
           {showOverview && (
-          <div className="min-w-0 space-y-4">
+          <div className="min-w-0 space-y-3">
+            {/* `Card` is deliberately flat app-wide, so the outline is set here
+                rather than in card.tsx — this one panel gets a light box so the
+                countdown reads as its own thing beside the tab content. Its colour
+                is the same green/amber/red grade the SLA pill on the ticket list
+                carries, from the shared `SLA_PANEL_CLASS` table. */}
             {slaClockRunning && (
-              <Card className={countdown.overdue ? 'border-destructive/40 bg-destructive/5' : undefined}>
-                <CardContent className="py-4">
-                  <div className={countdown.overdue ? 'text-xs text-destructive' : 'text-xs text-muted-foreground'}>SLA — resolution</div>
-                  <div className={countdown.overdue ? 'text-xl font-bold text-destructive' : 'text-xl font-bold text-foreground'}>
-                    {countdown.label}
-                  </div>
-                  <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+              <Card className={`rounded-lg border ${slaPanel.box}`}>
+                <CardContent className="px-4 py-4">
+                  <div className={`text-xs ${slaPanel.label}`}>SLA — resolution</div>
+                  <div className={`text-xl font-bold ${slaPanel.value}`}>{countdown.label}</div>
+                  <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-background/60">
                     <div
-                      className={countdown.overdue ? 'h-full bg-destructive' : 'h-full bg-primary'}
+                      className={`h-full ${slaPanel.bar}`}
                       style={{ width: `${Math.round((countdown.overdue ? 1 : countdown.fraction) * 100)}%` }}
                     />
                   </div>
@@ -686,12 +776,20 @@ export default function TicketDetailPage() {
                           setTab('tasks');
                           return;
                         }
+                        // Nothing is signed off with nothing said about how. Only
+                        // on the way in — a ticket already resolved may still be
+                        // moved on without re-authoring its notes.
+                        if (signingOff && !ticket.resolvedAt && !ticket.resolution?.trim()) {
+                          toast.error(`Write a resolution message before marking this ticket ${meaning}`);
+                          setTab('resolution');
+                          return;
+                        }
                         updateMutation.mutate({ ticketStatus: v });
-                        // On Resolved: jump to the Resolution tab. If a resolution note
-                        // already exists just confirm; otherwise the tab prompts for one.
+                        // On Resolved: jump to the Resolution tab to confirm what
+                        // the client will be asked to acknowledge.
                         if (v.toLowerCase() === 'resolved') {
                           setTab('resolution');
-                          if (ticket.resolution?.trim()) toast.success('Ticket resolved');
+                          toast.success('Ticket resolved');
                         }
                       }}
                     >
@@ -723,11 +821,6 @@ export default function TicketDetailPage() {
                       })}
                     </p>
                   )}
-                  {isStaff && closedByClient && (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Resolve this ticket — it closes when {ticket.customerCompany?.name ?? 'the client'} acknowledges the resolution.
-                    </p>
-                  )}
                 </div>
                 <div>
                   <div className="mb-1 text-xs text-muted-foreground">Priority</div>
@@ -757,88 +850,12 @@ export default function TicketDetailPage() {
                     <span className="text-foreground">{ticket.ticketCategory}</span>
                   </div>
                 )}
-                {ticket.slaHours != null && (
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">SLA</span>
-                    <span className="text-foreground">Resolve in {ticket.slaHours}h</span>
-                  </div>
-                )}
                 {ticket.dueDate && (
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Due</span>
                     <span className="text-foreground">{new Date(ticket.dueDate).toLocaleDateString()}</span>
                   </div>
                 )}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader><CardTitle className="text-sm">Assigned agent</CardTitle></CardHeader>
-              <CardContent className="space-y-2 pb-4">
-                {isStaff ? (
-                  // A ticket has at most one agent. Selecting a name (re)assigns; "Unassigned" clears it.
-                  (() => {
-                    const assignedId = ticket.technicians[0]?.user.id ?? 'none';
-                    const pending = ticket.approvalStatus === 'PENDING' || ticket.approvalStatus === 'REJECTED';
-                    if (pending) {
-                      return <p className="text-sm text-muted-foreground">Assignable once the ticket is approved.</p>;
-                    }
-                    return (
-                      <Select
-                        value={assignedId}
-                        onValueChange={(v) => assignMutation.mutate(v === 'none' ? [] : [v])}
-                      >
-                        <SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">Unassigned</SelectItem>
-                          {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    );
-                  })()
-                ) : (
-                  // Customers see who is handling their ticket, but cannot change it.
-                  ticket.technicians.length > 0
-                    ? <div className="text-sm text-foreground">{ticket.technicians[0].user.username}</div>
-                    : <p className="text-sm text-muted-foreground">Not yet assigned.</p>
-                )}
-              </CardContent>
-            </Card>
-
-            {isStaff && (
-              <Card>
-                <CardHeader><CardTitle className="flex items-center gap-1.5 text-sm"><FolderKanban className="size-4" /> Project</CardTitle></CardHeader>
-                <CardContent className="space-y-2 pb-4 text-sm">
-                  {ticket.project ? (
-                    <div className="flex items-center justify-between gap-2 rounded-md border p-2">
-                      <Link to={`/projects/${ticket.project.id}`} className="min-w-0">
-                        <div className="truncate font-medium text-foreground hover:underline">{ticket.project.name}</div>
-                        <div className="text-xs text-muted-foreground">{ticket.project.projectNumber}</div>
-                      </Link>
-                      <Button size="icon" variant="ghost" className="size-7 shrink-0"
-                        onClick={() => unlinkProject.mutate(ticket.project!.id)} title="Unlink">
-                        <X className="size-4" />
-                      </Button>
-                    </div>
-                  ) : (
-                    <Select value="" onValueChange={(v) => linkProject.mutate(v)}>
-                      <SelectTrigger className="w-full"><SelectValue placeholder="Associate a project…" /></SelectTrigger>
-                      <SelectContent>
-                        {projectOptions.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  )}
-                </CardContent>
-              </Card>
-            )}
-
-            <Card>
-              <CardHeader><CardTitle className="text-sm">Requester</CardTitle></CardHeader>
-              <CardContent className="space-y-1 pb-4 text-sm">
-                <div className="text-foreground">{ticket.requestorName || '—'}</div>
-                {ticket.requestorContact && <div className="text-muted-foreground">{ticket.requestorContact}</div>}
-                <div className="text-muted-foreground">Company: <span className="text-foreground">{ticket.customerCompany?.name ?? 'Internal'}</span></div>
-                {ticket.customerName && <div className="text-muted-foreground">Customer: {ticket.customerName}</div>}
               </CardContent>
             </Card>
           </div>

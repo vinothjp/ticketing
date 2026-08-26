@@ -13,7 +13,7 @@ import ConsultantGrid from '@/components/ConsultantGrid';
 import SupportHoursChoice from '@/components/SupportHoursChoice';
 import SupportHoursConfig from '@/components/SupportHoursConfig';
 import CoverageMeter from '@/components/CoverageMeter';
-import ExcessHoursApprovals from '@/components/ExcessHoursApprovals';
+import { useExcessRequests, useDecideExcess, latestExcessFor } from '@/components/excessHoursQueries';
 import { useAuth } from '../../context/AuthContext';
 
 interface Pool { allocated: number | null; used: number; left: number | null; unlimited?: boolean }
@@ -42,11 +42,11 @@ const statusCls = (s: string) =>
   : s === 'EXPIRED' ? 'bg-destructive/15 text-destructive border-destructive/30'
   : 'bg-muted text-muted-foreground border-border';
 
-function Num({ label, value, onChange, type = 'number', min }: { label: string; value: string | number; onChange: (v: string) => void; type?: string; min?: string | number }) {
+function Num({ label, value, onChange, type = 'number', min, disabled }: { label: string; value: string | number; onChange: (v: string) => void; type?: string; min?: string | number; disabled?: boolean }) {
   return (
     <div className="space-y-1">
       <label className="text-xs text-muted-foreground">{label}</label>
-      <Input type={type} min={min ?? (type === 'number' ? 0 : undefined)} value={value} onChange={(e) => onChange(e.target.value)} className="h-8" />
+      <Input type={type} min={min ?? (type === 'number' ? 0 : undefined)} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} className="h-8" />
     </div>
   );
 }
@@ -135,6 +135,13 @@ export default function ClientProductPage() {
   // than offering buttons that 403.
   const { user } = useAuth();
   const isAdmin = !!user?.roles.includes('Admin');
+  // The live excess-hours request for this product's pool, decided inline in the
+  // support-hours card below. Readable by any staff member (the GET is Admin+Viewer);
+  // who may *decide* mirrors the backend rule — the named approver, or an Admin.
+  const { data: excessRequests = [] } = useExcessRequests(companyId);
+  const excessRequest = latestExcessFor(excessRequests, cpId);
+  const decideExcess = useDecideExcess(companyId);
+  const canDecideExcess = excessRequest?.status === 'PENDING' && (isAdmin || excessRequest.approverUserId === user?.id);
   const [renewOpen, setRenewOpen] = useState(false);
   const [renew, setRenew] = useState({ months: 12, amcMonthlyCost: 0 });
   const doRenew = useMutation({
@@ -216,32 +223,40 @@ export default function ClientProductPage() {
           </div>
         </section>
 
-        {/* What was agreed (left) and how the hours are governed (right). Both
-            halves are written by the one Save terms button below — admins only. */}
-        {isAdmin && (
-        <>
-        <div className="grid gap-6 lg:grid-cols-2">
-          <section className="space-y-3">
+        {/* What was agreed (left) and how the hours are governed (right), as two
+            cards of equal height — `items-stretch` + `h-full`, with Save terms
+            pinned to the left card's floor by `mt-auto` so both columns end on
+            the same line instead of leaving a band under the shorter one.
+            Every staff member reads this; only an Admin writes it. */}
+        <div className="grid items-stretch gap-4 lg:grid-cols-2">
+          <section className="flex h-full flex-col gap-3 rounded-lg border bg-card p-4">
             <h2 className="text-base font-semibold text-foreground">Terms</h2>
-            <RadioGroup value={terms.coverageType} onValueChange={onCoverage} className="flex gap-5">
+            <RadioGroup value={terms.coverageType} onValueChange={onCoverage} disabled={!isAdmin} className="flex gap-5">
               <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="WARRANTY" /> Under warranty <span className="text-xs text-muted-foreground">(free)</span></label>
               <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="AMC" /> Under AMC <span className="text-xs text-muted-foreground">(paid)</span></label>
             </RadioGroup>
-            <SupportHoursChoice unlimited={terms.supportHoursUnlimited} onChange={(u) => setTerms({ ...terms, supportHoursUnlimited: u })} />
+            <SupportHoursChoice unlimited={terms.supportHoursUnlimited} disabled={!isAdmin} onChange={(u) => setTerms({ ...terms, supportHoursUnlimited: u })} />
             <div className="grid grid-cols-2 gap-2">
-              <Num label="Start date" type="date" value={terms.startDate} onChange={(v) => setTerms({ ...terms, startDate: v })} />
-              <Num label="End date" type="date" min={terms.startDate || undefined} value={terms.endDate} onChange={(v) => setTerms({ ...terms, endDate: v })} />
+              <Num label="Start date" type="date" disabled={!isAdmin} value={terms.startDate} onChange={(v) => setTerms({ ...terms, startDate: v })} />
+              <Num label="End date" type="date" min={terms.startDate || undefined} disabled={!isAdmin} value={terms.endDate} onChange={(v) => setTerms({ ...terms, endDate: v })} />
               {!terms.supportHoursUnlimited && (
-                <Num label={terms.hoursPeriod === 'MONTHLY' ? 'Support hours / month' : 'Support hours (for the term)'} min={1} value={terms.supportHours} onChange={(v) => setTerms({ ...terms, supportHours: Number(v) })} />
+                <Num label={terms.hoursPeriod === 'MONTHLY' ? 'Support hours / month' : 'Support hours (for the term)'} min={1} disabled={!isAdmin} value={terms.supportHours} onChange={(v) => setTerms({ ...terms, supportHours: Number(v) })} />
               )}
-              <Num label="No. of visits" value={terms.visits} onChange={(v) => setTerms({ ...terms, visits: Number(v) })} />
-              {terms.coverageType === 'AMC' && (
+              <Num label="No. of visits" disabled={!isAdmin} value={terms.visits} onChange={(v) => setTerms({ ...terms, visits: Number(v) })} />
+              {/* What the client pays is withheld from non-Admins server-side — it
+                  arrives null, so don't render an empty box for it. */}
+              {isAdmin && terms.coverageType === 'AMC' && (
                 <Num label="Contract amount" value={terms.contractAmount} onChange={(v) => setTerms({ ...terms, contractAmount: Number(v) })} />
               )}
             </div>
+            {isAdmin && (
+              <div className="mt-auto flex justify-end pt-2">
+                <Button size="sm" onClick={saveTerms}>Save terms</Button>
+              </div>
+            )}
           </section>
 
-          <section className="space-y-3">
+          <section className="flex h-full flex-col gap-3 rounded-lg border bg-card p-4">
             <h2 className="text-base font-semibold text-foreground">Support hours settings</h2>
             {terms.supportHoursUnlimited ? (
               <p className="rounded-lg border bg-muted/20 p-3 text-sm text-muted-foreground">
@@ -252,17 +267,16 @@ export default function ClientProductPage() {
                 value={{ hoursPeriod: terms.hoursPeriod, carryForward: terms.carryForward, allowTicketsAfterHours: terms.allowTicketsAfterHours, allowExcess: terms.allowExcess, excessApproval: terms.excessApproval, excessApproverId: terms.excessApproverId }}
                 onChange={(patch) => setTerms((t) => ({ ...t, ...patch }))}
                 staff={staff}
-                live={cp.support ?? null} />
+                live={cp.support ?? null}
+                readOnly={!isAdmin}
+                approverName={cp.support?.approverName}
+                request={excessRequest}
+                canDecide={canDecideExcess}
+                deciding={decideExcess.isPending}
+                onDecide={(approve) => excessRequest && decideExcess.mutate({ id: excessRequest.id, approve })} />
             )}
           </section>
         </div>
-
-        <Button size="sm" onClick={saveTerms}>Save terms</Button>
-        </>
-        )}
-
-        {/* The one thing a consultant is here to do. */}
-        <ExcessHoursApprovals companyId={companyId!} ownerId={cp.id} />
       </div>
       )}
 

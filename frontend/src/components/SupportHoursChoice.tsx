@@ -14,17 +14,20 @@ export default function SupportHoursChoice({
   onChange,
   label = 'Support hours',
   className,
+  disabled,
 }: {
   unlimited: boolean;
   onChange: (unlimited: boolean) => void;
   label?: string;
   className?: string;
+  disabled?: boolean;
 }) {
   return (
     <div className={cn('flex flex-wrap items-center gap-x-5 gap-y-1.5', className)}>
       <span className="text-sm font-medium text-foreground">{label}</span>
       <RadioGroup
         value={unlimited ? 'UNLIMITED' : 'LIMITED'}
+        disabled={disabled}
         // Ignore empty emissions — a real pick is never empty.
         onValueChange={(v) => { if (v) onChange(v === 'UNLIMITED'); }}
         className="flex gap-5"

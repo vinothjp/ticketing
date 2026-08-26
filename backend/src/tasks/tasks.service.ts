@@ -1,4 +1,9 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { TicketsService, TicketViewer } from '../tickets/tickets.service';
 import { ActivityService } from '../activity/activity.service';
@@ -181,6 +186,12 @@ export class TasksService {
     // zero-length event and muddy the audit.
     const movingTo = dto.status && dto.status !== existing.status ? dto.status : null;
     if (movingTo) this.assertMayTrack(existing, viewer);
+    // Done means the work is finished and booked. CANCELLED is deliberately
+    // exempt — a task that turned out not to be needed is settled honestly with
+    // no time against it.
+    if (movingTo === 'DONE') {
+      await this.assertTaskTimeLogged(ticketId, taskId, existing.title);
+    }
 
     const hours = movingTo
       ? await this.recordStatusChange(existing, movingTo, actorId)
@@ -216,6 +227,29 @@ export class TasksService {
       });
     }
     return task;
+  }
+
+  /**
+   * A task is only done once the work on it has been booked. `TicketWorklog` is
+   * the billable record — the task's own `hoursSpent` is derived from the status
+   * trail and charges nothing — so a task ticked done against an empty timesheet
+   * silently under-bills the contract, the same hole `assertTimeLogged` closes at
+   * the ticket level.
+   */
+  private async assertTaskTimeLogged(
+    ticketId: string,
+    taskId: string,
+    title: string,
+  ) {
+    const totals = await this.prisma.ticketWorklog.aggregate({
+      where: { ticketId, taskId },
+      _sum: { hours: true },
+    });
+    if (!(Number(totals._sum.hours ?? 0) > 0)) {
+      throw new BadRequestException(
+        `Log the time spent on "${title}" before marking it done`,
+      );
+    }
   }
 
   /**

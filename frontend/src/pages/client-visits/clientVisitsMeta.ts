@@ -81,3 +81,14 @@ export interface TicketOption {
 
 export const statusVariant = (s: string): 'success' | 'destructive' | 'secondary' | 'outline' | 'warning' =>
   s === 'VISITED' ? 'success' : s === 'RESCHEDULE_REQUESTED' ? 'warning' : 'secondary';
+
+/**
+ * The status pill in the visits grid — the same bold, colour-coded treatment the
+ * ticket task grid uses, so a column of statuses reads the same on both screens.
+ * `statusVariant` above still serves the Badge-shaped callers (the report dialog
+ * and the panel), so both live here rather than one replacing the other.
+ */
+export const statusPill = (s: string) =>
+  s === 'VISITED' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+  : s === 'RESCHEDULE_REQUESTED' ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
+  : 'bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-300';

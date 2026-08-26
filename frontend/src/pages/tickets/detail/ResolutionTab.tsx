@@ -61,8 +61,9 @@ export default function ResolutionTab({
   });
   const resolved = !!ticket.resolvedAt;
   // The backend refuses a resolution with an empty timesheet, or with work still
-  // outstanding; block the button rather than let the agent write notes and then
-  // bounce off a 400.
+  // outstanding. Checked on the click rather than shown as a standing bar: the
+  // agent hears about it when they actually try to resolve, and never bounces
+  // off a 400.
   const needsTime = !resolved && loggedHours <= 0;
   const needsTasks = !resolved && openTasks > 0;
 
@@ -130,35 +131,38 @@ export default function ResolutionTab({
           below is the whole story. */}
       {!resolved && wasReopened && reopenNotice}
 
-      {!resolved && !resolution.trim() && (
-        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-300">
-          Please create a resolution message before resolving this ticket.
-        </div>
-      )}
-
-      {needsTasks && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-300">
-          <span>
-            {openTasks} task{openTasks === 1 ? ' is' : 's are'} still open on this ticket — complete
-            or cancel {openTasks === 1 ? 'it' : 'them'} before resolving.
-          </span>
-          {onViewTasks && <Button variant="outline" size="sm" onClick={onViewTasks}>View tasks</Button>}
-        </div>
-      )}
-
-      {needsTime && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-300">
-          <span>No time has been logged on this ticket yet — log it against a task on the Tasks tab before resolving.</span>
-          {onLogTime && <Button variant="outline" size="sm" onClick={onLogTime}>Log time</Button>}
-        </div>
-      )}
-
       <div className="space-y-1.5">
         <label className="text-sm font-medium">Resolution notes</label>
         <Textarea rows={6} value={resolution} onChange={(e) => setResolution(e.target.value)} placeholder="Describe how the issue was resolved…" />
       </div>
 
-      <Button onClick={() => save.mutate()} disabled={save.isPending || !resolution.trim() || needsTime || needsTasks}>
+      {/* The gates speak on the click, not as standing bars. The button stays
+          enabled for all three so there is always something to click and hear
+          back from — a disabled button explains nothing. */}
+      <Button
+        onClick={() => {
+          // Outstanding work is checked first — it is the one that needs doing,
+          // not just recording. Same precedence as the status dropdown.
+          if (needsTasks) {
+            toast.error(
+              `${openTasks} task${openTasks === 1 ? ' is' : 's are'} still open — complete or cancel ${openTasks === 1 ? 'it' : 'them'} before resolving`,
+            );
+            onViewTasks?.();
+            return;
+          }
+          if (needsTime) {
+            toast.error('Log the time spent on this ticket before resolving — add a task on the Tasks tab and log against it');
+            onLogTime?.();
+            return;
+          }
+          if (!resolution.trim()) {
+            toast.error('Write a resolution message before resolving this ticket');
+            return;
+          }
+          save.mutate();
+        }}
+        disabled={save.isPending}
+      >
         {resolved ? 'Update resolution' : 'Mark resolved'}
       </Button>
     </div>

@@ -13,7 +13,7 @@ import ProductIcon from '@/components/ProductIcon';
 import ConsultantGrid from '@/components/ConsultantGrid';
 import SupportHoursChoice from '@/components/SupportHoursChoice';
 import SupportHoursConfig from '@/components/SupportHoursConfig';
-import ExcessHoursApprovals from '@/components/ExcessHoursApprovals';
+import { useExcessRequests, useDecideExcess, latestExcessFor } from '@/components/excessHoursQueries';
 import { useAuth } from '../../context/AuthContext';
 import CoverageMeter from '@/components/CoverageMeter';
 import { cn } from '@/lib/utils';
@@ -157,6 +157,13 @@ export default function ClientDetailPage() {
   // Every write behind these controls is Admin-only on the API.
   const { user } = useAuth();
   const isAdmin = !!user?.roles.includes('Admin');
+  // The live excess-hours request on the shared contract, decided inline in the
+  // support-hours card. On a shared contract the pool's owner is the company
+  // itself; per-product requests are decided on the product's own screen.
+  const { data: excessRequests = [] } = useExcessRequests(companyId);
+  const excessRequest = latestExcessFor(excessRequests, companyId);
+  const decideExcess = useDecideExcess(companyId);
+  const canDecideExcess = excessRequest?.status === 'PENDING' && (isAdmin || excessRequest.approverUserId === user?.id);
 
   // Renew — enabled only in the last 30 days before expiry (or once expired).
   const canRenew = !!contract?.end && (!contract.period.active || (contract.period.daysLeft ?? 999) <= 30);
@@ -247,7 +254,7 @@ export default function ClientDetailPage() {
                         <div className="mt-1 text-[11px] font-medium text-primary">Manage consultants →</div>
                       </div>
                       <span onClick={(e) => e.stopPropagation()} className="mt-0.5 shrink-0" title={selected ? 'Remove from contract' : 'Add to contract'}>
-                        <Checkbox checked={selected} onCheckedChange={toggle} />
+                        <Checkbox checked={selected} disabled={!isAdmin} onCheckedChange={toggle} />
                       </span>
                     </div>
                   );
@@ -291,33 +298,46 @@ export default function ClientDetailPage() {
             )}
           </section>
 
-          {/* Terms (left) and how the hours are governed (right) — both halves
-              are written by the one Save contract button below. Admins only;
-              consultants see the coverage meters above and the approvals below. */}
-          {isAdmin && (
-          <>
-          <div className="grid gap-6 lg:grid-cols-2">
-            <section className="space-y-3">
+          {/* Terms (left) and how the hours are governed (right), as two cards of
+              equal height — `items-stretch` + `h-full`, with the actions pinned
+              to the left card's floor by `mt-auto` so both columns end on the
+              same line. Every staff member reads this; only an Admin writes it,
+              and the shared contract's excess request is decided in the card on
+              the right rather than in a panel of its own. */}
+          <div className="grid items-stretch gap-4 lg:grid-cols-2">
+            <section className="flex h-full flex-col gap-3 rounded-lg border bg-card p-4">
               <h2 className="text-base font-semibold text-foreground">Terms</h2>
-              <RadioGroup value={cust.coverageType} onValueChange={onCoverage} className="flex gap-5">
+              <RadioGroup value={cust.coverageType} onValueChange={onCoverage} disabled={!isAdmin} className="flex gap-5">
                 <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="WARRANTY" /> Under warranty <span className="text-xs text-muted-foreground">(free)</span></label>
                 <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="AMC" /> Under AMC <span className="text-xs text-muted-foreground">(paid)</span></label>
               </RadioGroup>
-              <SupportHoursChoice unlimited={cust.hoursUnlimited} onChange={(u) => setCust({ ...cust, hoursUnlimited: u })} />
+              <SupportHoursChoice unlimited={cust.hoursUnlimited} disabled={!isAdmin} onChange={(u) => setCust({ ...cust, hoursUnlimited: u })} />
               <div className="grid grid-cols-2 gap-2">
-                <Field label="Start date" type="date" value={cust.start} onChange={(v) => setCust({ ...cust, start: v })} />
-                <Field label="End date" type="date" min={cust.start || undefined} value={cust.end} onChange={(v) => setCust({ ...cust, end: v })} />
+                <Field label="Start date" type="date" disabled={!isAdmin} value={cust.start} onChange={(v) => setCust({ ...cust, start: v })} />
+                <Field label="End date" type="date" min={cust.start || undefined} disabled={!isAdmin} value={cust.end} onChange={(v) => setCust({ ...cust, end: v })} />
                 {!cust.hoursUnlimited && (
-                  <Field label={cust.hoursPeriod === 'MONTHLY' ? 'Support hours / month' : 'Support hours (for the term)'} min={1} value={cust.hours} onChange={(v) => setCust({ ...cust, hours: v === '' ? '' : Number(v) })} />
+                  <Field label={cust.hoursPeriod === 'MONTHLY' ? 'Support hours / month' : 'Support hours (for the term)'} min={1} disabled={!isAdmin} value={cust.hours} onChange={(v) => setCust({ ...cust, hours: v === '' ? '' : Number(v) })} />
                 )}
-                <Field label="No. of visits" value={cust.visits} onChange={(v) => setCust({ ...cust, visits: v === '' ? '' : Number(v) })} />
-                {paidCoverage && (
+                <Field label="No. of visits" disabled={!isAdmin} value={cust.visits} onChange={(v) => setCust({ ...cust, visits: v === '' ? '' : Number(v) })} />
+                {/* What the client pays is withheld from non-Admins server-side — it
+                    arrives null, so don't render an empty box for it. */}
+                {isAdmin && paidCoverage && (
                   <Field label="Contract amount" value={cust.monthlyCost} onChange={(v) => setCust({ ...cust, monthlyCost: v === '' ? '' : Number(v) })} />
                 )}
               </div>
+              {isAdmin && (
+                <div className="mt-auto flex flex-wrap justify-end gap-2 pt-2">
+                  <Button size="sm" variant="outline" disabled={!canRenew}
+                    title={canRenew ? undefined : 'Available within 30 days of expiry'}
+                    onClick={() => { setRenew({ months: 12, hoursUnlimited: cust.hoursUnlimited, hours: num(contract?.hours ?? null), visits: num(contract?.visits ?? null), monthlyCost: num(contract?.monthlyCost ?? null) }); setRenewOpen(true); }}>
+                    <RefreshCw className="size-4" /> Renew AMC
+                  </Button>
+                  <Button size="sm" disabled={cust.productIds.length === 0} onClick={saveCustomer}>Save contract</Button>
+                </div>
+              )}
             </section>
 
-            <section className="space-y-3">
+            <section className="flex h-full flex-col gap-3 rounded-lg border bg-card p-4">
               <h2 className="text-base font-semibold text-foreground">Support hours settings</h2>
               {cust.hoursUnlimited ? (
                 <p className="rounded-lg border bg-muted/20 p-3 text-sm text-muted-foreground">
@@ -328,24 +348,16 @@ export default function ClientDetailPage() {
                   value={{ hoursPeriod: cust.hoursPeriod, carryForward: cust.carryForward, allowTicketsAfterHours: cust.allowTicketsAfterHours, allowExcess: cust.allowExcess, excessApproval: cust.excessApproval, excessApproverId: cust.excessApproverId }}
                   onChange={(patch) => setCust((s) => ({ ...s, ...patch }))}
                   staff={staff}
-                  live={contract?.support ?? null} />
+                  live={contract?.support ?? null}
+                  readOnly={!isAdmin}
+                  approverName={contract?.support?.approverName}
+                  request={excessRequest}
+                  canDecide={canDecideExcess}
+                  deciding={decideExcess.isPending}
+                  onDecide={(approve) => excessRequest && decideExcess.mutate({ id: excessRequest.id, approve })} />
               )}
             </section>
           </div>
-
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" disabled={cust.productIds.length === 0} onClick={saveCustomer}>Save contract</Button>
-            <Button size="sm" variant="outline" disabled={!canRenew}
-              title={canRenew ? undefined : 'Available within 30 days of expiry'}
-              onClick={() => { setRenew({ months: 12, hoursUnlimited: cust.hoursUnlimited, hours: num(contract?.hours ?? null), visits: num(contract?.visits ?? null), monthlyCost: num(contract?.monthlyCost ?? null) }); setRenewOpen(true); }}>
-              <RefreshCw className="size-4" /> Renew AMC
-            </Button>
-          </div>
-          </>
-          )}
-
-          {/* The shared contract's own excess-hours requests. */}
-          <ExcessHoursApprovals companyId={companyId!} ownerId={companyId} />
         </section>
       )}
 
@@ -380,9 +392,6 @@ export default function ClientDetailPage() {
           </div>
         )}
 
-        {/* Per-product requests all land here too, so an approver who opens the
-            client rather than the product still finds what is waiting on them. */}
-        <ExcessHoursApprovals companyId={companyId!} />
       </section>
       )}
 
@@ -466,11 +475,11 @@ function timeLeft(daysLeft: number | null): string {
   return `${months > 0 ? `${months} mo ${rem} d` : `${daysLeft} d`} left`;
 }
 
-function Field({ label, value, onChange, type = 'number', min }: { label: string; value: string | number; onChange: (v: string) => void; type?: string; min?: string | number }) {
+function Field({ label, value, onChange, type = 'number', min, disabled }: { label: string; value: string | number; onChange: (v: string) => void; type?: string; min?: string | number; disabled?: boolean }) {
   return (
     <div className="space-y-1">
       <label className="text-xs text-muted-foreground">{label}</label>
-      <Input type={type} min={min ?? (type === 'number' ? 0 : undefined)} value={value} onChange={(e) => onChange(e.target.value)} className="h-8" />
+      <Input type={type} min={min ?? (type === 'number' ? 0 : undefined)} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} className="h-8" />
     </div>
   );
 }

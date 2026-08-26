@@ -9,3 +9,8 @@ export class DecideApprovalDto {
   @IsIn(['APPROVED', 'REJECTED']) status: 'APPROVED' | 'REJECTED';
   @IsOptional() @IsString() comment?: string;
 }
+
+export class UpdateApprovalDto {
+  @IsOptional() @IsString() @IsNotEmpty() approverUserId?: string;
+  @IsOptional() @IsString() comment?: string;
+}

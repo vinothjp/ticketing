@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Trash2, Building2, Boxes, Search, Upload } from 'lucide-react';
+import { Plus, Pencil, Trash2, Building2, Boxes, Search, Upload,
+  Hash, AtSign, Mail, Phone, FileText, MessageSquare, CircleDot } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../lib/api';
 import { Button } from '@/components/ui/button';
@@ -10,8 +12,25 @@ import { Badge } from '@/components/ui/badge';
 import CompanyLogo from '@/components/CompanyLogo';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAuth } from '../context/AuthContext';
-import { MyExcessApprovals } from '@/components/ExcessHoursApprovals';
+import type { ReactNode } from 'react';
+import { MyExcessApprovals } from '@/components/MyExcessApprovals';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+
+/**
+ * A column heading: its icon, then its label. Muted and small, so the headings
+ * read as chrome and the values below them carry the weight. Mirrors the task
+ * grid on the ticket detail screen.
+ */
+function HeadLabel({ icon: Icon, children, className = '' }: {
+  icon: LucideIcon; children: ReactNode; className?: string;
+}) {
+  return (
+    <span className={`flex items-center gap-1.5 text-xs font-semibold text-muted-foreground ${className}`}>
+      <Icon className="size-3.5 shrink-0" />
+      {children}
+    </span>
+  );
+}
 
 interface Company {
   id: string;
@@ -254,19 +273,19 @@ export default function CustomerCompaniesPage() {
           <p className="text-sm text-muted-foreground">{companies.length === 0 ? 'No clients yet.' : 'No clients match your search.'}</p>
         </div>
       ) : (
-        <div className="border-t">
+        <div className="overflow-hidden rounded-lg border">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Client</TableHead>
-                <TableHead>Code</TableHead>
-                <TableHead>Contact</TableHead>
-                <TableHead>Email</TableHead>
-                <TableHead>Phone</TableHead>
-                <TableHead>Contract</TableHead>
-                <TableHead className="text-right">Tickets</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+              <TableRow className="bg-muted/50 hover:bg-muted/50">
+                <TableHead className="border-r"><HeadLabel icon={Building2}>Client</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={Hash}>Code</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={AtSign}>Contact</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={Mail}>Email</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={Phone}>Phone</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={FileText}>Contract</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={MessageSquare} className="justify-end">Tickets</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={CircleDot}>Status</HeadLabel></TableHead>
+                <TableHead className="text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -274,30 +293,33 @@ export default function CustomerCompaniesPage() {
                 <TableRow key={c.id}>
                   {/* The wide text columns cap their own width and ellipsize, so a long
                       name or address can't push the table into a horizontal scroll. */}
-                  <TableCell className="font-medium">
-                    <span className="block max-w-[16rem] truncate text-foreground" title={c.name}>{c.name}</span>
+                  <TableCell className="border-r font-medium">
+                    <span className="flex items-center gap-2">
+                      <CompanyLogo logoUrl={c.logoUrl} className="size-7 shrink-0" />
+                      <span className="block max-w-[16rem] truncate text-foreground" title={c.name}>{c.name}</span>
+                    </span>
                   </TableCell>
-                  <TableCell className="w-px">
+                  <TableCell className="w-px border-r">
                     {c.code
                       ? <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{c.code}</code>
                       : <span className="text-muted-foreground">—</span>}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="border-r">
                     {c.contactPerson
                       ? <span className="block max-w-[11rem] truncate" title={c.contactPerson}>{c.contactPerson}</span>
                       : <span className="text-muted-foreground">—</span>}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="border-r">
                     {c.contactEmail
                       ? <span className="block max-w-[16rem] truncate" title={c.contactEmail}>{c.contactEmail}</span>
                       : <span className="text-muted-foreground">—</span>}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="border-r">
                     {c.contactNumber
                       ? <span className="block max-w-[10rem] truncate" title={c.contactNumber}>{c.contactNumber}</span>
                       : <span className="text-muted-foreground">—</span>}
                   </TableCell>
-                  <TableCell className="w-px">
+                  <TableCell className="w-px border-r">
                     {/* Which coverage model this client is on. A client is always on
                         exactly one, so this reads as a fact, not a toggle. */}
                     <Badge variant="outline" title={c.contractScope === 'CUSTOMER'
@@ -306,9 +328,17 @@ export default function CustomerCompaniesPage() {
                       {c.contractScope === 'CUSTOMER' ? 'One contract' : 'Per product'}
                     </Badge>
                   </TableCell>
-                  <TableCell className="w-px text-right tabular-nums text-muted-foreground">{c.ticketCount}</TableCell>
-                  <TableCell className="w-px">
-                    <Badge variant={c.status === 'ACTIVE' ? 'success' : 'secondary'}>{c.status}</Badge>
+                  <TableCell className="w-px border-r text-right tabular-nums text-muted-foreground">{c.ticketCount}</TableCell>
+                  <TableCell className="w-px border-r">
+                    {/* The same bold uppercase pill the task grid uses, so a column
+                        of statuses reads at a glance across both screens. */}
+                    <span className={`rounded px-1.5 py-0.5 text-xs font-bold uppercase ${
+                      c.status === 'ACTIVE'
+                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                        : 'bg-muted text-muted-foreground'
+                    }`}>
+                      {c.status}
+                    </span>
                   </TableCell>
                   <TableCell className="w-px text-right">
                     <div className="flex items-center justify-end gap-1">

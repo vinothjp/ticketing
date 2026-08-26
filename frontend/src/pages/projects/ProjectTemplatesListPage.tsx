@@ -1,12 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Plus, Pencil, Trash2, Copy, LayoutTemplate } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent } from '@/components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Switch } from '@/components/ui/switch';
 import { useConfirm } from '@/hooks/useConfirm';
 
@@ -87,51 +85,69 @@ export default function ProjectTemplatesListPage() {
           <Button onClick={() => navigate('/admin/project-templates/new')}><Plus className="size-4" /> Create your first template</Button>
         </div>
       ) : (
-        <Card>
-          <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Milestones</TableHead>
-                  <TableHead>Tasks</TableHead>
-                  <TableHead>Active</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {templates.map((t) => {
-                  const c = counts(t);
-                  return (
-                    <TableRow key={t.id}>
-                      <TableCell>
-                        <div className="font-medium text-foreground">{t.name}</div>
-                        {t.description && <div className="text-xs text-muted-foreground">{t.description}</div>}
-                      </TableCell>
-                      <TableCell>{t.category ? <Badge variant="secondary">{t.category}</Badge> : <span className="text-muted-foreground">—</span>}</TableCell>
-                      <TableCell>{c.milestones}</TableCell>
-                      <TableCell>{c.tasks}</TableCell>
-                      <TableCell>
-                        <Switch checked={t.isActive} onCheckedChange={(v) => toggle.mutate({ id: t.id, isActive: v })} />
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-2">
-                          <Button size="sm" variant="outline" onClick={() => clone.mutate(t)} disabled={clone.isPending}><Copy className="size-4" /> Duplicate</Button>
-                          <Button size="sm" variant="outline" onClick={() => navigate(`/admin/project-templates/${t.id}`)}><Pencil className="size-4" /> Edit</Button>
-                          <Button size="sm" variant="destructive"
-                            onClick={async () => { if (await confirm({ title: `Delete ${t.name}?`, destructive: true, confirmText: 'Delete' })) remove.mutate(t.id); }}>
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+        /* The same row list the ticket Templates screen uses: an icon tile, the
+           name with its category, one muted line of detail, the active switch and
+           three ghost icon actions. The counts that were their own columns read
+           better as part of that detail line. */
+        <div className="divide-y border-y">
+          {templates.map((t) => {
+            const c = counts(t);
+            return (
+              <div key={t.id} className="flex items-center gap-4 py-3.5">
+                <div
+                  className="flex size-10 shrink-0 items-center justify-center rounded-lg"
+                  style={{ backgroundColor: 'color-mix(in srgb, var(--color-primary) 10%, transparent)', color: 'var(--color-primary)' }}
+                >
+                  <LayoutTemplate className="size-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <Link to={`/admin/project-templates/${t.id}`} className="truncate font-medium text-foreground hover:underline">
+                      {t.name}
+                    </Link>
+                    {t.category && <Badge variant="secondary">{t.category}</Badge>}
+                  </div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    {c.milestones} milestone{c.milestones === 1 ? '' : 's'} · {c.tasks} task{c.tasks === 1 ? '' : 's'}
+                    {t.description ? ` · ${t.description}` : ''}
+                  </div>
+                </div>
+                <label className="hidden items-center gap-2 text-xs text-muted-foreground sm:flex">
+                  <Switch
+                    checked={t.isActive}
+                    onCheckedChange={(v) => toggle.mutate({ id: t.id, isActive: v })}
+                  />
+                  {t.isActive ? 'Active' : 'Inactive'}
+                </label>
+                <div className="flex shrink-0 gap-1">
+                  <Button size="icon" variant="ghost" title="Edit" asChild>
+                    <Link to={`/admin/project-templates/${t.id}`}><Pencil className="size-4" /></Link>
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    title="Duplicate"
+                    disabled={clone.isPending}
+                    onClick={() => clone.mutate(t)}
+                  >
+                    <Copy className="size-4" />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    title="Delete"
+                    className="text-destructive hover:text-destructive"
+                    onClick={async () => {
+                      if (await confirm({ title: `Delete ${t.name}?`, destructive: true, confirmText: 'Delete' })) remove.mutate(t.id);
+                    }}
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

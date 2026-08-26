@@ -1,11 +1,32 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Trash2 } from 'lucide-react';
+import { Plus, Pencil, Trash2, Tag, Clock, Receipt, Timer, Coins, Banknote, TrendingUp } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 import api from '../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+
+/**
+ * A column heading: its icon, then its label. Muted and small, so the headings
+ * read as chrome and the values below them carry the weight. Mirrors the task
+ * grid on the ticket detail screen.
+ */
+function HeadLabel({ icon: Icon, children, align = 'start' }: {
+  icon: LucideIcon; children: ReactNode; align?: 'start' | 'end';
+}) {
+  return (
+    <span className={`flex items-center gap-1.5 text-xs font-semibold text-muted-foreground ${
+      align === 'end' ? 'justify-end' : ''
+    }`}>
+      <Icon className="size-3.5 shrink-0" />
+      {children}
+    </span>
+  );
+}
+
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import type { ResourceCategory } from './projects/projectMeta';
 
@@ -74,31 +95,31 @@ export default function ResourceCostsPage() {
       </Dialog>
 
       {isLoading ? <p className="text-muted-foreground">Loading...</p> : (
-        <div className="overflow-x-auto border-t">
+        <div className="overflow-hidden rounded-lg border">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Category</TableHead>
-                <TableHead className="text-right">Hourly cost</TableHead>
-                <TableHead className="text-right">Billing rate</TableHead>
-                <TableHead className="text-right">Daily hrs</TableHead>
-                <TableHead className="text-right">Daily cost</TableHead>
-                <TableHead className="text-right">Daily billing</TableHead>
-                <TableHead className="text-right">Profit / day</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+              <TableRow className="bg-muted/50 hover:bg-muted/50">
+                <TableHead className="w-full border-r"><HeadLabel icon={Tag}>Category</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={Clock} align="end">Hourly cost</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={Receipt} align="end">Billing rate</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={Timer} align="end">Daily hrs</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={Coins} align="end">Daily cost</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={Banknote} align="end">Daily billing</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={TrendingUp} align="end">Profit / day</HeadLabel></TableHead>
+                <TableHead className="text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {cats.length === 0 && <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground">No categories yet.</TableCell></TableRow>}
               {cats.map((c) => (
                 <TableRow key={c.id}>
-                  <TableCell className="font-medium">{c.name}</TableCell>
-                  <TableCell className="text-right tabular-nums">{money(c.hourlyCost)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{money(c.billingRate)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{c.dailyHours}</TableCell>
-                  <TableCell className="text-right tabular-nums">{money(c.dailyCost)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{money(c.dailyBilling)}</TableCell>
-                  <TableCell className="text-right font-medium tabular-nums text-success">{money(c.profit)}</TableCell>
+                  <TableCell className="w-full border-r font-medium text-foreground">{c.name}</TableCell>
+                  <TableCell className="border-r text-right tabular-nums">{money(c.hourlyCost)}</TableCell>
+                  <TableCell className="border-r text-right tabular-nums">{money(c.billingRate)}</TableCell>
+                  <TableCell className="border-r text-right tabular-nums">{c.dailyHours}</TableCell>
+                  <TableCell className="border-r text-right tabular-nums">{money(c.dailyCost)}</TableCell>
+                  <TableCell className="border-r text-right tabular-nums">{money(c.dailyBilling)}</TableCell>
+                  <TableCell className="border-r text-right font-medium tabular-nums text-success">{money(c.profit)}</TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
                       <Button size="sm" variant="outline" onClick={() => { setEditing(c); setOpen(true); }}><Pencil className="size-4" /></Button>

@@ -3,7 +3,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Plus, Pencil, Search, ArrowUp, ArrowDown, ArrowUpDown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, Pencil, Search, ArrowUp, ArrowDown, ArrowUpDown, ChevronLeft, ChevronRight,
+  AtSign, Mail, Shield, CircleDot } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 import api from '../lib/api';
 import { Button } from '@/components/ui/button';
@@ -51,19 +54,40 @@ type SortDir = 'asc' | 'desc';
 
 const PAGE_SIZE = 10;
 
+/**
+ * A column heading: its icon, then its label. Muted and small, so the headings
+ * read as chrome and the values below them carry the weight. Mirrors the task
+ * grid on the ticket detail screen.
+ */
+function HeadLabel({ icon: Icon, children }: { icon: LucideIcon; children: ReactNode }) {
+  return (
+    <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+      <Icon className="size-3.5 shrink-0" />
+      {children}
+    </span>
+  );
+}
+
+/**
+ * A sortable heading. The column's own icon leads, the sort indicator trails —
+ * so it reads as the same kind of heading as its unsortable neighbours while
+ * still saying which way the table is ordered.
+ */
 function SortableHead({
-  label, field, sortField, sortDir, onSort,
+  label, field, sortField, sortDir, onSort, icon: Icon,
 }: {
-  label: string; field: SortField; sortField: SortField; sortDir: SortDir; onSort: (field: SortField) => void;
+  label: string; field: SortField; sortField: SortField; sortDir: SortDir;
+  onSort: (field: SortField) => void; icon: LucideIcon;
 }) {
   const active = sortField === field;
   return (
-    <TableHead>
+    <TableHead className="border-r">
       <button
         type="button"
         onClick={() => onSort(field)}
-        className="flex items-center gap-1 text-xs font-medium text-muted-foreground uppercase hover:text-foreground"
+        className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground"
       >
+        <Icon className="size-3.5 shrink-0" />
         {label}
         {active ? (
           sortDir === 'asc' ? <ArrowUp className="size-3.5" /> : <ArrowDown className="size-3.5" />
@@ -376,15 +400,15 @@ export default function UsersPage() {
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
       ) : (
-        <div className="border-t">
+        <div className="overflow-hidden rounded-lg border">
           <Table>
             <TableHeader>
-              <TableRow>
-                <SortableHead label="Username" field="username" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortableHead label="Email" field="email" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <TableHead>Roles</TableHead>
-                <SortableHead label="Status" field="status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <TableHead className="text-right">Actions</TableHead>
+              <TableRow className="bg-muted/50 hover:bg-muted/50">
+                <SortableHead icon={AtSign} label="Username" field="username" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead icon={Mail} label="Email" field="email" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <TableHead className="border-r"><HeadLabel icon={Shield}>Roles</HeadLabel></TableHead>
+                <SortableHead icon={CircleDot} label="Status" field="status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <TableHead className="text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -397,13 +421,38 @@ export default function UsersPage() {
               )}
               {pagedUsers.map((u) => (
                 <TableRow key={u.id}>
-                  <TableCell className="font-medium">{u.username}</TableCell>
-                  <TableCell>{u.email}</TableCell>
-                  <TableCell>{u.userRoles.map((r) => r.role.name).join(', ') || '—'}</TableCell>
-                  <TableCell>
-                    <Badge variant={u.isActive ? 'success' : 'destructive'}>
+                  <TableCell className="border-r font-medium">
+                    <span className="flex items-center gap-2">
+                      <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
+                        {u.username.slice(0, 2).toUpperCase()}
+                      </span>
+                      <span className="text-foreground">{u.username}</span>
+                    </span>
+                  </TableCell>
+                  <TableCell className="border-r">
+                    {u.email || <span className="text-muted-foreground">—</span>}
+                  </TableCell>
+                  {/* One badge per role rather than a comma-joined string: roles are
+                      discrete values, and a row with several reads as several. */}
+                  <TableCell className="border-r">
+                    {u.userRoles.length === 0 ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      <span className="flex flex-wrap items-center gap-1">
+                        {u.userRoles.map((r) => (
+                          <Badge key={r.role.name} variant="secondary">{r.role.name}</Badge>
+                        ))}
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="border-r">
+                    <span className={`rounded px-1.5 py-0.5 text-xs font-bold uppercase ${
+                      u.isActive
+                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                        : 'bg-muted text-muted-foreground'
+                    }`}>
                       {u.isActive ? 'Active' : 'Inactive'}
-                    </Badge>
+                    </span>
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">

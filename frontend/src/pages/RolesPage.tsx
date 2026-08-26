@@ -3,13 +3,29 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Plus, Pencil, Lock } from 'lucide-react';
+import { Plus, Pencil, Lock, Shield, AlignLeft, Users } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 import api from '../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+
+/**
+ * A column heading: its icon, then its label. Muted and small, so the headings
+ * read as chrome and the values below them carry the weight. Mirrors the task
+ * grid on the ticket detail screen.
+ */
+function HeadLabel({ icon: Icon, children }: { icon: LucideIcon; children: ReactNode }) {
+  return (
+    <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+      <Icon className="size-3.5 shrink-0" />
+      {children}
+    </span>
+  );
+}
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import PermissionMatrix from '@/components/PermissionMatrix';
@@ -170,14 +186,14 @@ export default function RolesPage() {
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
       ) : (
-        <div className="border-t">
+        <div className="overflow-hidden rounded-lg border">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Description</TableHead>
-                <TableHead>Users</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+              <TableRow className="bg-muted/50 hover:bg-muted/50">
+                <TableHead className="border-r"><HeadLabel icon={Shield}>Name</HeadLabel></TableHead>
+                <TableHead className="w-full border-r"><HeadLabel icon={AlignLeft}>Description</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={Users}>Users</HeadLabel></TableHead>
+                <TableHead className="text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -185,9 +201,13 @@ export default function RolesPage() {
                 const isAdmin = r.name === 'Admin';
                 return (
                   <TableRow key={r.id}>
-                    <TableCell className="font-medium">{r.name}</TableCell>
-                    <TableCell>{r.description || '—'}</TableCell>
-                    <TableCell>{r._count.userRoles}</TableCell>
+                    <TableCell className="border-r font-medium text-foreground">{r.name}</TableCell>
+                    <TableCell className="w-full border-r">
+                      {r.description
+                        ? <span className="block max-w-[26rem] truncate" title={r.description}>{r.description}</span>
+                        : <span className="text-muted-foreground">—</span>}
+                    </TableCell>
+                    <TableCell className="border-r tabular-nums">{r._count.userRoles}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
                         <Button size="sm" variant="outline" onClick={() => setEditingRole(r)}>

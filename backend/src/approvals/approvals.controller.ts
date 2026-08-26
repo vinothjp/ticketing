@@ -1,6 +1,6 @@
-import { Controller, Get, Post, Body, Param, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, Request } from '@nestjs/common';
 import { ApprovalsService } from './approvals.service';
-import { RequestApprovalDto, DecideApprovalDto } from './dto/approval.dto';
+import { RequestApprovalDto, DecideApprovalDto, UpdateApprovalDto } from './dto/approval.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
 import { StaffGuard } from '../auth/staff.guard';
@@ -21,6 +21,21 @@ export class ApprovalsController {
   @UseGuards(StaffGuard)
   request(@Param('ticketId') ticketId: string, @Body() dto: RequestApprovalDto, @Request() req: AuthedRequest) {
     return this.approvalsService.request(ticketId, req.user.clientId, dto, req.user, req.user);
+  }
+
+  // Edit / withdraw the request. The service — not the guard — decides who may:
+  // a tenant Admin or the agent the ticket is assigned to. StaffGuard alone would
+  // let any agent rewrite a request on a ticket they merely can see.
+  @Patch('approvals/:id')
+  @UseGuards(StaffGuard)
+  update(@Param('id') id: string, @Body() dto: UpdateApprovalDto, @Request() req: AuthedRequest) {
+    return this.approvalsService.update(id, req.user.clientId, dto, req.user);
+  }
+
+  @Delete('approvals/:id')
+  @UseGuards(StaffGuard)
+  remove(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.approvalsService.remove(id, req.user.clientId, req.user);
   }
 
   @Post('approvals/:id/decision')

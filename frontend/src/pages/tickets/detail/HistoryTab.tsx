@@ -4,6 +4,7 @@ import {
   Play, Ban, MessageSquare,
 } from 'lucide-react';
 import api from '../../../lib/api';
+import { useDateFormat } from '@/lib/dateFormat';
 
 interface Activity {
   id: string;
@@ -38,23 +39,25 @@ const ICON: Record<string, typeof Circle> = {
   ATTACHMENT_ADDED: Paperclip,
 };
 
-/** The stamp itself. A history is a record of *when*, so never only "2h ago". */
-const stamp = (iso: string) =>
-  new Date(iso).toLocaleString(undefined, {
-    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
-
-function relTime(iso: string): string {
+/**
+ * How long ago, for anything inside a day. Past that it falls back to the stamp
+ * itself, rendered in the tenant's own date format rather than the browser's —
+ * hence the formatter argument.
+ */
+function relTime(iso: string, fmtDateTime: (v: string) => string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const m = Math.floor(diff / 60000);
   if (m < 1) return 'just now';
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
-  return new Date(iso).toLocaleString();
+  return fmtDateTime(iso);
 }
 
 export default function HistoryTab({ ticketId }: { ticketId: string }) {
+  // A history is a record of *when*, so the stamp is always absolute — and in
+  // the format this organization chose, not the one the browser happens to use.
+  const { fmtDateTime } = useDateFormat();
   const { data: items = [] } = useQuery<Activity[]>({
     queryKey: ['ticket-activity', ticketId],
     queryFn: async () => (await api.get(`/api/tickets/${ticketId}/activity`)).data,
@@ -75,7 +78,7 @@ export default function HistoryTab({ ticketId }: { ticketId: string }) {
             <div className="min-w-0">
               <div className="text-sm text-foreground">{a.summary}</div>
               <div className="text-xs text-muted-foreground">
-                {a.actorName ?? 'System'} · {stamp(a.createdAt)} · {relTime(a.createdAt)}
+                {a.actorName ?? 'System'} · {fmtDateTime(a.createdAt)} · {relTime(a.createdAt, fmtDateTime)}
               </div>
             </div>
           </li>

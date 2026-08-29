@@ -13,8 +13,10 @@ import { SmtpModule } from './smtp/smtp.module';
 import { MyClientModule } from './my-client/my-client.module';
 import { TemplatesModule } from './templates/templates.module';
 import { PicklistsModule } from './picklists/picklists.module';
+import { OptionListsModule } from './option-lists/option-lists.module';
 import { SlaModule } from './sla/sla.module';
 import { TicketsModule } from './tickets/tickets.module';
+import { SearchModule } from './search/search.module';
 import { TasksModule } from './tasks/tasks.module';
 import { CommentsModule } from './comments/comments.module';
 import { ApprovalsModule } from './approvals/approvals.module';
@@ -32,6 +34,7 @@ import { CustomerTeamModule } from './customer-team/customer-team.module';
 import { ProjectTemplatesModule } from './project-templates/project-templates.module';
 import { ProductsModule } from './products/products.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { AssetsModule } from './assets/assets.module';
 
 @Module({
   imports: [
@@ -47,8 +50,10 @@ import { NotificationsModule } from './notifications/notifications.module';
     MyClientModule,
     TemplatesModule,
     PicklistsModule,
+    OptionListsModule,
     SlaModule,
     TicketsModule,
+    SearchModule,
     TasksModule,
     CommentsModule,
     ApprovalsModule,
@@ -66,6 +71,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     ProjectTemplatesModule,
     ProductsModule,
     NotificationsModule,
+    AssetsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

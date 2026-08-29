@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import DynamicTicketField, { type MergedTemplateField } from './DynamicTicketField';
 import { FIELD_GROUP_LABELS, groupFieldRuns } from './ticketHelpers';
+import { useDateFormat } from '@/lib/dateFormat';
 
 interface TemplateSummary {
   id: string;
@@ -87,6 +88,7 @@ function defaultValueFor(f: MergedTemplateField, descriptionGuidance?: string | 
 }
 
 export default function CreateTicketPage() {
+  const { fmtDateTime } = useDateFormat();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   // When launched from a project ("Create ticket"), link the new ticket back to it.
@@ -350,7 +352,7 @@ export default function CreateTicketPage() {
     const p = slaPolicies.find((s) => s.priority === values.priority && s.isActive !== false);
     if (!p) return 'No SLA policy set for this priority.';
     const due = new Date(Date.now() + p.resolutionHours * 3600 * 1000);
-    return `Resolve within ${p.resolutionHours}h — due ${due.toLocaleString()}`;
+    return `Resolve within ${p.resolutionHours}h — due ${fmtDateTime(due)}`;
   };
 
   const systemDisplayValue = (f: MergedTemplateField): string => {

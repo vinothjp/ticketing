@@ -45,7 +45,15 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          'fixed top-[50%] left-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
+          // Never taller or wider than the viewport it is centred in: a long form
+          // scrolls inside the dialog instead of running off the bottom of the
+          // screen, and a narrow window keeps a margin either side. `svh` (not
+          // `vh`) so a mobile browser's collapsing toolbar can't clip it.
+          // A dialog that wants its own layout — a fixed footer over a scrolling
+          // body — passes `flex flex-col` + `overflow-hidden` in className, which
+          // tailwind-merge lets win over these.
+          'fixed top-[50%] left-[50%] z-50 grid w-[calc(100vw-2rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
+          'max-h-[calc(100svh-2rem)] overflow-y-auto',
           className,
         )}
         {...props}

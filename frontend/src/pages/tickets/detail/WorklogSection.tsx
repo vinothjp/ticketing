@@ -1,6 +1,7 @@
 import { Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useDeleteWorklog, useWorklogs } from './ticketQueries';
+import { useDateFormat } from '@/lib/dateFormat';
 
 /**
  * The entries that belong to no task, at the foot of the Tasks tab.
@@ -15,6 +16,7 @@ import { useDeleteWorklog, useWorklogs } from './ticketQueries';
  * Read and delete only — hours are logged from a task's own row.
  */
 export default function WorklogSection({ ticketId }: { ticketId: string }) {
+  const { fmtDate } = useDateFormat();
   const { data: all = [] } = useWorklogs(ticketId);
   const remove = useDeleteWorklog(ticketId);
 
@@ -35,7 +37,7 @@ export default function WorklogSection({ ticketId }: { ticketId: string }) {
           <div className="w-16 shrink-0 text-sm font-semibold text-foreground tabular-nums">{Number(l.hours)} h</div>
           <div className="min-w-0 flex-1">
             <div className="text-xs text-muted-foreground">
-              {new Date(l.workDate).toLocaleDateString()}{l.consultantName ? ` · ${l.consultantName}` : ''}
+              {fmtDate(l.workDate)}{l.consultantName ? ` · ${l.consultantName}` : ''}
             </div>
             {l.note && <div className="text-sm text-foreground">{l.note}</div>}
           </div>

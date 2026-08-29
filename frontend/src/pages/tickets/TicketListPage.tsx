@@ -14,6 +14,7 @@ import {
   DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 import { getPriorityMeta, getSlaMeta, isOverdueTicket, isCreatedTodayTicket, getApprovalMeta, type TicketSummary } from './ticketHelpers';
+import { useDateFormat } from '@/lib/dateFormat';
 
 interface TemplateSummary { id: string; name: string; }
 interface CompanyOption { id: string; name: string; }
@@ -34,6 +35,7 @@ type SortKey = 'newest' | 'oldest' | 'priority' | 'due';
 const PRIORITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
 export default function TicketListPage() {
+  const { fmtDateTime } = useDateFormat();
   const { user } = useAuth();
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -185,8 +187,8 @@ export default function TicketListPage() {
       t.ticketCategory ?? '',
       t.department ?? '',
       t.technicians.map((x) => x.user.username).join('; ') || 'Unassigned',
-      t.dueDate ? new Date(t.dueDate).toLocaleString() : '',
-      new Date(t.createdAt).toLocaleString(),
+      t.dueDate ? fmtDateTime(t.dueDate) : '',
+      fmtDateTime(t.createdAt),
     ]);
     const esc = (v: unknown) => {
       const s = String(v ?? '');
@@ -304,9 +306,7 @@ export default function TicketListPage() {
           {myTasks.length === 0 && <p className="p-6 text-center text-muted-foreground">No open tasks assigned to you.</p>}
           {myTasks.map((task) => {
             const priority = getPriorityMeta(task.ticket.priority);
-            const due = task.dueDate
-              ? new Date(task.dueDate).toLocaleString(undefined, { month: 'short', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-              : '—';
+            const due = task.dueDate ? fmtDateTime(task.dueDate) : '—';
             return (
               <div
                 key={task.id}
@@ -338,9 +338,7 @@ export default function TicketListPage() {
             {sorted.map((t) => {
               const priority = getPriorityMeta(t.priority);
               const sla = getSlaMeta(t);
-              const due = t.dueDate
-                ? new Date(t.dueDate).toLocaleString(undefined, { month: 'short', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-                : '—';
+              const due = t.dueDate ? fmtDateTime(t.dueDate) : '—';
               const sep = <span className="text-border">|</span>;
               return (
                 <div

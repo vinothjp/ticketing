@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { useDateFormat } from '@/lib/dateFormat';
 
 export interface ReopenWindow {
   /** Tenant's reopen window, in days after `resolvedAt` (default 30). */
@@ -47,6 +48,7 @@ export default function ReopenControl({
   onReopen: (reason: string) => void;
   reopening: boolean;
 }) {
+  const { fmtDate } = useDateFormat();
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState('');
 
@@ -54,12 +56,12 @@ export default function ReopenControl({
   const deadline = ticket.reopenDeadline ? new Date(ticket.reopenDeadline) : null;
   // Absent from an older payload = treat as open, and let the API be the judge.
   const windowOpen = ticket.reopenWindowOpen !== false;
-  const until = deadline ? ` (until ${deadline.toLocaleDateString()})` : '';
+  const until = deadline ? ` (until ${fmtDate(deadline)})` : '';
   const hint = !canReopen
     ? `Only the client can reopen their own ticket, for ${days} days after it is resolved${until}. After that they raise a new ticket instead.`
     : windowOpen
       ? `You can reopen this ticket for ${days} days after it was resolved${until}. After that, please raise a new ticket.`
-      : `The ${days}-day reopening window closed${deadline ? ` on ${deadline.toLocaleDateString()}` : ''}. Raise a new ticket for this issue instead.`;
+      : `The ${days}-day reopening window closed${deadline ? ` on ${fmtDate(deadline)}` : ''}. Raise a new ticket for this issue instead.`;
 
   const submit = () => {
     const trimmed = reason.trim();

@@ -7,12 +7,17 @@ type Actor = { id: string };
 // Seeded-by-default lists for the CR module (from the Change Request sheet).
 // People / customer / project / module lists start empty for admins to fill.
 const DEFAULT_OPTIONS: Record<string, string[]> = {
-  priority: ['Critical', 'High', 'Medium', 'Low', 'Deferred'],
-  category: ['Functional', 'Technical', 'Both'],
+  // Change Management (ITIL) lists — General section.
+  change_type: ['Emergency', 'Major', 'Minor', 'Standard'],
+  change_group: ['Infrastructure', 'Software'],
+  impact: ['Affects Business', 'Affects Department', 'Affects Group', 'Affects User', 'No Impact'],
+  risk: ['Low', 'Medium', 'High'],
+  priority: ['Low', 'Medium', 'High', 'Urgent'],
+  category: ['Application', 'Email', 'Downtime', 'Network', 'OS'],
   status: [
-    'New', 'Submitted', 'Under Review', 'Approved', 'Rejected', 'Development',
-    'Unit Testing', 'UAT', 'Ready for Deployment', 'Deployed', 'Completed', 'Cancelled',
+    'Requested', 'Accepted', 'Rejected', 'Request for additional info', 'Submitted for Authorisation',
   ],
+  // Existing dev-lifecycle lists (kept — the phase tabs still use them).
   type: ['New Feature', 'Enhancement', 'Bug Fix', 'Config Change'],
   complexity: ['Low', 'Medium', 'High'],
   dev_status: ['Not Started', 'In Progress', 'Completed'],
@@ -22,11 +27,18 @@ const DEFAULT_OPTIONS: Record<string, string[]> = {
   approval: ['Approved', 'Pending', 'Rejected'],
 };
 
-// Every list the CR module recognises (drives the admin option-manager tabs).
-export const CR_OPTION_LISTS = [
-  'customer', 'project', 'module', 'type', 'priority', 'category', 'status',
-  'person', 'complexity', 'dev_status', 'test_status', 'doc_title', 'yes_no', 'approval',
-] as const;
+// Dependent lists seeded with a parentValue (subcategory shows under its category).
+const DEFAULT_DEPENDENT_OPTIONS: Record<string, { value: string; parentValue: string }[]> = {
+  subcategory: [
+    { value: 'SAP', parentValue: 'Application' },
+    { value: 'B1', parentValue: 'Application' },
+  ],
+};
+
+// The registry of CR lists now lives in option-lists/default-lists.ts, managed
+// on the unified Option List screen. (`customer` is deliberately not among them:
+// a CR points at a real CustomerCompany and `ChangeRequest.customer` is
+// denormalised from it, so no dropdown ever reads that list.)
 
 @Injectable()
 export class CrOptionsService {
@@ -37,9 +49,14 @@ export class CrOptionsService {
   async ensureDefaults(clientId: string) {
     const count = await this.prisma.changeRequestOption.count({ where: { clientId } });
     if (count > 0) return;
-    const data = Object.entries(DEFAULT_OPTIONS).flatMap(([listKey, values]) =>
-      values.map((value, sortOrder) => ({ clientId, listKey, value, label: value, sortOrder })),
-    );
+    const data = [
+      ...Object.entries(DEFAULT_OPTIONS).flatMap(([listKey, values]) =>
+        values.map((value, sortOrder) => ({ clientId, listKey, value, label: value, sortOrder, parentValue: null as string | null })),
+      ),
+      ...Object.entries(DEFAULT_DEPENDENT_OPTIONS).flatMap(([listKey, opts]) =>
+        opts.map((o, sortOrder) => ({ clientId, listKey, value: o.value, label: o.value, sortOrder, parentValue: o.parentValue })),
+      ),
+    ];
     await this.prisma.changeRequestOption.createMany({ data, skipDuplicates: true });
   }
 
@@ -68,6 +85,7 @@ export class CrOptionsService {
         listKey: dto.listKey,
         value: dto.value,
         label: dto.label,
+        parentValue: dto.parentValue ?? null,
         isActive: dto.isActive ?? true,
         sortOrder: dto.sortOrder ?? 0,
         createdBy: actor.id,

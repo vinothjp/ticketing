@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CrOptionsService } from './cr-options.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CreateChangeRequestDto, UpdateChangeRequestDto } from './dto/change-request.dto';
+import { CHANGE_STAGES, CAB_STAGE, CAB_TYPES, stageIndex } from './change-stage';
 
 type Actor = { id: string; username?: string; roles?: string[] };
 type CustomerActor = { id: string; clientId: string; customerCompanyId: string };
@@ -47,8 +48,11 @@ export class ChangeRequestsService {
   /** Provider sends a CR to its linked company's admin for approval. */
   async sendForApproval(id: string, clientId: string, actor: Actor) {
     const cr = await this.findOne(id, clientId);
+    if (cr.changeSource === 'INTERNAL') {
+      throw new BadRequestException('An internal change has no customer to approve it');
+    }
     if (!cr.customerCompanyId) {
-      throw new BadRequestException('Link a customer company before sending this CR for approval');
+      throw new BadRequestException('Link a customer name before sending this CR for approval');
     }
     if (cr.approvalStatus === 'PENDING') throw new BadRequestException('Already sent for approval');
     if (cr.approvalStatus === 'APPROVED') throw new BadRequestException('This CR has already been approved by the customer');
@@ -160,6 +164,11 @@ export class ChangeRequestsService {
     };
     this.validateDates(dates);
 
+    // An internal change belongs to nobody outside — drop any customer link the
+    // form may still have been holding when the radio was flipped.
+    const changeSource = dto.changeSource === 'INTERNAL' ? 'INTERNAL' : 'CUSTOMER';
+    const internal = changeSource === 'INTERNAL';
+
     return this.prisma.$transaction(async (tx) => {
       const client = await tx.client.update({
         where: { id: clientId },
@@ -173,14 +182,29 @@ export class ChangeRequestsService {
           title: dto.title.trim(),
           description: trimOrNull(dto.description),
           featureName: trimOrNull(dto.featureName),
-          customerCompanyId: trimOrNull(dto.customerCompanyId),
-          customer: trimOrNull(dto.customer),
+          changeSource,
+          customerCompanyId: internal ? null : trimOrNull(dto.customerCompanyId),
+          customer: internal ? null : trimOrNull(dto.customer),
           projectName: trimOrNull(dto.projectName),
           moduleName: trimOrNull(dto.moduleName),
           crType: trimOrNull(dto.crType),
           priority: trimOrNull(dto.priority),
           crCategory: trimOrNull(dto.crCategory),
           status: trimOrNull(dto.status) ?? 'New',
+          // Change Management (ITIL) — General section
+          changeType: trimOrNull(dto.changeType),
+          changeGroup: trimOrNull(dto.changeGroup),
+          changeOwner: trimOrNull(dto.changeOwner),
+          subCategory: trimOrNull(dto.subCategory),
+          impact: trimOrNull(dto.impact),
+          servicesAffected: trimOrNull(dto.servicesAffected),
+          comments: trimOrNull(dto.comments),
+          changeCoordinator: trimOrNull(dto.changeCoordinator),
+          implementor: trimOrNull(dto.implementor),
+          lineManager: trimOrNull(dto.lineManager),
+          reviewer: trimOrNull(dto.reviewer),
+          changeApprover: trimOrNull(dto.changeApprover),
+          changeApproverUserId: trimOrNull(dto.changeApproverUserId),
           requestedBy: trimOrNull(dto.requestedBy),
           businessOwner: trimOrNull(dto.businessOwner),
           functionalConsultant: trimOrNull(dto.functionalConsultant),
@@ -229,14 +253,71 @@ export class ChangeRequestsService {
     if (has('title')) data.title = dto.title!.trim();
     if (has('description')) data.description = trimOrNull(dto.description);
     if (has('featureName')) data.featureName = trimOrNull(dto.featureName);
-    if (has('customerCompanyId')) data.customerCompanyId = trimOrNull(dto.customerCompanyId);
-    if (has('customer')) data.customer = trimOrNull(dto.customer);
+    // Flipping a change to INTERNAL clears its customer link (and any approval
+    // already asked of them) — the two states can't both hold.
+    const source = has('changeSource') ? dto.changeSource : cr.changeSource;
+    if (has('changeSource')) data.changeSource = source!;
+    if (source === 'INTERNAL') {
+      if (has('changeSource') && cr.changeSource !== 'INTERNAL') {
+        data.customerCompanyId = null;
+        data.customer = null;
+        data.approvalStatus = 'NONE';
+        data.approvalReason = null;
+        data.decidedById = null;
+        data.decidedAt = null;
+      }
+    } else {
+      if (has('customerCompanyId')) data.customerCompanyId = trimOrNull(dto.customerCompanyId);
+      if (has('customer')) data.customer = trimOrNull(dto.customer);
+    }
     if (has('projectName')) data.projectName = trimOrNull(dto.projectName);
     if (has('moduleName')) data.moduleName = trimOrNull(dto.moduleName);
     if (has('crType')) data.crType = trimOrNull(dto.crType);
     if (has('priority')) data.priority = trimOrNull(dto.priority);
     if (has('crCategory')) data.crCategory = trimOrNull(dto.crCategory);
     if (has('status')) data.status = trimOrNull(dto.status) ?? 'New';
+    // Change Management (ITIL) — General section
+    // Guard against reclassifying a change in a way that bypasses the CAB gate:
+    // once past CAB Evaluation the type is frozen, and any change to it before then
+    // invalidates a prior CAB decision so fresh sign-off is required.
+    if (has('changeType') && trimOrNull(dto.changeType) !== cr.changeType) {
+      if (stageIndex(cr.stage) > stageIndex(CAB_STAGE)) {
+        throw new BadRequestException('Change Type cannot be changed after the CAB Evaluation stage');
+      }
+      data.cabApprovalStatus = 'NONE';
+      data.cabReason = null;
+      data.cabDecidedById = null;
+      data.cabDecidedAt = null;
+    }
+    if (has('changeType')) data.changeType = trimOrNull(dto.changeType);
+    if (has('changeGroup')) data.changeGroup = trimOrNull(dto.changeGroup);
+    if (has('changeOwner')) data.changeOwner = trimOrNull(dto.changeOwner);
+    if (has('subCategory')) data.subCategory = trimOrNull(dto.subCategory);
+    if (has('impact')) data.impact = trimOrNull(dto.impact);
+    if (has('servicesAffected')) data.servicesAffected = trimOrNull(dto.servicesAffected);
+    if (has('comments')) data.comments = trimOrNull(dto.comments);
+    if (has('changeCoordinator')) data.changeCoordinator = trimOrNull(dto.changeCoordinator);
+    if (has('implementor')) data.implementor = trimOrNull(dto.implementor);
+    if (has('lineManager')) data.lineManager = trimOrNull(dto.lineManager);
+    if (has('reviewer')) data.reviewer = trimOrNull(dto.reviewer);
+    // The Change Approver is a real staff user: store the id (authoritative for the
+    // CAB decision) and denormalise their full name for display on the record.
+    if (has('changeApproverUserId')) {
+      const uid = trimOrNull(dto.changeApproverUserId);
+      if (uid) {
+        const approver = await this.prisma.user.findFirst({
+          where: { id: uid, clientId, customerCompanyId: null },
+          select: { id: true, username: true, name: true },
+        });
+        if (!approver) throw new BadRequestException('The selected Change Approver is not a valid staff user');
+        data.changeApproverUserId = approver.id;
+        data.changeApprover = approver.name?.trim() || approver.username;
+      } else {
+        data.changeApproverUserId = null;
+        data.changeApprover = null;
+      }
+    }
+    if (has('stageNotes')) data.stageNotes = (dto.stageNotes ?? {}) as Prisma.InputJsonValue;
     if (has('requestedBy')) data.requestedBy = trimOrNull(dto.requestedBy);
     if (has('businessOwner')) data.businessOwner = trimOrNull(dto.businessOwner);
     if (has('functionalConsultant')) data.functionalConsultant = trimOrNull(dto.functionalConsultant);
@@ -298,6 +379,74 @@ export class ChangeRequestsService {
     if (has('supportWindow')) data.supportWindow = trimOrNull(dto.supportWindow);
 
     return this.prisma.changeRequest.update({ where: { id }, data });
+  }
+
+  // ---- Stage pipeline (sequential, no jumping) ----------------------------
+
+  /** Whether this CR still needs CAB sign-off to leave the CAB Evaluation stage. */
+  private cabRequired(cr: { changeType: string | null }) {
+    return !!cr.changeType && CAB_TYPES.includes(cr.changeType);
+  }
+
+  /**
+   * Move a CR to the next stage. `targetStage` must be exactly the stage after
+   * the current one — no skipping and no jumping backwards. Leaving CAB Evaluation
+   * requires an APPROVED CAB decision when the change type demands it (Emergency exempt).
+   */
+  async advanceStage(id: string, targetStage: string, clientId: string, actor: Actor) {
+    const cr = await this.findOne(id, clientId);
+    const current = stageIndex(cr.stage);
+    const target = CHANGE_STAGES.indexOf(targetStage as (typeof CHANGE_STAGES)[number]);
+    if (target === -1) throw new BadRequestException('Unknown stage');
+    if (target !== current + 1) {
+      throw new BadRequestException('Stages must be completed in order — you cannot skip or jump a stage');
+    }
+    // Gate leaving CAB Evaluation on the board's sign-off.
+    if (cr.stage === CAB_STAGE && this.cabRequired(cr) && cr.cabApprovalStatus !== 'APPROVED') {
+      throw new BadRequestException('CAB approval is required before leaving the CAB Evaluation stage');
+    }
+    return this.prisma.changeRequest.update({
+      where: { id }, data: { stage: targetStage, updatedBy: actor.id },
+    });
+  }
+
+  // ---- CAB (Change Approval Board) sign-off -------------------------------
+
+  private mayDecideCab(cr: { changeApproverUserId: string | null }, actor: Actor) {
+    if (actor.roles?.includes('Admin')) return true;
+    // The approver is matched by real user identity, not a free-text name.
+    return !!cr.changeApproverUserId && cr.changeApproverUserId === actor.id;
+  }
+
+  async cabDecision(id: string, dto: { decision: string; reason?: string }, clientId: string, actor: Actor) {
+    const cr = await this.findOne(id, clientId);
+    if (!this.mayDecideCab(cr, actor)) {
+      throw new BadRequestException('Only the assigned Change Approver or a tenant Admin can decide CAB approval');
+    }
+    if (!this.cabRequired(cr)) {
+      throw new BadRequestException('This change type does not require CAB approval');
+    }
+    // A CAB decision is only meaningful at the CAB Evaluation stage — this stops a
+    // sign-off being flipped after the change has already advanced (or closed).
+    if (cr.stage !== CAB_STAGE) {
+      throw new BadRequestException('CAB decisions can only be made during the CAB Evaluation stage');
+    }
+    const decision = dto.decision === 'APPROVED' ? 'APPROVED' : dto.decision === 'REJECTED' ? 'REJECTED' : null;
+    if (!decision) throw new BadRequestException('Decision must be APPROVED or REJECTED');
+    const reason = decision === 'REJECTED' ? trimOrNull(dto.reason) : null;
+    if (decision === 'REJECTED' && !reason) throw new BadRequestException('A rejection reason is required');
+    const updated = await this.prisma.changeRequest.update({
+      where: { id },
+      data: { cabApprovalStatus: decision, cabReason: reason, cabDecidedById: actor.id, cabDecidedAt: new Date(), updatedBy: actor.id },
+    });
+    if (cr.createdBy) {
+      await this.notifications.notify({
+        clientId, userId: cr.createdBy, type: 'CR_CAB_DECISION',
+        title: `CAB ${decision === 'APPROVED' ? 'approved' : 'rejected'} a change`,
+        body: `${cr.crNumber} — ${cr.title}${reason ? ` · ${reason}` : ''}`,
+      });
+    }
+    return updated;
   }
 
   async remove(id: string, clientId: string) {

@@ -23,6 +23,7 @@ interface Role { id: string; name: string; }
 interface User {
   id: string;
   username: string;
+  name?: string | null;
   email: string;
   isActive: boolean;
   createdAt: string;
@@ -31,6 +32,7 @@ interface User {
 
 const createUserSchema = z.object({
   username: z.string().min(1, 'Username is required'),
+  name: z.string().optional(),
   email: z.string().email('Enter a valid email'),
   password: z.string().min(8, 'Min 8 characters'),
 });
@@ -38,6 +40,7 @@ type CreateUserValues = z.infer<typeof createUserSchema>;
 
 const editUserSchema = z.object({
   username: z.string().min(1, 'Username is required'),
+  name: z.string().optional(),
   email: z.string().email('Enter a valid email'),
   password: z.string().optional(),
   isActive: z.boolean(),
@@ -112,12 +115,12 @@ export default function UsersPage() {
 
   const createForm = useForm<CreateUserValues>({
     resolver: zodResolver(createUserSchema),
-    defaultValues: { username: '', email: '', password: '' },
+    defaultValues: { username: '', name: '', email: '', password: '' },
   });
 
   const editForm = useForm<EditUserValues>({
     resolver: zodResolver(editUserSchema),
-    defaultValues: { username: '', email: '', password: '', isActive: true, roleIds: [] },
+    defaultValues: { username: '', name: '', email: '', password: '', isActive: true, roleIds: [] },
   });
 
   const { data: users = [], isLoading } = useQuery<User[]>({
@@ -133,6 +136,7 @@ export default function UsersPage() {
     if (!editingUser) return;
     editForm.reset({
       username: editingUser.username,
+      name: editingUser.name ?? '',
       email: editingUser.email,
       password: '',
       isActive: editingUser.isActive,
@@ -160,6 +164,7 @@ export default function UsersPage() {
       if (!editingUser) return;
       await api.put(`/api/users/${editingUser.id}`, {
         username: values.username,
+        name: values.name ?? '',
         email: values.email,
         isActive: values.isActive,
         password: values.password || undefined,
@@ -197,7 +202,7 @@ export default function UsersPage() {
   const filteredUsers = useMemo(() => {
     const term = search.trim().toLowerCase();
     return users.filter((u) => {
-      const matchesSearch = !term || u.username.toLowerCase().includes(term) || u.email.toLowerCase().includes(term);
+      const matchesSearch = !term || u.username.toLowerCase().includes(term) || (u.name?.toLowerCase().includes(term) ?? false) || u.email.toLowerCase().includes(term);
       const matchesStatus = statusFilter === 'all' || (statusFilter === 'active' ? u.isActive : !u.isActive);
       return matchesSearch && matchesStatus;
     });
@@ -244,6 +249,17 @@ export default function UsersPage() {
                   <FormItem>
                     <FormLabel>Username</FormLabel>
                     <FormControl><Input {...field} /></FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={createForm.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Full name</FormLabel>
+                    <FormControl><Input placeholder="e.g. John Rivera" {...field} /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -297,6 +313,17 @@ export default function UsersPage() {
                   <FormItem>
                     <FormLabel>Username</FormLabel>
                     <FormControl><Input {...field} /></FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={editForm.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Full name</FormLabel>
+                    <FormControl><Input placeholder="e.g. John Rivera" {...field} /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -404,7 +431,7 @@ export default function UsersPage() {
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/50 hover:bg-muted/50">
-                <SortableHead icon={AtSign} label="Username" field="username" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead icon={AtSign} label="Name" field="username" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead icon={Mail} label="Email" field="email" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <TableHead className="border-r"><HeadLabel icon={Shield}>Roles</HeadLabel></TableHead>
                 <SortableHead icon={CircleDot} label="Status" field="status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
@@ -424,9 +451,12 @@ export default function UsersPage() {
                   <TableCell className="border-r font-medium">
                     <span className="flex items-center gap-2">
                       <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
-                        {u.username.slice(0, 2).toUpperCase()}
+                        {(u.name?.trim() || u.username).slice(0, 2).toUpperCase()}
                       </span>
-                      <span className="text-foreground">{u.username}</span>
+                      <span className="flex flex-col">
+                        <span className="text-foreground">{u.name?.trim() || u.username}</span>
+                        {u.name?.trim() && <span className="text-xs text-muted-foreground">@{u.username}</span>}
+                      </span>
                     </span>
                   </TableCell>
                   <TableCell className="border-r">

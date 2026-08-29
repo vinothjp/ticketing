@@ -1,7 +1,9 @@
 // Shared types for the cross-project weekly Timesheet page.
 
-// Fixed Activity list from the Excel spec ("21 Project Time Sheet.xlsx"). Kept in
-// sync with backend/src/timesheet/dto/timesheet.dto.ts (TIMESHEET_ACTIVITIES).
+// The Activity list from the Excel spec ("21 Project Time Sheet.xlsx"), which
+// seeds the tenant's `timesheetActivity` option list. The live list comes from
+// the server (`WeekResponse.activities`, read off that option list); this array
+// is only the fallback before the week has loaded.
 export const ACTIVITIES = [
   'Blueprint',
   'System Configuration',

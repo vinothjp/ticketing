@@ -12,6 +12,7 @@ import { CrAttachmentsService } from './cr-attachments.service';
 import {
   CreateChangeRequestDto, UpdateChangeRequestDto,
   CreateCrOptionDto, UpdateCrOptionDto, CrAttachmentLinkDto,
+  AdvanceStageDto, CabDecisionDto,
 } from './dto/change-request.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
@@ -126,5 +127,17 @@ export class ChangeRequestsController {
   @Post(':id/send-approval')
   sendForApproval(@Param('id') id: string, @Request() req: AuthedRequest) {
     return this.crs.sendForApproval(id, req.user.clientId, req.user);
+  }
+
+  // Move a CR to the next stage (sequential; no skipping).
+  @Post(':id/advance-stage')
+  advanceStage(@Param('id') id: string, @Body() dto: AdvanceStageDto, @Request() req: AuthedRequest) {
+    return this.crs.advanceStage(id, dto.targetStage, req.user.clientId, req.user);
+  }
+
+  // CAB (Change Approval Board) sign-off decision.
+  @Post(':id/cab-decision')
+  cabDecision(@Param('id') id: string, @Body() dto: CabDecisionDto, @Request() req: AuthedRequest) {
+    return this.crs.cabDecision(id, dto, req.user.clientId, req.user);
   }
 }

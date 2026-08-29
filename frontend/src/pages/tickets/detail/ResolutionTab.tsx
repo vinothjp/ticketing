@@ -5,6 +5,7 @@ import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { type ReopenWindow } from './ReopenControl';
+import { useDateFormat } from '@/lib/dateFormat';
 
 export interface ResolutionTicket extends ReopenWindow {
   id: string;
@@ -42,6 +43,7 @@ export default function ResolutionTab({
   onViewTasks?: () => void;
 }) {
   const qc = useQueryClient();
+  const { fmtDateTime } = useDateFormat();
   const [resolution, setResolution] = useState(ticket.resolution ?? '');
 
   useEffect(() => {
@@ -90,7 +92,7 @@ export default function ResolutionTab({
         <>
           <span className="font-medium text-amber-800 dark:text-amber-300">
             Reopened by {ticket.reopenedByName ?? 'the client'}
-            {ticket.reopenedAt ? ` on ${new Date(ticket.reopenedAt).toLocaleString()}` : ''}
+            {ticket.reopenedAt ? ` on ${fmtDateTime(ticket.reopenedAt)}` : ''}
             {ticket.reopenReason ? ':' : ''}
           </span>
           {ticket.reopenReason && (

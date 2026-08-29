@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode, type SyntheticEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Plus, Trash2, MessageSquare, AlignLeft, CircleDot, AtSign, Calendar, Clock, Timer } from 'lucide-react';
+import {
+  Plus, Trash2, MessageSquare, AlignLeft, CircleDot, AtSign, Calendar, Play, Square, Timer,
+  RotateCcw,
+} from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import api from '../../../lib/api';
 import { useAuth } from '../../../context/AuthContext';
@@ -17,11 +20,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { CellPopover } from '@/components/ui/cell-popover';
 import WorklogSection from './WorklogSection';
-import TaskTimePopover from './TaskTimePopover';
 import TaskComments from './TaskComments';
 import { useWorklogInvalidate, useWorklogs } from './ticketQueries';
 import TicketTaskDialog from './TicketTaskDialog';
-import { TASK_STATUSES, hrs, isSettledTask, taskStatusLabel, taskStatusPill } from './taskMeta';
+import { Textarea } from '@/components/ui/textarea';
+import { useDateFormat } from '@/lib/dateFormat';
+import {
+  COMPLETED_TASK_STATUS, TASK_STATUSES, hrs, isSettledTask, taskStatusLabel, taskStatusPill,
+} from './taskMeta';
 
 export interface Task {
   id: string;
@@ -35,9 +41,17 @@ export interface Task {
 }
 export interface UserOption { id: string; username: string; }
 
-export default function TasksTab({ ticketId }: { ticketId: string }) {
+export default function TasksTab({
+  ticketId,
+  ticketAssigneeId,
+}: {
+  ticketId: string;
+  /** The agent the *ticket* is assigned to — who, with an admin, may reopen a completed task. */
+  ticketAssigneeId?: string | null;
+}) {
   const qc = useQueryClient();
   const { user } = useAuth();
+  const { fmtDate } = useDateFormat();
   const { confirm, ConfirmDialog } = useConfirm();
   const [addOpen, setAddOpen] = useState(false);
   // The rows ticked for a bulk action. Kept as ids rather than indexes so a
@@ -55,10 +69,40 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
   const isAdmin = !!user?.roles.includes('Admin');
   const mayTrack = (t: Task) => isAdmin || (!!t.assigneeUserId && t.assigneeUserId === user?.id);
 
-  const { data: tasks = [] } = useQuery<Task[]>({
+  // Reopening a completed task is a different right from running it: it belongs
+  // to the agent the *ticket* is assigned to, or an admin — deliberately not the
+  // task's own assignee, who is the person that called it finished. Mirrors
+  // `assertMayReopen` on the backend.
+  const mayReopen = isAdmin || (!!ticketAssigneeId && ticketAssigneeId === user?.id);
+  const isCompleted = (t: Task) => t.status === COMPLETED_TASK_STATUS;
+
+  // The task being reopened and the reason typed for it. A reopen is refused
+  // without one — server-side too — so the dialog is the only door.
+  const [reopening, setReopening] = useState<{ task: Task; to: string } | null>(null);
+  const [reopenNote, setReopenNote] = useState('');
+
+  const { data: tasks = [], dataUpdatedAt } = useQuery<Task[]>({
     queryKey: ['ticket-tasks', ticketId],
     queryFn: async () => (await api.get(`/api/tickets/${ticketId}/tasks`)).data,
   });
+
+  // A running task's Time spent has to advance without a refetch. `hoursSpent`
+  // comes back already counting the open stretch up to the moment it was
+  // fetched, so live elapsed is that figure plus the wall-clock time since — no
+  // second timestamp from the server needed. Re-render on a ticker only while
+  // something is actually running, so an idle grid does no work.
+  const anyRunning = tasks.some((t) => t.status === 'IN_PROGRESS');
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (!anyRunning) return;
+    const id = setInterval(() => forceTick((n) => n + 1), 30_000);
+    return () => clearInterval(id);
+  }, [anyRunning]);
+  const liveHours = (t: Task) => {
+    const base = Number(t.hoursSpent ?? 0);
+    if (t.status !== 'IN_PROGRESS') return base;
+    return base + Math.max(0, Date.now() - dataUpdatedAt) / 3_600_000;
+  };
   const { data: users = [] } = useQuery<UserOption[]>({
     queryKey: ['users'],
     queryFn: async () => (await api.get('/api/users')).data,
@@ -102,6 +146,27 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
     onSuccess: invalidate,
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error updating task'),
   });
+  // A reopen is a status change carrying its reason. Separate from `patch` only
+  // so the dialog closes on success and the reason is cleared - the endpoint is
+  // the same PATCH, and it is the backend that refuses a blank note.
+  const reopen = useMutation({
+    mutationFn: ({ taskId, to, note }: { taskId: string; to: string; note: string }) =>
+      api.patch(`/api/tickets/${ticketId}/tasks/${taskId}`, { status: to, reopenNote: note }),
+    onSuccess: () => {
+      invalidate();
+      setReopening(null);
+      setReopenNote('');
+      toast.success('Task reopened');
+    },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error reopening task'),
+  });
+
+  /** Open the reason dialog rather than patching - a reopen is never silent. */
+  const askReopen = (task: Task, to: string) => {
+    setReopenNote('');
+    setReopening({ task, to });
+  };
+
   const invalidateWorklogs = useWorklogInvalidate(ticketId);
   const remove = useMutation({
     mutationFn: (taskId: string) => api.delete(`/api/tickets/${ticketId}/tasks/${taskId}`),
@@ -181,7 +246,9 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
   // Mirrors `assertMayTrack`: only a task's own assignee or a tenant Admin moves
   // its status, so the bulk control is offered only when every ticked row
   // qualifies — rather than firing and collecting 403s.
-  const mayTrackAll = chosen.length > 0 && chosen.every(mayTrack);
+  // A completed row is deliberately excluded: reopening one demands a reason, so
+  // it happens from its own row where that can be asked for.
+  const mayTrackAll = chosen.length > 0 && chosen.every((t) => mayTrack(t) && !isCompleted(t));
 
   return (
     <div className="space-y-6">
@@ -230,7 +297,10 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button size="sm" variant="outline" disabled={bulkBusy || !mayTrackAll}
-                    title={mayTrackAll ? undefined : 'Only a task\u2019s assignee or an admin can move its status'}>
+                    title={mayTrackAll ? undefined
+                      : chosen.some(isCompleted)
+                        ? 'Reopen a completed task from its own row — it needs a reason'
+                        : 'Only a task\u2019s assignee or an admin can move its status'}>
                     Status
                   </Button>
                 </DropdownMenuTrigger>
@@ -289,7 +359,7 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
               <TableHead className="border-r"><HeadLabel icon={CircleDot}>Status</HeadLabel></TableHead>
               <TableHead className="border-r"><HeadLabel icon={AtSign}>Assignee</HeadLabel></TableHead>
               <TableHead className="border-r"><HeadLabel icon={Calendar}>Due</HeadLabel></TableHead>
-              <TableHead className="border-r"><HeadLabel icon={Clock}>Log time</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={Play}>Timer</HeadLabel></TableHead>
               <TableHead className="border-r"><HeadLabel icon={Timer}>Time spent</HeadLabel></TableHead>
               <TableHead className="border-r"><HeadLabel icon={MessageSquare}>Comments</HeadLabel></TableHead>
               <TableHead className="w-10" />
@@ -302,17 +372,22 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
               </TableRow>
             ) : tasks.map((t) => {
               const canTrack = mayTrack(t);
-              // What Time spent reports: the hours hand-logged against this task
-              // and charged to the contract. Filtered out of the one cache entry
-              // that already holds the whole ticket's entries — no request of its
-              // own. `hoursSpent` is the other figure entirely: how long the task
-              // stood in progress, derived from the status trail and never
-              // billed, so it rides along in the tooltip rather than competing
-              // for the column.
+              const running = t.status === 'IN_PROGRESS';
+              const completed = isCompleted(t);
+              // Moving a completed task at all is a reopen, whichever control does
+              // it — so the status dropdown opens to the ticket's agent and admins
+              // even when they are not the task's assignee, and to nobody else.
+              const canEditStatus = completed ? mayReopen : canTrack;
+              // What Time spent reports: the time the task has stood in progress,
+              // summed over its Start/Stop trail and advancing live while it runs.
+              // Every stopped stretch is booked to the contract as a worklog, so
+              // this figure and the hours charged to the customer's pool are one
+              // and the same. `logged` is that booked total, kept only for the
+              // delete confirmation and the "done needs time" gate below.
               const logged = logs
                 .filter((l) => l.taskId === t.id)
                 .reduce((sum, l) => sum + Number(l.hours), 0);
-              const elapsed = Number(t.hoursSpent ?? 0);
+              const spent = liveHours(t);
               // Every cell that carries a control stops the click, or using it
               // also pops the task dialog the row opens.
               const stop = {
@@ -348,14 +423,19 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
                   <TableCell className="border-r" {...stop}>
                     <Select
                       value={t.status}
-                      disabled={!canTrack}
+                      disabled={!canEditStatus}
                       onValueChange={(v) => {
                         if (!v || v === t.status) return;
-                        // Done means the work is finished *and booked*. Mirrors
-                        // the backend gate so the agent hears why here rather
-                        // than bouncing off a 400. Cancelling stays free.
-                        if (v === 'DONE' && logged <= 0) {
-                          toast.error(`Log the time spent on "${t.title}" before marking it done`);
+                        // Leaving Completed is a reopen: ask why first, and let
+                        // the dialog do the writing.
+                        if (completed) return askReopen(t, v);
+                        // Done means the work is finished *and booked*. A running
+                        // task books its open stretch on the way out, so it
+                        // qualifies; only a task that never ran and has nothing
+                        // booked is refused. Mirrors the backend gate so the agent
+                        // hears why here rather than bouncing off a 400.
+                        if (v === 'DONE' && logged <= 0 && !running) {
+                          toast.error(`Start the timer on "${t.title}" before marking it done`);
                           return;
                         }
                         patch.mutate({ taskId: t.id, data: { status: v } });
@@ -392,22 +472,67 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
 
                   <TableCell className="border-r">
                     {t.dueDate
-                      ? <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">{new Date(t.dueDate).toLocaleDateString()}</span>
+                      ? <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">{fmtDate(t.dueDate)}</span>
                       : <span className="text-muted-foreground">—</span>}
                   </TableCell>
 
+                  {/* The task's clock, and the only three buttons on it: Start
+                      puts the task in progress, Stop closes the stretch and books
+                      the elapsed to the contract, and Reopen pulls a completed
+                      task back — with a reason, and only for the ticket's own
+                      agent or an admin. A completed task otherwise reads Closed.
+                      There is no hand-typed hours entry: the time between Start
+                      and Stop is the time spent. */}
                   <TableCell className="border-r" {...stop}>
-                    <TaskTimePopover ticketId={ticketId} task={t} />
+                    {completed ? (
+                      // One button, never two: a completed task offers Reopen to
+                      // whoever may use it, and nothing at all to anyone else —
+                      // the status pill already says the task is closed.
+                      mayReopen ? (
+                        <Button
+                          size="sm" variant="outline"
+                          className="h-7 gap-1 border-amber-300 px-2 text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:border-amber-900 dark:text-amber-400 dark:hover:bg-amber-950/40"
+                          disabled={reopen.isPending}
+                          title="Reopen this task"
+                          onClick={() => askReopen(t, 'OPEN')}
+                        >
+                          <RotateCcw className="size-3.5" /> Reopen
+                        </Button>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )
+                    ) : t.status === 'CANCELLED' ? (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    ) : running ? (
+                      <Button
+                        size="sm" variant="outline"
+                        className="h-7 gap-1 border-red-300 px-2 text-red-600 hover:bg-red-50 hover:text-red-700 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
+                        disabled={!canTrack || patch.isPending}
+                        title={canTrack ? 'Stop the timer' : 'Only the assignee or an admin can run this timer'}
+                        onClick={() => patch.mutate({ taskId: t.id, data: { status: 'OPEN' } })}
+                      >
+                        <Square className="size-3.5 fill-current" /> Stop
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm" variant="outline"
+                        className="h-7 gap-1 border-emerald-300 px-2 text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800 dark:border-emerald-900 dark:text-emerald-400 dark:hover:bg-emerald-950/40"
+                        disabled={!canTrack || patch.isPending}
+                        title={canTrack ? 'Start the timer' : 'Only the assignee or an admin can run this timer'}
+                        onClick={() => patch.mutate({ taskId: t.id, data: { status: 'IN_PROGRESS' } })}
+                      >
+                        <Play className="size-3.5 fill-current" /> Start
+                      </Button>
+                    )}
                   </TableCell>
 
                   <TableCell
-                    className={`border-r tabular-nums ${logged > 0 ? 'font-semibold text-foreground' : 'text-muted-foreground'}`}
-                    title={
-                      'Hours logged against this task and charged to the contract'
-                      + (elapsed > 0 ? ` · stood in progress for ${hrs(elapsed)}, audit only` : '')
-                    }
+                    className={`border-r tabular-nums ${spent > 0 ? 'font-semibold text-foreground' : 'text-muted-foreground'}`}
+                    title="Time this task has stood in progress, booked to the contract"
                   >
-                    {logged > 0 ? hrs(logged) : '—'}
+                    {running && <span className="mr-1.5 inline-block size-2 animate-pulse rounded-full bg-red-500 align-middle" aria-hidden />}
+                    {spent > 0 ? hrs(spent) : '—'}
+                    {running && <span className="ml-1 text-xs font-normal text-muted-foreground">· running</span>}
                   </TableCell>
 
                   <TableCell className="border-r" {...stop}>
@@ -472,11 +597,49 @@ export default function TasksTab({ ticketId }: { ticketId: string }) {
 
       {ConfirmDialog}
 
+      {/* Reopening is the one status move that has to say why: the task was
+          called finished, and the trail should carry what pulled it back. The
+          note is mandatory here and on the server, so neither door lets a silent
+          reopen through. */}
+      <Dialog open={!!reopening} onOpenChange={(o) => { if (!o) setReopening(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reopen &ldquo;{reopening?.task.title}&rdquo;?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Why is this being reopened?</label>
+            <Textarea
+              rows={3}
+              autoFocus
+              value={reopenNote}
+              onChange={(e) => setReopenNote(e.target.value)}
+              placeholder="e.g. The fix did not hold — the customer reported it again"
+            />
+            <p className="text-xs text-muted-foreground">
+              Recorded on the task&rsquo;s status trail and in the ticket history.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setReopening(null)}>Cancel</Button>
+            <Button
+              disabled={!reopenNote.trim() || reopen.isPending}
+              onClick={() => reopening && reopen.mutate({
+                taskId: reopening.task.id, to: reopening.to, note: reopenNote.trim(),
+              })}
+            >
+              {reopen.isPending ? 'Reopening…' : 'Reopen task'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <TicketTaskDialog
         ticketId={ticketId}
         taskId={openTaskId}
         users={users}
         canTrack={(t) => mayTrack(t)}
+        canReopen={mayReopen}
+        onReopen={askReopen}
         onClose={() => setOpenTaskId(null)}
         onDelete={(taskId) => {
           const t = tasks.find((x) => x.id === taskId);

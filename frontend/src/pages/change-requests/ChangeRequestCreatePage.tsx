@@ -8,12 +8,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { OptionSelect } from './OptionSelect';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { OptionSelect, EntitySelect } from './OptionSelect';
 
 const emptyDraft = {
-  title: '', description: '', customerCompanyId: '', customer: '',
+  changeSource: 'CUSTOMER', title: '', description: '', customerCompanyId: '', customer: '',
   objective: '', reasonForCr: '', benefitToCustomer: '',
   projectName: '', priority: '', crType: '',
+  changeType: '', changeGroup: '',
 };
 
 const Req = () => <span className="text-destructive">*</span>;
@@ -28,25 +30,32 @@ export default function ChangeRequestCreatePage() {
     queryFn: async () => (await api.get('/api/customer-companies')).data,
   });
 
-  // Everything a CR needs to be reviewable by the customer must be filled here.
-  const canSave = !!(draft.title.trim() && draft.description.trim() && draft.customerCompanyId && draft.objective.trim() && draft.reasonForCr.trim());
+  // An internal change has no customer to review it, so it needs no company.
+  const internal = draft.changeSource === 'INTERNAL';
+  const canSave = !!(
+    draft.title.trim() && draft.description.trim() && draft.objective.trim() && draft.reasonForCr.trim()
+    && (internal || draft.customerCompanyId)
+  );
 
   const createMutation = useMutation({
     mutationFn: async (send: boolean) => {
       const res = await api.post('/api/change-requests', {
         title: draft.title.trim(),
         description: draft.description.trim() || undefined,
-        customerCompanyId: draft.customerCompanyId || undefined,
-        customer: draft.customer || undefined,
+        changeSource: draft.changeSource,
+        customerCompanyId: internal ? undefined : draft.customerCompanyId || undefined,
+        customer: internal ? undefined : draft.customer || undefined,
         objective: draft.objective.trim() || undefined,
         reasonForCr: draft.reasonForCr.trim() || undefined,
         benefitToCustomer: draft.benefitToCustomer.trim() || undefined,
         projectName: draft.projectName || undefined,
         priority: draft.priority || undefined,
         crType: draft.crType || undefined,
+        changeType: draft.changeType || undefined,
+        changeGroup: draft.changeGroup || undefined,
       });
       // Send straight to the customer admin — no need to reopen the CR.
-      if (send) await api.post(`/api/change-requests/${res.data.id}/send-approval`);
+      if (send && !internal) await api.post(`/api/change-requests/${res.data.id}/send-approval`);
       return { id: res.data.id as string, send };
     },
     onSuccess: ({ id, send }) => {
@@ -60,7 +69,7 @@ export default function ChangeRequestCreatePage() {
   return (
     <div className="mx-auto max-w-4xl">
       <Button variant="ghost" size="sm" onClick={() => navigate('/change-requests')} className="mb-3 -ml-2">
-        <ArrowLeft className="size-4" /> All change requests
+        <ArrowLeft className="size-4" /> Change Management
       </Button>
 
       <div className="mb-6">
@@ -71,30 +80,63 @@ export default function ChangeRequestCreatePage() {
       </div>
 
       <div className="space-y-6">
-        <div className="space-y-1.5">
-          <label className="text-sm font-medium">Title <Req /></label>
-          <Input value={draft.title} onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))} placeholder="Short summary of the change" />
+        {/* Title shares its row with the Customer / Internal choice, so the title
+            field is narrowed to leave room for it. */}
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <label className="text-sm font-medium">Title <Req /></label>
+            <Input value={draft.title} onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))} placeholder="Short summary of the change" />
+          </div>
+          <div className="space-y-1.5 sm:w-56 sm:shrink-0">
+            <label className="text-sm font-medium">Raised for</label>
+            {/* RadioGroupItem fires on every click, the selected one included —
+                ignore the no-op so the customer link isn't cleared needlessly. */}
+            <RadioGroup
+              value={draft.changeSource}
+              onValueChange={(v) => setDraft((d) => (v === d.changeSource
+                ? d
+                : { ...d, changeSource: v, ...(v === 'INTERNAL' ? { customerCompanyId: '', customer: '' } : {}) }))}
+              className="flex h-9 items-center gap-4"
+            >
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <RadioGroupItem value="CUSTOMER" /> Customer
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <RadioGroupItem value="INTERNAL" /> Internal
+              </label>
+            </RadioGroup>
+          </div>
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
+          {!internal && (
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Customer name <Req /></label>
+              <Select
+                value={draft.customerCompanyId}
+                onValueChange={(v) => {
+                  const co = companies.find((c) => c.id === v);
+                  setDraft((d) => ({ ...d, customerCompanyId: v, customer: co?.name ?? '' }));
+                }}
+              >
+                <SelectTrigger><SelectValue placeholder="Select the customer to send this to" /></SelectTrigger>
+                <SelectContent>
+                  {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="space-y-1.5">
-            <label className="text-sm font-medium">Customer company <Req /></label>
-            <Select
-              value={draft.customerCompanyId}
-              onValueChange={(v) => {
-                const co = companies.find((c) => c.id === v);
-                setDraft((d) => ({ ...d, customerCompanyId: v, customer: co?.name ?? '' }));
-              }}
-            >
-              <SelectTrigger><SelectValue placeholder="Select the customer to send this to" /></SelectTrigger>
-              <SelectContent>
-                {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            <label className="text-sm font-medium">Change Type</label>
+            <OptionSelect listKey="change_type" value={draft.changeType} onChange={(v) => setDraft((d) => ({ ...d, changeType: v }))} placeholder="Select a change type" />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">Change Group</label>
+            <OptionSelect listKey="change_group" value={draft.changeGroup} onChange={(v) => setDraft((d) => ({ ...d, changeGroup: v }))} />
           </div>
           <div className="space-y-1.5">
             <label className="text-sm font-medium">Project</label>
-            <OptionSelect listKey="project" value={draft.projectName} onChange={(v) => setDraft((d) => ({ ...d, projectName: v }))} />
+            <EntitySelect source="project" value={draft.projectName} onChange={(v) => setDraft((d) => ({ ...d, projectName: v }))} />
           </div>
           <div className="space-y-1.5">
             <label className="text-sm font-medium">Priority</label>
@@ -130,12 +172,18 @@ export default function ChangeRequestCreatePage() {
           <Button variant="outline" onClick={() => navigate('/change-requests')} disabled={createMutation.isPending}>
             Cancel
           </Button>
-          <Button variant="outline" disabled={!canSave || createMutation.isPending} onClick={() => createMutation.mutate(false)}>
-            Save without sending
+          <Button
+            variant={internal ? 'default' : 'outline'}
+            disabled={!canSave || createMutation.isPending}
+            onClick={() => createMutation.mutate(false)}
+          >
+            {internal ? (createMutation.isPending ? 'Working…' : 'Create change') : 'Save without sending'}
           </Button>
-          <Button disabled={!canSave || createMutation.isPending} onClick={() => createMutation.mutate(true)}>
-            {createMutation.isPending ? 'Working…' : 'Create & send for approval'}
-          </Button>
+          {!internal && (
+            <Button disabled={!canSave || createMutation.isPending} onClick={() => createMutation.mutate(true)}>
+              {createMutation.isPending ? 'Working…' : 'Create & send for approval'}
+            </Button>
+          )}
         </div>
       </div>
     </div>

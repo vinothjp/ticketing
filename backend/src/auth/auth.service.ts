@@ -171,7 +171,11 @@ export class AuthService {
     if (!clientId) return null;
     const client = await this.prisma.client.findUnique({
       where: { id: clientId },
-      select: { name: true, logoUrl: true },
+      // Hand-built projection: a column added to Client reaches the app only if
+      // it is named here. `dateFormat` rides along because every logged-in user
+      // — staff and customer contacts alike — needs it to render a date, and
+      // this is the one client read they all have.
+      select: { name: true, logoUrl: true, dateFormat: true, timeFormat: true },
     });
     return client;
   }

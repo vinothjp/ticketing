@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { OptionSelect } from '../OptionSelect';
+import { OptionSelect, EntitySelect } from '../OptionSelect';
 import { type ChangeRequest } from '../changeRequestMeta';
 import { Field, Section, useCrSaver } from './section';
 
@@ -53,7 +53,7 @@ export default function ImpactAnalysisTab({ cr }: { cr: ChangeRequest }) {
   return (
     <div className="space-y-4">
       <Section title="Impact Analysis">
-        <Field label="Affected Module"><OptionSelect listKey="module" value={form.affectedModule} onChange={(v) => set({ affectedModule: v })} /></Field>
+        <Field label="Affected Module"><EntitySelect source="module" value={form.affectedModule} onChange={(v) => set({ affectedModule: v })} /></Field>
         <Field label="Complexity"><OptionSelect listKey="complexity" value={form.complexity} onChange={(v) => set({ complexity: v })} /></Field>
         <Field label="Estimated Hours">
           <Input type="number" min="0" step="0.5" value={form.estimatedHours} onChange={(e) => set({ estimatedHours: e.target.value })} />

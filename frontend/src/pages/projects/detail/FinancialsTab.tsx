@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Receipt, FileText } from 'lucide-react';
 import api from '../../../lib/api';
@@ -9,6 +9,7 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/comp
 import RegisterSection, { type FieldCfg, type ColCfg } from './RegisterSection';
 import { type ProjectDetail } from '../projectMeta';
 import { attachmentTypesFor } from '../../../lib/uploads';
+import { useOptionValues } from '@/lib/optionLists';
 
 interface Financials {
   revenue: number; collected: number; outstanding: number;
@@ -21,26 +22,17 @@ interface Financials {
 
 const money = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 
+// Seeds (and backs) the `expenseCategory` option list, which is what the form
+// actually reads — see the Option List screen.
 const EXPENSE_CATS = ['Consultant Cost', 'Travel', 'Accommodation', 'Food', 'Hardware', 'Software', 'Cloud', 'Third Party', 'Training', 'Other Expenses'];
-const expenseFields: FieldCfg[] = [
-  { key: 'category', label: 'Category', type: 'select', options: EXPENSE_CATS },
-  { key: 'description', label: 'Description', type: 'text' },
-  { key: 'amount', label: 'Amount', type: 'number' },
-  { key: 'date', label: 'Date', type: 'date' },
-];
 const expenseCols: ColCfg[] = [
   { key: 'category', label: 'Category' }, { key: 'description', label: 'Description' },
   { key: 'amount', label: 'Amount', kind: 'money', align: 'right' }, { key: 'date', label: 'Date', kind: 'date' },
 ];
 // Invoice status is read-only and derived: Paid once the full amount is paid, else Pending.
 const invoiceStatus = (row: Record<string, any>) => (Number(row.amount) > 0 && Number(row.amountPaid) >= Number(row.amount) ? 'Paid' : 'Pending');
-const invoiceFields: FieldCfg[] = [
-  { key: 'invoiceNumber', label: 'Invoice #', type: 'text' },
-  { key: 'invoiceDate', label: 'Date', type: 'date' },
-  { key: 'amount', label: 'Invoice amount', type: 'number' },
-  { key: 'amountPaid', label: 'Amount to be paid', type: 'number' },
-  { key: 'type', label: 'Type', type: 'select', options: ['Fixed Price', 'Time & Material', 'AMC', 'Internal'] },
-];
+// Seeds (and backs) the `projectInvoiceType` option list.
+const INVOICE_TYPES = ['Fixed Price', 'Time & Material', 'AMC', 'Internal'];
 const invoiceCols: ColCfg[] = [
   { key: 'invoiceNumber', label: 'Invoice #' }, { key: 'invoiceDate', label: 'Date', kind: 'date' }, { key: 'type', label: 'Type' },
   { key: 'amount', label: 'Amount', kind: 'money', align: 'right' }, { key: 'amountPaid', label: 'Paid', kind: 'money', align: 'right' },
@@ -71,6 +63,21 @@ function Kpi({ label, value, tone, hint }: { label: string; value: string; tone?
 
 export default function FinancialsTab({ project }: { project: ProjectDetail }) {
   const [view, setView] = useState<'expenses' | 'invoices'>('expenses');
+  const expenseCats = useOptionValues('expenseCategory', EXPENSE_CATS);
+  const invoiceTypes = useOptionValues('projectInvoiceType', INVOICE_TYPES);
+  const invoiceFields = useMemo<FieldCfg[]>(() => [
+    { key: 'invoiceNumber', label: 'Invoice #', type: 'text' },
+    { key: 'invoiceDate', label: 'Date', type: 'date' },
+    { key: 'amount', label: 'Invoice amount', type: 'number' },
+    { key: 'amountPaid', label: 'Amount to be paid', type: 'number' },
+    { key: 'type', label: 'Type', type: 'select', options: invoiceTypes },
+  ], [invoiceTypes]);
+  const expenseFields = useMemo<FieldCfg[]>(() => [
+    { key: 'category', label: 'Category', type: 'select', options: expenseCats },
+    { key: 'description', label: 'Description', type: 'text' },
+    { key: 'amount', label: 'Amount', type: 'number' },
+    { key: 'date', label: 'Date', type: 'date' },
+  ], [expenseCats]);
   const { data: f } = useQuery<Financials>({
     queryKey: ['projects', project.id, 'financials'],
     queryFn: async () => (await api.get(`/api/projects/${project.id}/financials`)).data,

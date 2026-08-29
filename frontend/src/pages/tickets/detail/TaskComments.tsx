@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
 import { useTicketComments } from './ticketQueries';
+import { useDateFormat } from '@/lib/dateFormat';
 
 /**
  * One comment thread: the list, and the box to add to it.
@@ -29,6 +30,7 @@ export default function TaskComments({
 }) {
   const qc = useQueryClient();
   const { user } = useAuth();
+  const { fmtDateTime } = useDateFormat();
   const isAdmin = !!user?.roles.includes('Admin');
   const [draft, setDraft] = useState('');
 
@@ -66,7 +68,7 @@ export default function TaskComments({
             <div className="mb-0.5 flex items-center justify-between gap-2">
               <span className="text-xs font-medium text-foreground">{c.authorName || 'Someone'}</span>
               <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                {new Date(c.createdAt).toLocaleString()}
+                {fmtDateTime(c.createdAt)}
                 {(isAdmin || c.authorUserId === user?.id) && (
                   <button type="button" title="Delete comment" onClick={() => remove.mutate(c.id)}>
                     <Trash2 className="size-3.5 hover:text-destructive" />

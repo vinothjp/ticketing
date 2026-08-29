@@ -1,5 +1,5 @@
 import {
-  IsString, IsOptional, IsNotEmpty, IsDateString, IsBoolean, IsInt, IsNumber,
+  IsString, IsOptional, IsNotEmpty, IsDateString, IsBoolean, IsIn, IsInt, IsNumber, IsObject,
 } from 'class-validator';
 
 // All categorical fields are free strings here — their allowed values are
@@ -15,6 +15,10 @@ export class CreateChangeRequestDto {
   // Customer company this CR belongs to — its admin approves the CR.
   @IsOptional() @IsString() customerCompanyId?: string;
 
+  // Whether the change is raised for a customer or is one of our own. INTERNAL
+  // clears the customer link entirely (see ChangeRequestsService).
+  @IsOptional() @IsIn(['CUSTOMER', 'INTERNAL']) changeSource?: string;
+
   // Dropdown values (from the CR option store)
   @IsOptional() @IsString() customer?: string;
   @IsOptional() @IsString() projectName?: string;
@@ -28,6 +32,22 @@ export class CreateChangeRequestDto {
   @IsOptional() @IsString() functionalConsultant?: string;
   @IsOptional() @IsString() technicalConsultant?: string;
   @IsOptional() @IsString() projectManager?: string;
+
+  // Change Management (ITIL) — General section
+  @IsOptional() @IsString() changeType?: string;
+  @IsOptional() @IsString() changeGroup?: string;
+  @IsOptional() @IsString() changeOwner?: string;
+  @IsOptional() @IsString() subCategory?: string;
+  @IsOptional() @IsString() impact?: string;
+  @IsOptional() @IsString() servicesAffected?: string;
+  @IsOptional() @IsString() comments?: string;
+  // Roles
+  @IsOptional() @IsString() changeCoordinator?: string;
+  @IsOptional() @IsString() implementor?: string;
+  @IsOptional() @IsString() lineManager?: string;
+  @IsOptional() @IsString() reviewer?: string;
+  @IsOptional() @IsString() changeApprover?: string;
+  @IsOptional() @IsString() changeApproverUserId?: string;
 
   // Dates
   @IsOptional() @IsDateString() crDate?: string;
@@ -96,6 +116,17 @@ export class CrRejectDto {
   @IsString() @IsNotEmpty() reason!: string;
 }
 
+// Move a CR to the next stage. Server enforces "next only" (no skipping).
+export class AdvanceStageDto {
+  @IsString() @IsNotEmpty() targetStage!: string;
+}
+
+// CAB (Change Approval Board) sign-off decision on a CR.
+export class CabDecisionDto {
+  @IsString() @IsNotEmpty() decision!: string; // 'APPROVED' | 'REJECTED'
+  @IsOptional() @IsString() reason?: string;
+}
+
 export class UpdateChangeRequestDto {
   @IsOptional() @IsString() customerCompanyId?: string;
   @IsOptional() @IsString() @IsNotEmpty() title?: string;
@@ -114,6 +145,24 @@ export class UpdateChangeRequestDto {
   @IsOptional() @IsString() functionalConsultant?: string;
   @IsOptional() @IsString() technicalConsultant?: string;
   @IsOptional() @IsString() projectManager?: string;
+
+  // Change Management (ITIL) — General section
+  @IsOptional() @IsString() changeType?: string;
+  @IsOptional() @IsString() changeGroup?: string;
+  @IsOptional() @IsString() changeOwner?: string;
+  @IsOptional() @IsString() subCategory?: string;
+  @IsOptional() @IsString() impact?: string;
+  @IsOptional() @IsString() servicesAffected?: string;
+  @IsOptional() @IsString() comments?: string;
+  // Roles
+  @IsOptional() @IsString() changeCoordinator?: string;
+  @IsOptional() @IsString() implementor?: string;
+  @IsOptional() @IsString() lineManager?: string;
+  @IsOptional() @IsString() reviewer?: string;
+  @IsOptional() @IsString() changeApprover?: string;
+  @IsOptional() @IsString() changeApproverUserId?: string;
+  @IsOptional() @IsObject() stageNotes?: Record<string, string>;
+  @IsOptional() @IsIn(['CUSTOMER', 'INTERNAL']) changeSource?: string;
 
   @IsOptional() @IsDateString() crDate?: string;
   @IsOptional() @IsDateString() crStartDate?: string;
@@ -192,6 +241,7 @@ export class CreateCrOptionDto {
   @IsString() @IsNotEmpty() listKey!: string;
   @IsString() @IsNotEmpty() value!: string;
   @IsString() @IsNotEmpty() label!: string;
+  @IsOptional() @IsString() parentValue?: string;
   @IsOptional() @IsBoolean() isActive?: boolean;
   @IsOptional() @IsInt() sortOrder?: number;
 }
@@ -199,6 +249,7 @@ export class CreateCrOptionDto {
 export class UpdateCrOptionDto {
   @IsOptional() @IsString() @IsNotEmpty() value?: string;
   @IsOptional() @IsString() @IsNotEmpty() label?: string;
+  @IsOptional() @IsString() parentValue?: string;
   @IsOptional() @IsBoolean() isActive?: boolean;
   @IsOptional() @IsInt() sortOrder?: number;
 }

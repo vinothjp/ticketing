@@ -27,9 +27,18 @@ export function DateField({
   useEffect(() => {
     if (!open) return;
     setCursor(parse(value) ?? parse(min) ?? new Date());
-    // Flip up if the ~330px calendar would overflow the viewport bottom (e.g. field near a dialog's edge).
+    // Flip up if the ~330px calendar would overflow the bottom of whatever
+    // actually clips it. That is the viewport, or — for a field inside a dialog,
+    // which is capped to the viewport and scrolls its own body — the dialog box,
+    // whose bottom edge can sit well above the viewport's.
     const r = ref.current?.getBoundingClientRect();
-    if (r) setDropUp(r.bottom + 330 > window.innerHeight);
+    if (r) {
+      const host = ref.current?.closest('[data-slot="dialog-content"]');
+      const limit = host
+        ? Math.min(window.innerHeight, host.getBoundingClientRect().bottom)
+        : window.innerHeight;
+      setDropUp(r.bottom + 330 > limit);
+    }
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Close on outside-click / Escape.

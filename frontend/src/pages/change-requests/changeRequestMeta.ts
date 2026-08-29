@@ -12,6 +12,7 @@ export interface CrOption {
   listKey: string;
   value: string;
   label: string;
+  parentValue?: string | null;
   sortOrder: number;
   isActive: boolean;
 }
@@ -24,23 +25,21 @@ export const crOptionsQuery = (listKey: string) => ({
     (await api.get('/api/change-requests/options', { params: { listKey } })).data as CrOption[],
 });
 
-// Lists shown as tabs on the CR option-manager screen (must match the backend).
-export const CR_OPTION_LISTS: { key: string; label: string }[] = [
-  { key: 'customer', label: 'Customer' },
-  { key: 'project', label: 'Project' },
-  { key: 'module', label: 'Module' },
-  { key: 'type', label: 'CR Type' },
-  { key: 'priority', label: 'Priority' },
-  { key: 'category', label: 'CR Category' },
-  { key: 'status', label: 'Status' },
-  { key: 'person', label: 'People' },
-  { key: 'complexity', label: 'Complexity' },
-  { key: 'dev_status', label: 'Development Status' },
-  { key: 'test_status', label: 'Testing Status' },
-  { key: 'doc_title', label: 'Document Title' },
-  { key: 'yes_no', label: 'Yes / No' },
-  { key: 'approval', label: 'Approval' },
-];
+// The list registry now lives in the backend (option-lists/default-lists.ts)
+// and is managed on the unified Option List screen.
+
+// The Change Management stage pipeline — a fixed, ordered list (mirror of the
+// backend change-stage.ts). Gating depends on the order: a stage must be
+// completed before the next; no stage-jumping.
+export const CHANGE_STAGES = [
+  'Submission', 'Planning', 'CAB Evaluation', 'Implementation',
+  'UAT', 'Release', 'Review', 'Close',
+] as const;
+export type ChangeStage = (typeof CHANGE_STAGES)[number];
+export const CAB_STAGE: ChangeStage = 'CAB Evaluation';
+export const CAB_TYPES = ['Major', 'Minor', 'Standard'];
+export const stageIndex = (stage?: string | null) =>
+  CHANGE_STAGES.indexOf((stage ?? 'Submission') as ChangeStage);
 
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'outline';
 
@@ -49,12 +48,15 @@ type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'outli
 export const crStatusVariant = (s?: string | null): BadgeVariant => {
   switch (s) {
     case 'Completed':
+    case 'Accepted':
     case 'Deployed': return 'success';
     case 'Approved':
+    case 'Submitted for Authorisation':
     case 'Ready for Deployment': return 'default';
     case 'Rejected':
     case 'Cancelled': return 'destructive';
-    case 'New': return 'outline';
+    case 'New':
+    case 'Requested': return 'outline';
     default: return 'secondary';
   }
 };
@@ -76,6 +78,12 @@ export interface ChangeRequestSummary {
   customer?: string | null;
   projectName?: string | null;
   crType?: string | null;
+  changeType?: string | null;
+  changeOwner?: string | null;
+  crCategory?: string | null;
+  stage?: string | null;
+  // CUSTOMER (raised for a client company) | INTERNAL (our own change, no customer)
+  changeSource?: string | null;
   priority?: string | null;
   status: string;
   approvalStatus?: string | null;
@@ -101,6 +109,24 @@ export interface ChangeRequest extends ChangeRequestSummary {
   featureName?: string | null;
   moduleName?: string | null;
   crCategory?: string | null;
+  // Change Management (ITIL) — General section
+  changeType?: string | null;
+  changeGroup?: string | null;
+  changeOwner?: string | null;
+  subCategory?: string | null;
+  impact?: string | null;
+  servicesAffected?: string | null;
+  comments?: string | null;
+  stage?: string | null;
+  changeCoordinator?: string | null;
+  implementor?: string | null;
+  lineManager?: string | null;
+  reviewer?: string | null;
+  changeApprover?: string | null;
+  changeApproverUserId?: string | null;
+  cabApprovalStatus?: string | null;
+  cabReason?: string | null;
+  stageNotes?: Record<string, string> | null;
   requestedBy?: string | null;
   businessOwner?: string | null;
   functionalConsultant?: string | null;

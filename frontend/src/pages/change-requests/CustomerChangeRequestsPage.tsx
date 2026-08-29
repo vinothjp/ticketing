@@ -77,7 +77,7 @@ export default function CustomerChangeRequestsPage() {
   return (
     <div>
       <div className="mb-5">
-        <h1 className="text-2xl font-bold text-foreground">Change Requests</h1>
+        <h1 className="text-2xl font-bold text-foreground">Change Management</h1>
         <p className="text-sm text-muted-foreground">Review and approve change requests raised by your provider.</p>
       </div>
 

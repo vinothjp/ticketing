@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { DateField } from '@/components/ui/date-field';
-import { OptionSelect } from '../OptionSelect';
+import { EntitySelect } from '../OptionSelect';
 import { dateVal, type ChangeRequest } from '../changeRequestMeta';
 import { Field, Section, useCrSaver } from './section';
 import CrAttachments from './CrAttachments';
@@ -39,9 +39,9 @@ export default function BluePrintTab({ cr }: { cr: ChangeRequest }) {
       <Section title="Blue Print">
         <Field label="Blue Print Name"><Input value={form.blueprintName} onChange={(e) => set({ blueprintName: e.target.value })} placeholder="e.g. BBP Version1, Signed Blueprint" /></Field>
         <Field label="Version Number"><Input value={form.blueprintVersionNumber} onChange={(e) => set({ blueprintVersionNumber: e.target.value })} /></Field>
-        <Field label="Prepared By"><OptionSelect listKey="person" value={form.blueprintPreparedBy} onChange={(v) => set({ blueprintPreparedBy: v })} /></Field>
-        <Field label="Reviewed By"><OptionSelect listKey="person" value={form.blueprintReviewedBy} onChange={(v) => set({ blueprintReviewedBy: v })} /></Field>
-        <Field label="Approved By"><OptionSelect listKey="person" value={form.blueprintApprovedBy} onChange={(v) => set({ blueprintApprovedBy: v })} /></Field>
+        <Field label="Prepared By"><EntitySelect source="person" value={form.blueprintPreparedBy} onChange={(v) => set({ blueprintPreparedBy: v })} /></Field>
+        <Field label="Reviewed By"><EntitySelect source="person" value={form.blueprintReviewedBy} onChange={(v) => set({ blueprintReviewedBy: v })} /></Field>
+        <Field label="Approved By"><EntitySelect source="person" value={form.blueprintApprovedBy} onChange={(v) => set({ blueprintApprovedBy: v })} /></Field>
         <Field label="Approval Date"><DateField value={form.blueprintApprovalDate} onChange={(v) => set({ blueprintApprovalDate: v })} /></Field>
         <Field label="Remarks" className="sm:col-span-2"><Textarea rows={3} value={form.blueprintRemarks} onChange={(e) => set({ blueprintRemarks: e.target.value })} /></Field>
       </Section>

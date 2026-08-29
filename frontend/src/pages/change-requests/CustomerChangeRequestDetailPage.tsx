@@ -85,7 +85,7 @@ export default function CustomerChangeRequestDetailPage() {
   return (
     <div className="max-w-4xl">
       <Button variant="ghost" size="sm" className="mb-3 -ml-2" onClick={() => navigate('/my-change-requests')}>
-        <ArrowLeft className="size-4" /> All change requests
+        <ArrowLeft className="size-4" /> Change Management
       </Button>
 
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">

@@ -1,9 +1,12 @@
 import {
-  IsArray, IsBoolean, IsDateString, IsIn, IsObject, IsOptional, IsString, ValidateNested,
+  IsArray, IsBoolean, IsDateString, IsNotEmpty, IsObject, IsOptional, IsString, ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
 // Fixed Activity list from the Excel spec ("21 Project Time Sheet.xlsx").
+// The activities every tenant starts with. The live list is the
+// `timesheetActivity` option list (Option List screen); this array is what seeds
+// it, and the fallback if a tenant has emptied it.
 export const TIMESHEET_ACTIVITIES = [
   'Blueprint',
   'System Configuration',
@@ -19,7 +22,9 @@ export const TIMESHEET_ACTIVITIES = [
 // ISO date (yyyy-mm-dd) → hours. Days outside the requested week are ignored.
 export class SaveRowDto {
   @IsString() projectId!: string;
-  @IsIn(TIMESHEET_ACTIVITIES as unknown as string[]) activity!: string;
+  // The activity list is the tenant's own `timesheetActivity` option list, so
+  // membership is checked in the service against that list, not by @IsIn here.
+  @IsString() @IsNotEmpty() activity!: string;
   @IsOptional() @IsString() workPerformed?: string;
   @IsObject() days!: Record<string, number>;
 }

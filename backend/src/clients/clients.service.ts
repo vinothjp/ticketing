@@ -152,7 +152,13 @@ export class ClientsService {
   // widen here rather than duplicating the update.
   async update(
     id: string,
-    dto: UpdateClientDto & { ticketReopenWindowDays?: number; ticketAutoCloseDays?: number },
+    dto: UpdateClientDto & {
+      ticketReopenWindowDays?: number;
+      ticketAutoCloseDays?: number;
+      dateFormat?: string;
+      timeFormat?: string;
+      currency?: string;
+    },
     actorId: string,
   ) {
     await this.findOne(id);

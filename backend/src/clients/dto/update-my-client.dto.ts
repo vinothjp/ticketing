@@ -28,4 +28,23 @@ export class UpdateMyClientDto {
   @Min(1)
   @Max(365)
   ticketAutoCloseDays?: number;
+
+  // Token pattern every date on the ticket screens is rendered with. Picked from
+  // the DATE_FORMAT option list, so it is validated as free text here rather
+  // than against a fixed enum — an admin may add a pattern of their own.
+  @IsOptional()
+  @IsString()
+  dateFormat?: string;
+
+  // Clock appended to `dateFormat` wherever a date-and-time stamp is shown.
+  // Picked from the TIME_FORMAT option list.
+  @IsOptional()
+  @IsString()
+  timeFormat?: string;
+
+  // The currency the organization trades in, from the CURRENCY option list.
+  // Stored config — no screen reads it yet.
+  @IsOptional()
+  @IsString()
+  currency?: string;
 }

@@ -23,6 +23,7 @@ import CommentsTab from './detail/CommentsTab';
 import ApprovalsTab from './detail/ApprovalsTab';
 import ConversationTab from './detail/ConversationTab';
 import { ClientVisitsPanel } from '../client-visits/ClientVisitsPanel';
+import { useDateFormat } from '@/lib/dateFormat';
 
 interface TicketDetail {
   id: string;
@@ -104,9 +105,15 @@ const OMIT_FROM_TEMPLATE_FIELDS = new Set([
   'subject', 'description', 'attachments', 'templateName', 'createdDate', 'closedDate', 'ticketStatus', 'sla',
 ]);
 
+/** Two decimals at most, trailing zeros trimmed — every figure in the header bar. */
+function n2(n: number | null | undefined): string {
+  return String(Number((Number(n) || 0).toFixed(2)));
+}
+
 /** "1 hr" / "2.5 hrs" — the support-hours chip and its tooltip share one unit. */
 function hrs(n: number): string {
-  return `${n} ${n === 1 ? 'hr' : 'hrs'}`;
+  const v = n2(n);
+  return `${v} ${Number(v) === 1 ? 'hr' : 'hrs'}`;
 }
 
 function optionLabel(f: MergedTemplateField, value: string): string {
@@ -133,6 +140,9 @@ function fieldDisplayValue(f: MergedTemplateField, ticket: TicketDetail): string
 export default function TicketDetailPage() {
   const { id } = useParams<{ id: string }>();
   const qc = useQueryClient();
+  // Every date on this screen goes through the tenant's own format, set on the
+  // Organization screen — not whatever the viewer's browser happens to use.
+  const { fmtDate, fmtDateTime } = useDateFormat();
   // `?tab=` is the source of truth for the active tab, so a notification can
   // deep-link straight to the Conversation tab and a refresh keeps your place.
   // `replace` keeps tab clicks out of the back-button history.
@@ -206,7 +216,7 @@ export default function TicketDetailPage() {
   const hoursLabel = !supportHours
     ? null
     : supportHours.allocated != null
-      ? `${supportHours.left} of ${supportHours.allocated} left`
+      ? `${n2(supportHours.left)} of ${n2(supportHours.allocated)} left`
       : supportHours.unlimited
         ? 'Unlimited'
         : null;
@@ -325,13 +335,13 @@ export default function TicketDetailPage() {
   // Secondary lifecycle detail for the banner's second row. Reopened only counts
   // from the second time round, the same threshold the status row always used.
   const resolutionMeta = [
-    ticket.resolvedAt && `Resolved ${new Date(ticket.resolvedAt).toLocaleString()}`,
-    ticket.acknowledgedAt && `Acknowledged ${new Date(ticket.acknowledgedAt).toLocaleString()}`,
+    ticket.resolvedAt && `Resolved ${fmtDateTime(ticket.resolvedAt)}`,
+    ticket.acknowledgedAt && `Acknowledged ${fmtDateTime(ticket.acknowledgedAt)}`,
     (ticket.reopenedCount ?? 0) > 1 && `Reopened ${ticket.reopenedCount}×`,
     // Silence closes the ticket, so the banner says so while the clock runs.
     awaitingSignOff &&
       ticket.autoCloseAt &&
-      `Closes automatically on ${new Date(ticket.autoCloseAt).toLocaleDateString()} if not acknowledged`,
+      `Closes automatically on ${fmtDate(ticket.autoCloseAt)} if not acknowledged`,
   ].filter(Boolean) as string[];
   const resolutionHeadline = ticket.acknowledgedAt
     ? 'Resolution acknowledged by the client — ticket closed.'
@@ -358,22 +368,24 @@ export default function TicketDetailPage() {
           scrolls. `top-14` clears Layout's own sticky header; the negative margin
           lets the bar span the full width of the p-8 content column. */}
       <div className="sticky top-14 z-10 -mx-8 mb-6 border-b bg-background/95 px-8 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="text-sm text-muted-foreground">#{ticket.ticketNumber}</span>
-            <h1 className="min-w-0 text-xl font-bold break-words text-foreground">{ticket.subject}</h1>
-            <Badge variant={priority.code === 'P1' ? 'destructive' : 'secondary'}>{priority.label}</Badge>
+        {/* One row, on every tab: the subject gives way before the chips do, so the
+            time and contract figures never wrap onto a second line. */}
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-x-3">
+            <span className="shrink-0 text-sm text-muted-foreground">#{ticket.ticketNumber}</span>
+            <h1 className="min-w-0 truncate text-xl font-bold text-foreground" title={ticket.subject}>{ticket.subject}</h1>
+            <Badge variant={priority.code === 'P1' ? 'destructive' : 'secondary'} className="shrink-0">{priority.label}</Badge>
             {getApprovalMeta(ticket.approvalStatus) && (
-              <span className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${getApprovalMeta(ticket.approvalStatus)!.className}`}>
+              <span className={`shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-medium ${getApprovalMeta(ticket.approvalStatus)!.className}`}>
                 {getApprovalMeta(ticket.approvalStatus)!.label}
               </span>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-3">
+          <div className="flex shrink-0 items-center gap-2">
             {/* Total time on this ticket. Shown whatever the status — an ongoing
                 ticket and a closed one both need to account for their hours. */}
             <div
-              className="flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs"
+              className="flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs whitespace-nowrap"
               title="Total time logged against this ticket, including time recorded on its tasks"
             >
               <Timer className="size-3.5 text-muted-foreground" />
@@ -382,7 +394,7 @@ export default function TicketDetailPage() {
             </div>
             {hoursLabel && (
               <div
-                className="flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs"
+                className="flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs whitespace-nowrap"
                 title={
                   supportHours!.scope === 'CUSTOMER'
                     ? `${hrs(supportHours!.used)} spent on the shared contract`
@@ -535,7 +547,7 @@ export default function TicketDetailPage() {
                     <div>
                       <div className="text-sm font-medium text-foreground">{ticket.requestorName || 'Unknown requestor'}</div>
                       <div className="text-xs text-muted-foreground">
-                        {ticket.department ? `${ticket.department} · ` : ''}{new Date(ticket.createdAt).toLocaleString()}
+                        {ticket.department ? `${ticket.department} · ` : ''}{fmtDateTime(ticket.createdAt)}
                       </div>
                     </div>
                   </div>
@@ -693,7 +705,12 @@ export default function TicketDetailPage() {
               />
             </TabsContent>
             <TabsContent value="tasks">
-              <TasksTab ticketId={ticket.id} />
+              <TasksTab
+                ticketId={ticket.id}
+                // Reopening a completed task belongs to the ticket's own agent
+                // (or an admin), never the task assignee who closed it.
+                ticketAssigneeId={ticket.technicians[0]?.user.id ?? null}
+              />
             </TabsContent>
             <TabsContent value="approvals">
               <ApprovalsTab
@@ -816,9 +833,7 @@ export default function TicketDetailPage() {
                   {ticket.statusChangedAt && (
                     <p className="mt-1 text-xs text-muted-foreground">
                       In this status since{' '}
-                      {new Date(ticket.statusChangedAt).toLocaleString(undefined, {
-                        day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
-                      })}
+                      {fmtDateTime(ticket.statusChangedAt)}
                     </p>
                   )}
                 </div>
@@ -853,7 +868,7 @@ export default function TicketDetailPage() {
                 {ticket.dueDate && (
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Due</span>
-                    <span className="text-foreground">{new Date(ticket.dueDate).toLocaleDateString()}</span>
+                    <span className="text-foreground">{fmtDate(ticket.dueDate)}</span>
                   </div>
                 )}
               </CardContent>

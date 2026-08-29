@@ -9,14 +9,25 @@ import { TicketsService, TicketViewer } from '../tickets/tickets.service';
 import { ActivityService } from '../activity/activity.service';
 import { CreateTaskDto, UpdateTaskDto } from './dto/task.dto';
 import {
+  COMPLETED_TASK_STATUS,
   RUNNING_TASK_STATUS,
   SETTLED_TASK_STATUSES,
   TASK_STATUS_LABELS,
 } from './task-status';
 
-/** Hours between two stamps, to two decimals. */
+/**
+ * Hours between two stamps, to four decimals. Fine enough that a short stretch —
+ * a task started and stopped seconds apart while testing, say — still books a
+ * real, non-zero figure instead of rounding away to nothing. Only a sub-second
+ * stretch (< 0.36s) rounds to zero.
+ */
 function hoursBetween(start: Date, end: Date): number {
-  return Math.round(((end.getTime() - start.getTime()) / 3_600_000) * 100) / 100;
+  return round4((end.getTime() - start.getTime()) / 3_600_000);
+}
+
+/** Hours, at the four decimals every figure in this module is kept to. */
+function round4(hours: number): number {
+  return Math.round(hours * 10000) / 10000;
 }
 
 interface StatusEvent {
@@ -48,7 +59,7 @@ export function hoursFromEvents(events: StatusEvent[], openUntil?: Date): number
     }
   }
   if (startedAt && openUntil) total += hoursBetween(startedAt, openUntil);
-  return Math.round(total * 100) / 100;
+  return Math.round(total * 10000) / 10000;
 }
 
 /** The activity type a transition is logged under, so History keeps its icons. */
@@ -88,28 +99,85 @@ export class TasksService {
   }
 
   /**
-   * Hours to show for a task: the stored figure, plus the stretch still running
-   * if the task is in progress right now.
+   * Pulling a completed task back open is a *wider* right than running it, and a
+   * deliberately different one: the task's own assignee is the person who called
+   * it finished, so letting them quietly undo that would make "completed" mean
+   * nothing. It belongs to whoever owns the ticket — its assigned agent — or to
+   * a tenant Admin, and it is checked here in place of `assertMayTrack`, never
+   * alongside it.
+   *
+   * A ticket holds at most one agent, but the assignment still lives in the
+   * `TicketTechnician` join table, so this reads the join rather than a column.
    */
-  private liveHours(task: { status: string; hoursSpent: unknown }, events: StatusEvent[]) {
-    if (task.status !== RUNNING_TASK_STATUS) return Number(task.hoursSpent ?? 0);
-    return hoursFromEvents(events, new Date());
+  private async assertMayReopen(ticketId: string, viewer: TicketViewer) {
+    if (viewer.roles.includes('Admin')) return;
+    const holds = await this.prisma.ticketTechnician.findFirst({
+      where: { ticketId, userId: viewer.id },
+      select: { id: true },
+    });
+    if (holds) return;
+    throw new ForbiddenException(
+      'Only the agent this ticket is assigned to, or an admin, can reopen a completed task',
+    );
+  }
+
+  /**
+   * What a task has actually booked, per task id.
+   *
+   * `TicketWorklog` — not the derived status trail — is the figure every other
+   * surface quotes: the ticket header's Time spent, the task dialog's own total
+   * and the customer's support-hours pool are all sums of these rows. Reading the
+   * grid off the same table is what keeps those numbers equal by construction; a
+   * stretch the timer never managed to book (a stop that predates the booking, a
+   * worklog since deleted) can then no longer inflate the grid past the hours the
+   * contract was charged.
+   */
+  private async bookedHours(ticketId: string): Promise<Map<string, number>> {
+    const rows = await this.prisma.ticketWorklog.groupBy({
+      by: ['taskId'],
+      where: { ticketId, taskId: { not: null } },
+      _sum: { hours: true },
+    });
+    return new Map(
+      rows.map((r) => [String(r.taskId), Number(r._sum.hours ?? 0)]),
+    );
+  }
+
+  /**
+   * Hours to show for a task: what the timer has booked against it, plus the
+   * stretch running right now — the open stretch alone, since every closed one
+   * is already a worklog and counting it from the trail as well would double it.
+   */
+  private liveHours(
+    task: { id: string; status: string },
+    events: StatusEvent[],
+    booked: Map<string, number>,
+  ) {
+    const total = booked.get(task.id) ?? 0;
+    if (task.status !== RUNNING_TASK_STATUS) return round4(total);
+    // The last stamp is the one that entered IN_PROGRESS — the same point
+    // `bookRunningStretch` will measure the closing stretch from.
+    const startedAt = [...events].sort((a, b) => a.at.getTime() - b.at.getTime()).at(-1);
+    return round4(total + (startedAt ? hoursBetween(startedAt.at, new Date()) : 0));
   }
 
   async list(ticketId: string, clientId: string, viewer: TicketViewer) {
     await this.tickets.findOne(ticketId, clientId, viewer);
-    const tasks = await this.prisma.ticketTask.findMany({
-      where: { ticketId },
-      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-      include: {
-        _count: { select: { comments: true } },
-        // Only what the live-hours sum needs — the full trail is the dialog's job.
-        statusEvents: { select: { toStatus: true, at: true }, orderBy: { at: 'asc' } },
-      },
-    });
+    const [tasks, booked] = await Promise.all([
+      this.prisma.ticketTask.findMany({
+        where: { ticketId },
+        orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        include: {
+          _count: { select: { comments: true } },
+          // Only what the live-hours sum needs — the full trail is the dialog's job.
+          statusEvents: { select: { toStatus: true, at: true }, orderBy: { at: 'asc' } },
+        },
+      }),
+      this.bookedHours(ticketId),
+    ]);
     return tasks.map(({ statusEvents, _count, ...t }) => ({
       ...t,
-      hoursSpent: this.liveHours(t, statusEvents),
+      hoursSpent: this.liveHours(t, statusEvents, booked),
       commentCount: _count.comments,
     }));
   }
@@ -125,7 +193,8 @@ export class TasksService {
       },
     });
     if (!task) throw new NotFoundException('Task not found');
-    return { ...task, hoursSpent: this.liveHours(task, task.statusEvents) };
+    const booked = await this.bookedHours(ticketId);
+    return { ...task, hoursSpent: this.liveHours(task, task.statusEvents, booked) };
   }
 
   /**
@@ -185,7 +254,31 @@ export class TasksService {
     // including the option already selected, and re-recording that would stamp a
     // zero-length event and muddy the audit.
     const movingTo = dto.status && dto.status !== existing.status ? dto.status : null;
-    if (movingTo) this.assertMayTrack(existing, viewer);
+
+    // Leaving COMPLETED is a reopen, and answers to its own rule: the ticket's
+    // agent or an admin, never the task assignee who closed it, and never
+    // without saying why. Every other move stays with the consultant doing the
+    // work. Both doors — the timer's Reopen button and the status dropdown —
+    // come through here, so neither can slip past the note.
+    const reopening = !!movingTo && existing.status === COMPLETED_TASK_STATUS;
+    const reopenNote = dto.reopenNote?.trim() ?? '';
+    if (reopening) {
+      await this.assertMayReopen(ticketId, viewer);
+      if (!reopenNote) {
+        throw new BadRequestException('Say why this task is being reopened');
+      }
+    } else if (movingTo) {
+      this.assertMayTrack(existing, viewer);
+    }
+
+    // Leaving the running state closes a timer stretch, so the elapsed is booked
+    // as a worklog here — the Start/Stop timer, not a hand-typed figure, is what
+    // charges the customer's support-hours pool. Runs *before* the DONE gate
+    // below, so those freshly-booked hours are what satisfy it.
+    const leavingRunning =
+      !!movingTo && existing.status === RUNNING_TASK_STATUS && movingTo !== RUNNING_TASK_STATUS;
+    if (leavingRunning) await this.bookRunningStretch(existing, clientId, actorId, viewer);
+
     // Done means the work is finished and booked. CANCELLED is deliberately
     // exempt — a task that turned out not to be needed is settled honestly with
     // no time against it.
@@ -194,7 +287,7 @@ export class TasksService {
     }
 
     const hours = movingTo
-      ? await this.recordStatusChange(existing, movingTo, actorId)
+      ? await this.recordStatusChange(existing, movingTo, actorId, reopening ? reopenNote : null)
       : undefined;
 
     const task = await this.prisma.ticketTask.update({
@@ -222,19 +315,58 @@ export class TasksService {
         ticketId,
         actorUserId: actorId,
         type: ACTIVITY_TYPE[movingTo] ?? 'TASK_STATUS_CHANGED',
-        summary: `Task "${task.title}": ${label(existing.status)} → ${label(movingTo)}`,
-        meta: { taskId, from: existing.status, to: movingTo },
+        summary: `Task "${task.title}": ${label(existing.status)} → ${label(movingTo)}`
+          + (reopening ? ` — reopened: ${reopenNote}` : ''),
+        meta: { taskId, from: existing.status, to: movingTo, ...(reopening && { reopenNote }) },
       });
     }
     return task;
   }
 
   /**
+   * Book the stretch the task has just spent running as a `TicketWorklog`.
+   *
+   * This is what makes the Start/Stop timer the billable record: every time a
+   * task leaves IN_PROGRESS the elapsed since it entered is charged to the
+   * customer's support-hours pool, so a consultant never types an hours figure by
+   * hand. Routed through `tickets.addWorklog` so the allowance check, the ledger
+   * write and the low-hours alert fire exactly as a manual entry's would — an
+   * exhausted pool refuses the stop the same way it refused a manual log, and the
+   * excess-approval flow is what unlocks it.
+   *
+   * The stretch is measured from the last status event (the one that entered
+   * IN_PROGRESS — server-stamped, never client-supplied) to now. Sub-minute work
+   * rounds to zero and books nothing.
+   */
+  private async bookRunningStretch(
+    existing: { id: string; ticketId: string },
+    clientId: string,
+    actorId: string,
+    viewer: TicketViewer,
+  ) {
+    const last = await this.prisma.ticketTaskStatusEvent.findFirst({
+      where: { taskId: existing.id },
+      orderBy: { at: 'desc' },
+      select: { at: true },
+    });
+    if (!last) return;
+    const elapsed = hoursBetween(last.at, new Date());
+    if (!(elapsed > 0)) return;
+    await this.tickets.addWorklog(
+      existing.ticketId,
+      { hours: elapsed, taskId: existing.id },
+      clientId,
+      actorId,
+      viewer,
+    );
+  }
+
+  /**
    * A task is only done once the work on it has been booked. `TicketWorklog` is
-   * the billable record — the task's own `hoursSpent` is derived from the status
-   * trail and charges nothing — so a task ticked done against an empty timesheet
-   * silently under-bills the contract, the same hole `assertTimeLogged` closes at
-   * the ticket level.
+   * the billable record, now written by the timer itself (`bookRunningStretch`) —
+   * so a task ticked done against an empty timesheet is one that never ran, and
+   * settling it would silently under-bill the contract, the same hole
+   * `assertTimeLogged` closes at the ticket level.
    */
   private async assertTaskTimeLogged(
     ticketId: string,
@@ -265,6 +397,7 @@ export class TasksService {
     existing: { id: string; ticketId: string; status: string },
     toStatus: string,
     actorId: string,
+    note: string | null = null,
   ): Promise<number> {
     await this.prisma.ticketTaskStatusEvent.create({
       data: {
@@ -272,6 +405,7 @@ export class TasksService {
         ticketId: existing.ticketId,
         fromStatus: existing.status,
         toStatus,
+        note,
         actorUserId: actorId,
         // Denormalised, like TicketMessage.authorName — the trail then renders
         // without a join, and keeps naming whoever acted even if they leave.

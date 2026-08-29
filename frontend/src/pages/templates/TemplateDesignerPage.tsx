@@ -64,6 +64,14 @@ export default function TemplateDesignerPage() {
 
   const [name, setName] = useState('');
   const [category, setCategory] = useState<string>('');
+  // Template categories live with the templates themselves, not in the Option
+  // List registry — a category typed there could never reach this screen's own
+  // records. A template saved under a category no longer in the list keeps it as
+  // an option, or Radix would silently drop the saved value.
+  const categoryOptions = useMemo(
+    () => (category && !TEMPLATE_CATEGORIES.includes(category) ? [...TEMPLATE_CATEGORIES, category] : TEMPLATE_CATEGORIES),
+    [category],
+  );
   const [description, setDescription] = useState('');
   const [descriptionGuidance, setDescriptionGuidance] = useState('');
   const [icon, setIcon] = useState('layout-template');
@@ -323,10 +331,10 @@ export default function TemplateDesignerPage() {
               </div>
               <div className="space-y-1.5">
                 <label className="text-sm font-medium">Type</label>
-                <Select value={category || undefined} onValueChange={setCategory}>
+                <Select value={category || undefined} onValueChange={(v) => v && setCategory(v)}>
                   <SelectTrigger className="w-full"><SelectValue placeholder="Select a type..." /></SelectTrigger>
                   <SelectContent>
-                    {TEMPLATE_CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                    {categoryOptions.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>

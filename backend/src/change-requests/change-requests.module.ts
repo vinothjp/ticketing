@@ -10,5 +10,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
   imports: [NotificationsModule],
   controllers: [ChangeRequestsController, MyChangeRequestsController],
   providers: [ChangeRequestsService, CrOptionsService, CrAttachmentsService],
+  // The unified Option List registry reuses the CR option store's seeding.
+  exports: [CrOptionsService],
 })
 export class ChangeRequestsModule {}

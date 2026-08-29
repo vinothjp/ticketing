@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useDateFormat } from '@/lib/dateFormat';
 
 interface MessageAttachment { id: string; fileName: string; filePath: string; }
 interface Message {
@@ -27,6 +28,7 @@ interface Message {
 }
 
 export default function ConversationTab({ ticketId }: { ticketId: string }) {
+  const { fmtDateTime } = useDateFormat();
   const qc = useQueryClient();
   const { user } = useAuth();
   // Chat is a shared thread — the client sees it and can post in it too. Staff
@@ -131,7 +133,7 @@ export default function ConversationTab({ ticketId }: { ticketId: string }) {
                   <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
                     {internal ? <MessagesSquare className="size-3" /> : <Mail className="size-3" />}
                     <span className="font-medium text-foreground">{m.authorName ?? m.fromAddress ?? 'External'}</span>
-                    <span>· {new Date(m.createdAt).toLocaleString()}</span>
+                    <span>· {fmtDateTime(m.createdAt)}</span>
                     {internal && <span>· chat</span>}
                     {!internal && outbound && <span>· {m.status.toLowerCase()}</span>}
                     {!outbound && <span>· received</span>}

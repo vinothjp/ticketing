@@ -20,13 +20,25 @@ export const SETTLED_TASK_STATUSES: TaskStatus[] = ['DONE', 'CANCELLED'];
 /**
  * Human labels for the four statuses. Used in the activity summaries the ticket
  * History renders, so a reader sees "Open → In progress" rather than the codes.
+ *
+ * `DONE` reads as **Completed** everywhere a person sees it. The stored value
+ * stays `DONE` — it is what `SETTLED_TASK_STATUSES`, `ACTIVITY_TYPE` and every
+ * existing row and status event are keyed on — so this is the only place the
+ * wording lives, mirrored in `frontend/src/pages/tickets/detail/taskMeta.ts`.
  */
 export const TASK_STATUS_LABELS: Record<string, string> = {
   OPEN: 'Open',
   IN_PROGRESS: 'In progress',
-  DONE: 'Done',
+  DONE: 'Completed',
   CANCELLED: 'Cancelled',
 };
+
+/**
+ * The settled status a task is *reopened* out of. Leaving it is the one
+ * transition that demands a reason and a wider right than the task's own
+ * assignee — see `TasksService.assertMayReopen`.
+ */
+export const COMPLETED_TASK_STATUS = 'DONE';
 
 /** The one status that accrues time. Everything else stops the clock. */
 export const RUNNING_TASK_STATUS = 'IN_PROGRESS';

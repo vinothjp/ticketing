@@ -27,6 +27,20 @@ export class TimesheetService {
     return u?.username ?? null;
   }
 
+  /**
+   * The tenant's Activity list, from the `timesheetActivity` option list managed
+   * on the Option List screen. Falls back to the seeded defaults if an admin has
+   * emptied or deactivated every value, so the grid is never left unusable.
+   */
+  private async activityList(clientId: string): Promise<string[]> {
+    const rows = await this.prisma.picklistOption.findMany({
+      where: { clientId, listKey: 'timesheetActivity', isActive: true },
+      orderBy: { sortOrder: 'asc' },
+      select: { value: true },
+    });
+    return rows.length ? rows.map((r) => r.value) : [...TIMESHEET_ACTIVITIES];
+  }
+
   private async projectOptions(clientId: string) {
     const rows = await this.prisma.project.findMany({
       where: { clientId },
@@ -81,9 +95,10 @@ export class TimesheetService {
       if (e.documentNumber && !documentNumber) documentNumber = e.documentNumber;
     }
 
-    const [projects, consultantName] = await Promise.all([
+    const [projects, consultantName, activities] = await Promise.all([
       this.projectOptions(clientId),
       this.username(uid),
+      this.activityList(clientId),
     ]);
 
     return {
@@ -92,7 +107,7 @@ export class TimesheetService {
       consultant: { id: uid, username: consultantName },
       documentNumber: documentNumber ?? this.makeDocNumber(days[0], uid),
       documentDate: days[0],
-      activities: TIMESHEET_ACTIVITIES,
+      activities,
       projects,
       rows: [...rowMap.values()],
     };
@@ -122,7 +137,19 @@ export class TimesheetService {
       }
     }
 
-    const [consultantName] = await Promise.all([this.username(uid)]);
+    // The tenant owns its Activity list, so membership is checked here rather
+    // than by a fixed @IsIn on the DTO.
+    const [consultantName, activities] = await Promise.all([
+      this.username(uid),
+      this.activityList(clientId),
+    ]);
+    const allowed = new Set(activities);
+    const unknown = [...new Set(dto.rows.map((r) => r.activity).filter((a) => a && !allowed.has(a)))];
+    if (unknown.length) {
+      throw new BadRequestException(
+        `Not an activity on this tenant's list: ${unknown.join(', ')}`,
+      );
+    }
     const documentNumber = dto.documentNumber?.trim() || this.makeDocNumber(weekStart, uid);
     const documentDate = dayStart(weekStart);
 
@@ -187,8 +214,9 @@ export class TimesheetService {
     const projects = await this.projectOptions(clientId);
     const byName = new Map(projects.map((p) => [p.name.trim().toLowerCase(), p]));
     const byNumber = new Map(projects.map((p) => [p.projectNumber.trim().toLowerCase(), p]));
+    const activities = await this.activityList(clientId);
     const activityMatch = (v: string) =>
-      TIMESHEET_ACTIVITIES.find((a) => a.toLowerCase() === v.trim().toLowerCase()) ?? null;
+      activities.find((a) => a.toLowerCase() === v.trim().toLowerCase()) ?? null;
 
     const rowMap = new Map<string, { projectId: string; activity: string; workPerformed: string | null; days: Record<string, number> }>();
     const unmatched: string[] = [];

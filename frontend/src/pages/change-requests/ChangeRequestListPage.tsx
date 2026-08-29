@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Search, Trash2, ChevronLeft, ChevronRight,
-  Hash, AlignLeft, Building2, FolderKanban, Flag, CircleDot, Calendar } from 'lucide-react';
+  Hash, AlignLeft, User, Tag, Flag, Milestone, CircleDot } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { toast } from 'sonner';
@@ -22,7 +22,7 @@ function HeadLabel({ icon: Icon, children }: { icon: LucideIcon; children: React
   return (
     <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
       <Icon className="size-3.5 shrink-0" />
-      {children}
+      <span className="truncate">{children}</span>
     </span>
   );
 }
@@ -30,7 +30,7 @@ function HeadLabel({ icon: Icon, children }: { icon: LucideIcon; children: React
 import { useConfirm } from '@/hooks/useConfirm';
 import { cn } from '@/lib/utils';
 import {
-  crStatusVariant, crPriorityVariant, crApprovalMeta, fmtDate, crOptionsQuery,
+  crStatusVariant, crPriorityVariant, crApprovalMeta, crOptionsQuery,
   type ChangeRequestSummary, type CrOption,
 } from './changeRequestMeta';
 
@@ -107,7 +107,7 @@ export default function ChangeRequestListPage() {
     <div>
       {ConfirmDialog}
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-foreground">Change Requests</h1>
+        <h1 className="text-2xl font-bold text-foreground">Change Management</h1>
         <Button onClick={() => navigate('/change-requests/new')}>
           <Plus className="size-4" /> New Change Request
         </Button>
@@ -158,17 +158,20 @@ export default function ChangeRequestListPage() {
         <p className="text-muted-foreground">Loading...</p>
       ) : (
         <div className="overflow-hidden rounded-lg border">
-          <Table>
+          {/* table-fixed + percentage columns: the table is always exactly as wide
+              as its container, so the list can never scroll sideways however long
+              a value is. Every cell clips, and its content truncates with a title. */}
+          <Table className="table-fixed">
             <TableHeader>
               <TableRow className="bg-muted/50 hover:bg-muted/50">
-                <TableHead className="border-r"><HeadLabel icon={Hash}>Number</HeadLabel></TableHead>
-                <TableHead className="w-full border-r"><HeadLabel icon={AlignLeft}>Title</HeadLabel></TableHead>
-                <TableHead className="border-r"><HeadLabel icon={Building2}>Customer</HeadLabel></TableHead>
-                <TableHead className="border-r"><HeadLabel icon={FolderKanban}>Project</HeadLabel></TableHead>
-                <TableHead className="border-r"><HeadLabel icon={Flag}>Priority</HeadLabel></TableHead>
-                <TableHead className="border-r"><HeadLabel icon={CircleDot}>Status</HeadLabel></TableHead>
-                <TableHead className="border-r"><HeadLabel icon={Calendar}>CR Date</HeadLabel></TableHead>
-                <TableHead className="text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
+                <TableHead className="w-[9%] overflow-hidden border-r"><HeadLabel icon={Hash}>Number</HeadLabel></TableHead>
+                <TableHead className="w-[25%] overflow-hidden border-r"><HeadLabel icon={AlignLeft}>Title</HeadLabel></TableHead>
+                <TableHead className="w-[14%] overflow-hidden border-r"><HeadLabel icon={User}>Change Owner</HeadLabel></TableHead>
+                <TableHead className="w-[12%] overflow-hidden border-r"><HeadLabel icon={Tag}>Category</HeadLabel></TableHead>
+                <TableHead className="w-[9%] overflow-hidden border-r"><HeadLabel icon={Flag}>Priority</HeadLabel></TableHead>
+                <TableHead className="w-[12%] overflow-hidden border-r"><HeadLabel icon={Milestone}>Stage</HeadLabel></TableHead>
+                <TableHead className="w-[13%] overflow-hidden border-r"><HeadLabel icon={CircleDot}>Status</HeadLabel></TableHead>
+                <TableHead className="w-[6%] overflow-hidden text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -184,38 +187,42 @@ export default function ChangeRequestListPage() {
                   ? crApprovalMeta(c.approvalStatus) : null;
                 return (
                 <TableRow key={c.id} className="cursor-pointer" onClick={() => navigate(`/change-requests/${c.id}`)}>
-                  <TableCell className="border-r">
-                    <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{c.crNumber}</code>
+                  <TableCell className="overflow-hidden border-r">
+                    <code className="block truncate rounded bg-muted px-1.5 py-0.5 text-xs" title={c.crNumber}>{c.crNumber}</code>
                   </TableCell>
-                  <TableCell className="w-full border-r font-medium text-foreground">
-                    <span className="block max-w-[20rem] truncate" title={c.title}>{c.title}</span>
+                  <TableCell className="overflow-hidden border-r font-medium text-foreground">
+                    <span className="block truncate" title={c.title}>{c.title}</span>
                   </TableCell>
-                  <TableCell className="border-r">
-                    {c.customer
-                      ? <span className="block max-w-[11rem] truncate" title={c.customer}>{c.customer}</span>
+                  <TableCell className="overflow-hidden border-r">
+                    {c.changeOwner
+                      ? <span className="block truncate" title={c.changeOwner}>{c.changeOwner}</span>
                       : <span className="text-muted-foreground">—</span>}
                   </TableCell>
-                  <TableCell className="border-r">
-                    {c.projectName
-                      ? <span className="block max-w-[11rem] truncate" title={c.projectName}>{c.projectName}</span>
+                  <TableCell className="overflow-hidden border-r">
+                    {c.crCategory
+                      ? <span className="block truncate" title={c.crCategory}>{c.crCategory}</span>
                       : <span className="text-muted-foreground">—</span>}
                   </TableCell>
-                  <TableCell className="border-r">
-                    {c.priority ? <Badge variant={crPriorityVariant(c.priority)}>{c.priority}</Badge> : <span className="text-muted-foreground">—</span>}
+                  <TableCell className="overflow-hidden border-r">
+                    {c.priority
+                      ? <Badge variant={crPriorityVariant(c.priority)} className="max-w-full truncate" title={c.priority}>{c.priority}</Badge>
+                      : <span className="text-muted-foreground">—</span>}
                   </TableCell>
-                  <TableCell className="border-r">
+                  <TableCell className="overflow-hidden border-r">
+                    {c.stage
+                      ? <span className="inline-block max-w-full truncate rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary" title={c.stage}>{c.stage}</span>
+                      : <span className="text-muted-foreground">—</span>}
+                  </TableCell>
+                  <TableCell className="overflow-hidden border-r">
                     {appr ? (
-                      <span className={`inline-block whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium ${appr.cls}`}>
+                      <span className={`inline-block max-w-full truncate rounded-full border px-2 py-0.5 text-xs font-medium ${appr.cls}`} title={appr.label}>
                         {appr.label}
                       </span>
                     ) : (
-                      <Badge variant={crStatusVariant(c.status)}>{c.status}</Badge>
+                      <Badge variant={crStatusVariant(c.status)} className="max-w-full truncate" title={c.status}>{c.status}</Badge>
                     )}
                   </TableCell>
-                  <TableCell className="border-r">
-                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs whitespace-nowrap text-foreground">{fmtDate(c.crDate)}</span>
-                  </TableCell>
-                  <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                  <TableCell className="overflow-hidden text-right" onClick={(e) => e.stopPropagation()}>
                     <Button
                       size="sm"
                       variant="destructive"

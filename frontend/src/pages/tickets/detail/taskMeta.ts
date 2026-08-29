@@ -7,9 +7,16 @@
 export const TASK_STATUSES = [
   { value: 'OPEN', label: 'Open' },
   { value: 'IN_PROGRESS', label: 'In progress' },
-  { value: 'DONE', label: 'Done' },
+  { value: 'DONE', label: 'Completed' },
   { value: 'CANCELLED', label: 'Cancelled' },
 ] as const;
+
+/**
+ * The settled status a task is *reopened* out of. Stored as `DONE` — the value
+ * every existing row, status event and `SETTLED_TASK_STATUSES` check is keyed on
+ * — and read as "Completed" wherever a person sees it.
+ */
+export const COMPLETED_TASK_STATUS = 'DONE';
 
 export const taskStatusLabel = (value?: string | null) =>
   TASK_STATUSES.find((s) => s.value === value)?.label ?? value ?? '—';
@@ -24,14 +31,16 @@ export const taskStatusVariant = (status?: string | null) =>
   : status === 'IN_PROGRESS' ? 'warning'
   : 'secondary';
 
-/** A stamp on the task audit — always absolute; the point of the trail is the time. */
-export const stampLabel = (iso: string | Date) =>
-  new Date(iso).toLocaleString(undefined, {
-    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
+// (No date helper here on purpose: every stamp on the ticket screens goes through
+// `useDateFormat()` in `lib/dateFormat.ts`, so it is written in the tenant's own
+// format rather than the browser's.)
 
-/** Hours, in the shape every ticket screen quotes them. */
-export const hrs = (n: number) => `${Math.round(n * 100) / 100} h`;
+/**
+ * Hours, in the shape every ticket screen quotes them: two decimals at most,
+ * trailing zeros trimmed. A stretch too short to reach a hundredth of an hour
+ * reads as "0 h" — the precise figure is still what the pool was charged.
+ */
+export const hrs = (n: number) => `${Number(Math.max(0, Number(n) || 0).toFixed(2))} h`;
 
 /**
  * The status pill in the task grid: bold and colour-coded by where the task

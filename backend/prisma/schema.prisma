@@ -57,7 +57,10 @@ model Client {
   resourceCategories ResourceCategory[]
   changeRequests ChangeRequest[]
   changeRequestOptions ChangeRequestOption[]
+  optionLists  OptionList[]
   clientVisits ClientVisit[]
+  assets       Asset[]
+  assetAllocations AssetAllocation[]
   ticketSequence Int @default(0)
   kbSequence   Int @default(0)
   projectSequence Int @default(0)
@@ -70,6 +73,16 @@ model Client {
   // How many days a resolved ticket waits for the client's acknowledgement
   // before it closes itself. Tenant-editable on the Organization screen.
   ticketAutoCloseDays Int @default(3)
+  // How dates are rendered on this tenant's ticket screens. A token pattern
+  // (`dd/MM/yyyy`, `MMM dd, yyyy`, …) chosen on the Organization screen from the
+  // DATE_FORMAT option list, so an admin can add a pattern without a deploy.
+  dateFormat String @default("dd/MM/yyyy")
+  // The other two Organization-module settings, chosen the same way: from the
+  // TIME_FORMAT and CURRENCY option lists. `timeFormat` is live — it is what the
+  // ticket screens append to `dateFormat` for a date-and-time stamp. `currency`
+  // is stored config: nothing reads it yet.
+  timeFormat String @default("HH:mm")
+  currency   String @default("USD")
 }
 
 // A logged client visit against a customer, booked to their contract pool.
@@ -267,6 +280,7 @@ model License {
 model User {
   id             String      @id @default(uuid())
   username       String      @unique
+  name           String?                                        // full display name (e.g. "John Rivera"); falls back to username
   email          String      @unique
   passwordHash   String
   isActive       Boolean     @default(true)
@@ -281,6 +295,22 @@ model User {
   // Set for external customer-contact users; null for internal staff/agents.
   customerCompanyId String?
   customerCompany   CustomerCompany? @relation(fields: [customerCompanyId], references: [id], onDelete: SetNull)
+
+  // ---- Employee Master ----
+  // Internal staff *are* the employees, so the employee record is these columns
+  // rather than a second person table. `employeeId` is typed by an admin (not a
+  // generated sequence) and must be unique inside the tenant; NULLs are distinct
+  // in Postgres, so users without one never collide. The manager is another user
+  // of the same tenant carrying the Admin role (enforced in UsersService).
+  employeeId     String?
+  department     String?
+  designation    String?
+  phone          String?
+  managerId      String?
+  manager        User?       @relation("EmployeeManager", fields: [managerId], references: [id], onDelete: SetNull)
+  reports        User[]      @relation("EmployeeManager")
+  assetAllocations AssetAllocation[]
+
   userRoles      UserRole[]
   ticketAssignments TicketTechnician[]
   moduleConsultants ModuleConsultant[]
@@ -291,6 +321,8 @@ model User {
   projectTimesheets ProjectTimesheet[]
   contractExcessApprovals CustomerCompany[]        @relation("ContractExcessApprover")
   productExcessApprovals  CustomerCompanyProduct[] @relation("ProductExcessApprover")
+
+  @@unique([clientId, employeeId])
 }
 
 model Role {
@@ -676,6 +708,51 @@ model PicklistOption {
   @@unique([clientId, listKey, value])
 }
 
+// The tenant's registry of every dropdown list in the platform — one row per
+// list, whatever module it drives. It is a *registry*, not a second value
+// store: the values themselves still live in `PicklistOption` (source
+// `PICKLIST`) or `ChangeRequestOption` (source `CHANGE_REQUEST`), which is what
+// every ticket/KB/CR dropdown already reads. `listKey` is the key in that
+// backing table, so the unified Option List screen can manage both through one
+// API without moving any data or touching a single consumer.
+model OptionList {
+  id            String   @id @default(uuid())
+  clientId      String
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // Uppercase admin-facing key (ASSET_TYPE); for a custom list it is also the
+  // `listKey` its values are stored under.
+  code          String
+  name          String
+  description   String?
+  source        String   @default("PICKLIST")
+  // Which screen area this list belongs to, and therefore the Module column and
+  // filter on the Option List screen. Deliberately separate from `source`, which
+  // says which table holds the values: the Organization module stores its values
+  // in PicklistOption like Ticketing does, so a module is a label over the
+  // registry, never a third value store. Null on rows predating the column —
+  // `ensureDefaults` backfills system lists and `moduleOf()` falls back.
+  module        String?
+  listKey       String
+  // Set when this list is dependent on another (sub-category -> category);
+  // holds the *parent list's* listKey, matching `parentValue` on the values.
+  parentListKey String?
+  // Stored config: whether a user may type a value outside the list. Nothing
+  // reads it yet — don't quote it to a user as enforced.
+  allowCustom   Boolean  @default(false)
+  // A seeded list that application code references by key: it may be renamed
+  // and its values edited, but it cannot be re-keyed or deleted.
+  isSystem      Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  createdBy     String?
+  updatedBy     String?
+
+  @@unique([clientId, code])
+  @@unique([clientId, source, listKey])
+}
+
 model Ticket {
   id                    String       @id @default(uuid())
   clientId              String
@@ -850,6 +927,9 @@ model TicketTaskStatusEvent {
   actorUserId String?
   actorName   String?
   at          DateTime   @default(now())
+  // Why a completed task was reopened. Mandatory on that one transition and
+  // empty on every other, so the trail says what pulled the task back open.
+  note        String?
 
   @@index([taskId, at])
   @@index([ticketId, at])
@@ -876,6 +956,11 @@ model TicketComment {
 }
 
 // Approvals (Approvals tab)
+// A sign-off asked of one staff user on a ticket. Repurposed as the **asset
+// request**: the row names the asset being asked for, and approving it issues
+// that asset to whoever raised the request (ApprovalsService.decide). The asset
+// fields are nullable — an approval raised before this, or one that is a plain
+// sign-off with no asset, still works exactly as it did.
 model TicketApproval {
   id             String    @id @default(uuid())
   ticketId       String
@@ -889,6 +974,14 @@ model TicketApproval {
   requestedAt    DateTime  @default(now())
   decidedAt      DateTime?
   level          Int       @default(1)
+  // SetNull, not Cascade — a decided request is a record, and it keeps saying
+  // which asset it was for (via the denormalised code/name) even if the asset
+  // is later removed from the register.
+  assetId        String?
+  asset          Asset?    @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  assetCode      String?
+  assetName      String?
+  assetType      String?
 
   @@index([ticketId])
 }
@@ -1423,6 +1516,7 @@ model ChangeRequestOption {
   listKey   String
   value     String
   label     String
+  parentValue String?                                 // dependent lists: parent option's value (e.g. subcategory -> category)
   sortOrder Int      @default(0)
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
@@ -1448,6 +1542,34 @@ model ChangeRequest {
   priority             String?                                   // listKey: priority
   crCategory           String?                                   // listKey: category
   status               String   @default("New")                 // listKey: status
+
+  // --- Change Management (ITIL model) — General section ---
+  changeType           String?                                   // listKey: change_type (Emergency | Major | Minor | Standard)
+  changeGroup          String?                                   // listKey: change_group (Infrastructure | Software)
+  changeOwner          String?                                   // listKey: person
+  subCategory          String?                                   // listKey: subcategory (dependent on crCategory)
+  impact               String?                                   // listKey: impact
+  servicesAffected     String?                                   // typed
+  comments             String?                                   // typed
+  stage                String   @default("Submission")           // fixed pipeline: Submission..Close (CHANGE_STAGES)
+  // Who the change is for: CUSTOMER (raised against a client company — needs their
+  // admin's approval) or INTERNAL (our own change — no customer company at all).
+  changeSource         String   @default("CUSTOMER")              // CUSTOMER | INTERNAL
+  stageNotes           Json?                                     // per-stage status notes, keyed by stage name
+
+  // Roles (per-record people assignments)
+  changeCoordinator    String?                                   // listKey: person
+  implementor          String?                                   // listKey: person
+  lineManager          String?                                   // listKey: person
+  reviewer             String?                                   // listKey: person
+  changeApprover       String?                                   // denormalised full name of the CAB approver (for display)
+  changeApproverUserId String?                                   // real staff user id — the authoritative CAB approver identity
+
+  // CAB (Change Approval Board) sign-off — required for Major/Minor/Standard.
+  cabApprovalStatus    String   @default("NONE")                 // NONE | PENDING | APPROVED | REJECTED
+  cabReason            String?                                   // rejection reason
+  cabDecidedById       String?
+  cabDecidedAt         DateTime?
 
   // Customer-admin approval — a CR is sent to the linked company's admin to approve.
   customerCompanyId    String?
@@ -1560,4 +1682,76 @@ model ChangeRequestAttachment {
   uploadedAt      DateTime      @default(now())
 
   @@index([changeRequestId, entityType])
+}
+
+// ---------------------------------------------------------------------------
+// Asset Master
+// ---------------------------------------------------------------------------
+
+// One physical unit, not an asset *type*: `assetId` identifies the individual
+// laptop/monitor/phone and is unique inside the tenant. Every descriptive field
+// is free text on purpose — the Asset Master form has no dropdowns — so nothing
+// here is backed by an option list.
+model Asset {
+  id            String    @id @default(uuid())
+  clientId      String
+  client        Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  assetId       String                                          // the admin-typed unique code, e.g. LAP-0417
+  assetName     String
+  description   String?
+  assetType     String?                                         // e.g. Laptop
+  assetCategory String?                                         // e.g. IT Equipment
+  serialNumber  String?
+  manufacturer  String?
+  model         String?
+  barcode       String?                                         // barcode / QR payload, stored as text
+  warrantyStart DateTime?
+  warrantyEnd   DateTime?
+  purchaseDate  DateTime?
+  poNumber      String?
+  supplierName  String?
+  invoiceNumber String?
+  lifespan      String?                                         // free text, e.g. "3 years"
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  createdBy     String?
+  updatedBy     String?
+
+  allocations   AssetAllocation[]
+  approvals     TicketApproval[]
+
+  @@unique([clientId, assetId])
+  @@index([clientId])
+}
+
+// An asset issued to an employee (an internal `User`). The rule "an allocated
+// asset is not available to anyone else" is *at most one open allocation per
+// asset*, where open is every status except RETURNED — BROKEN and NOT_RETURNED
+// still have the unit off the shelf. It is enforced in the service with a
+// ConflictException that names the current holder (the house convention), not by
+// a partial unique index: `prisma db push --accept-data-loss` runs on every
+// container start and would drop an index the schema cannot express.
+model AssetAllocation {
+  id             String    @id @default(uuid())
+  clientId       String
+  client         Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  assetId        String
+  asset          Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  employeeUserId String
+  employee       User      @relation(fields: [employeeUserId], references: [id], onDelete: Cascade)
+  status         String    @default("ISSUED")                   // ISSUED | RETURNED | BROKEN | NOT_RETURNED
+  issuedDate     DateTime?
+  returnDate     DateTime?
+  notes          String?
+  // Denormalised at write time so neither grid needs a join — the same reason
+  // ClientVisit carries consultantName / productName.
+  assetCode      String?
+  assetName      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  createdBy      String?
+  updatedBy      String?
+
+  @@index([clientId, employeeUserId])
+  @@index([assetId])
 }

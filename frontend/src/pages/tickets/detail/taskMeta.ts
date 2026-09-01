@@ -54,3 +54,14 @@ export const taskStatusPill = (status?: string | null) =>
   : status === 'IN_PROGRESS' ? 'bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-300'
   : status === 'CANCELLED' ? 'bg-muted text-muted-foreground line-through'
   : 'bg-muted text-foreground';
+
+/**
+ * A task's own id, as the grid and the edit screen show it: `T-001`, numbered
+ * per ticket. `taskNumber` is null only on rows written before the column
+ * existed and never backfilled, so those fall back to the head of the uuid —
+ * still stable, still unique, just not sequential.
+ */
+export const taskCode = (task: { taskNumber?: number | null; id: string }) =>
+  task.taskNumber != null
+    ? `T-${String(task.taskNumber).padStart(3, '0')}`
+    : `T-${task.id.slice(0, 6)}`;

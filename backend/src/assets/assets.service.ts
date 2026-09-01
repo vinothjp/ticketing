@@ -1,14 +1,44 @@
 import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAssetDto, UpdateAssetDto } from './dto/asset.dto';
-import { OPEN_ALLOCATION_STATUSES } from './allocation-status';
+import { OPEN_ALLOCATION_STATUSES, assetConditionLabel } from './allocation-status';
+import { AssetActivityService } from './asset-activity.service';
 
 /** `YYYY-MM-DD` (or null/'') from a form date input -> a Date Prisma can store. */
 const day = (v?: string | null) => (v ? new Date(v) : null);
 
+/** Field equality for the audit diff — Dates compare by value, not identity. */
+const same = (a: unknown, b: unknown) =>
+  a instanceof Date || b instanceof Date
+    ? (a instanceof Date ? a.getTime() : a) === (b instanceof Date ? b.getTime() : b)
+    : a === b;
+
+/** The descriptive fields an ASSET_UPDATED entry names when they change. */
+const TRACKED_FIELDS: { key: keyof UpdateAssetDto; label: string }[] = [
+  { key: 'assetId', label: 'Asset ID' },
+  { key: 'assetName', label: 'Asset name' },
+  { key: 'assetType', label: 'Type' },
+  { key: 'assetCategory', label: 'Category' },
+  { key: 'serialNumber', label: 'Serial number' },
+  { key: 'manufacturer', label: 'Manufacturer' },
+  { key: 'model', label: 'Model' },
+  { key: 'barcode', label: 'Barcode' },
+  { key: 'description', label: 'Description' },
+  { key: 'poNumber', label: 'PO number' },
+  { key: 'supplierName', label: 'Supplier' },
+  { key: 'invoiceNumber', label: 'Invoice number' },
+  { key: 'lifespan', label: 'Lifespan' },
+  { key: 'warrantyStart', label: 'Warranty start' },
+  { key: 'warrantyEnd', label: 'Warranty end' },
+  { key: 'purchaseDate', label: 'Purchase date' },
+];
+
 @Injectable()
 export class AssetsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private activity: AssetActivityService,
+  ) {}
 
   /**
    * The register. `available` narrows it to assets nobody is currently holding —
@@ -44,6 +74,10 @@ export class AssetsService {
               id: held.id,
               status: held.status,
               issuedDate: held.issuedDate,
+              // The list's Return action and its "until exit" / overdue markers
+              // read these off the row rather than fetching the allocation again.
+              retention: held.retention,
+              expectedReturnDate: held.expectedReturnDate,
               employeeUserId: held.employeeUserId,
               employeeName: held.employee?.name || held.employee?.username || null,
               employeeCode: held.employee?.employeeId ?? null,
@@ -62,39 +96,10 @@ export class AssetsService {
     return asset;
   }
 
-  /**
-   * Who has held this asset — the read-only table on the Asset Master screen.
-   * Employee facts are read off the live `User` row, so a renamed or transferred
-   * employee reads correctly here; only the *asset* side is denormalised.
-   */
-  async listAllocations(assetId: string, clientId: string) {
-    await this.findOne(assetId, clientId);
-    const rows = await this.prisma.assetAllocation.findMany({
-      where: { assetId, clientId },
-      orderBy: [{ issuedDate: 'desc' }, { createdAt: 'desc' }],
-      include: {
-        employee: {
-          select: { id: true, name: true, username: true, employeeId: true, department: true, designation: true },
-        },
-      },
-    });
-    return rows.map((r) => ({
-      id: r.id,
-      status: r.status,
-      issuedDate: r.issuedDate,
-      returnDate: r.returnDate,
-      employeeUserId: r.employeeUserId,
-      employeeCode: r.employee?.employeeId ?? null,
-      employeeName: r.employee?.name || r.employee?.username || null,
-      department: r.employee?.department ?? null,
-      designation: r.employee?.designation ?? null,
-    }));
-  }
-
   async create(clientId: string, dto: CreateAssetDto, actorId: string) {
     const assetId = dto.assetId.trim();
     await this.assertCodeFree(clientId, assetId);
-    return this.prisma.asset.create({
+    const asset = await this.prisma.asset.create({
       data: {
         ...this.writable(dto),
         clientId,
@@ -104,6 +109,17 @@ export class AssetsService {
         updatedBy: actorId,
       },
     });
+
+    await this.activity.log({
+      clientId,
+      assetId: asset.id,
+      type: 'ASSET_CREATED',
+      summary: `Added ${asset.assetId} — ${asset.assetName} to the register`,
+      actorUserId: actorId,
+      actorName: await this.activity.actorName(actorId),
+    });
+
+    return asset;
   }
 
   async update(id: string, clientId: string, dto: UpdateAssetDto, actorId: string) {
@@ -129,13 +145,51 @@ export class AssetsService {
       });
     }
 
+    const actorName = await this.activity.actorName(actorId);
+
+    // The condition is the one field with a life of its own — an admin clearing
+    // DAMAGED back to OK is "repaired", not a field edit — so it gets its own
+    // entry rather than being buried in a list of changed fields.
+    if (updated.condition !== asset.condition) {
+      await this.activity.log({
+        clientId,
+        assetId: id,
+        type: 'CONDITION_CHANGED',
+        summary: `Condition ${assetConditionLabel(asset.condition)} → ${assetConditionLabel(updated.condition)}`,
+        meta: { from: asset.condition, to: updated.condition },
+        actorUserId: actorId,
+        actorName,
+      });
+    }
+
+    const changed = TRACKED_FIELDS.filter(
+      ({ key }) => dto[key] !== undefined && !same(asset[key as keyof typeof asset], updated[key as keyof typeof updated]),
+    );
+    if (changed.length) {
+      await this.activity.log({
+        clientId,
+        assetId: id,
+        type: 'ASSET_UPDATED',
+        summary: `Updated ${changed.map((c) => c.label.toLowerCase()).join(', ')}`,
+        meta: Object.fromEntries(
+          changed.map(({ key }) => [
+            key,
+            { from: asset[key as keyof typeof asset], to: updated[key as keyof typeof updated] },
+          ]),
+        ),
+        actorUserId: actorId,
+        actorName,
+      });
+    }
+
     return updated;
   }
 
   async remove(id: string, clientId: string) {
     await this.findOne(id, clientId);
-    // Allocations cascade with the asset; a TicketApproval that requested it
-    // keeps its denormalised code/name and simply loses the link (SetNull).
+    // Allocations and the activity trail cascade with the asset; a TicketApproval
+    // that requested it keeps its denormalised code/name and simply loses the
+    // link (SetNull).
     await this.prisma.asset.delete({ where: { id } });
     return { id };
   }
@@ -171,6 +225,8 @@ export class AssetsService {
       supplierName: text(dto.supplierName),
       invoiceNumber: text(dto.invoiceNumber),
       lifespan: text(dto.lifespan),
+      // Never null: the column is non-nullable, so an emptied box means "OK".
+      condition: dto.condition === undefined ? undefined : dto.condition || 'OK',
       warrantyStart: dto.warrantyStart === undefined ? undefined : day(dto.warrantyStart),
       warrantyEnd: dto.warrantyEnd === undefined ? undefined : day(dto.warrantyEnd),
       purchaseDate: dto.purchaseDate === undefined ? undefined : day(dto.purchaseDate),

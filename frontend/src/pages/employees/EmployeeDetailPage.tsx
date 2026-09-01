@@ -2,16 +2,17 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ArrowLeft, UserRound } from 'lucide-react';
+import { ArrowLeft, UserRound, PackageX } from 'lucide-react';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import PicklistSelect from '@/components/PicklistSelect';
-import AssetAllocationGrid from './AssetAllocationGrid';
-import { personName, isManager } from './employeeMeta';
-import type { Employee } from './employeeMeta';
+import AssetAllocationGrid from '@/components/AssetAllocationGrid';
+import AssetActivityTimeline from '@/components/AssetActivityTimeline';
+import { personName, isManager, retentionLabel } from './employeeMeta';
+import type { Employee, AssetAllocation } from './employeeMeta';
 
 /** No manager. Radix cannot hold an empty SelectItem value, so it needs a sentinel. */
 const NO_MANAGER = '__none__';
@@ -49,6 +50,17 @@ export default function EmployeeDetailPage() {
     queryFn: async () => (await api.get('/api/users')).data,
   });
   const managers = staff.filter((u) => u.id !== userId && isManager(u));
+
+  // What this person is still holding. Read here rather than inside the grid so
+  // the exit banner can sit *above* it — an offboarding admin needs the list
+  // before they start working through the rows.
+  const { data: allocations = [] } = useQuery<AssetAllocation[]>({
+    queryKey: ['asset-allocations', 'employee', userId],
+    queryFn: async () =>
+      (await api.get('/api/asset-allocations', { params: { employeeUserId: userId } })).data,
+    enabled: !!userId,
+  });
+  const outstanding = allocations.filter((a) => a.status === 'ISSUED');
 
   // Keyed on the saved *content*, not the record object: TanStack refetches on
   // window focus and hands back a new object each time, which would otherwise
@@ -191,7 +203,39 @@ export default function EmployeeDetailPage() {
         )}
       </form>
 
-      <AssetAllocationGrid employeeUserId={userId} />
+      {/* An employee on their way out still holds everything issued to them —
+          the until-exit units especially, since those were never going to come
+          back before now. The grid below is where they are handed in; the bulk
+          Return control settles them in one pass. */}
+      {!employee.isActive && outstanding.length > 0 && (
+        <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-amber-900 dark:text-amber-200">
+            <PackageX className="size-4 shrink-0" />
+            {outstanding.length} {outstanding.length === 1 ? 'asset' : 'assets'} to collect before exit
+          </h3>
+          <ul className="mt-2 space-y-1 text-sm text-amber-900/90 dark:text-amber-200/90">
+            {outstanding.map((a) => (
+              <li key={a.id} className="flex flex-wrap items-center gap-x-2">
+                <code className="rounded bg-amber-100 px-1.5 py-0.5 text-xs dark:bg-amber-900/40">
+                  {a.assetCode ?? '—'}
+                </code>
+                <span>{a.assetName ?? '—'}</span>
+                {a.retention === 'UNTIL_EXIT' && (
+                  <span className="text-xs font-medium uppercase">· {retentionLabel(a.retention)}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-amber-800/80 dark:text-amber-200/70">
+            This account is deactivated. Mark each row Returned below once the unit is back.
+          </p>
+        </div>
+      )}
+
+      <div className="space-y-8">
+        <AssetAllocationGrid employeeUserId={userId} />
+        <AssetActivityTimeline employeeUserId={userId} />
+      </div>
     </div>
   );
 }

@@ -36,6 +36,7 @@ import ProjectAnalyticsPage from './pages/projects/ProjectAnalyticsPage';
 import ResourceCostsPage from './pages/ResourceCostsPage';
 import EmployeeListPage from './pages/employees/EmployeeListPage';
 import EmployeeDetailPage from './pages/employees/EmployeeDetailPage';
+import AssetOverviewPage from './pages/assets/AssetOverviewPage';
 import AssetListPage from './pages/assets/AssetListPage';
 import AssetFormPage from './pages/assets/AssetFormPage';
 import TimesheetPage from './pages/timesheet/TimesheetPage';
@@ -153,7 +154,12 @@ export default function App() {
                           <Route path="/admin/resource-costs" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ResourceCostsPage /></RoleGate>} />
                           <Route path="/admin/employees" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><EmployeeListPage /></RoleGate>} />
                           <Route path="/admin/employees/:userId" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><EmployeeDetailPage /></RoleGate>} />
+                          {/* The register itself is the landing screen; the
+                              by-type tiles are a view of it, reached from the
+                              list's own button. */}
                           <Route path="/admin/assets" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><AssetListPage /></RoleGate>} />
+                          <Route path="/admin/assets/types" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><AssetOverviewPage /></RoleGate>} />
+                          <Route path="/admin/assets/list" element={<Navigate to="/admin/assets" replace />} />
                           <Route path="/admin/assets/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><AssetFormPage /></RoleGate>} />
                           <Route path="/admin/assets/:id/edit" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><AssetFormPage /></RoleGate>} />
                           <Route path="/admin/smtp-config" element={<RoleGate allow={isStaff} redirectTo="/tickets"><TenantSmtpConfigPage /></RoleGate>} />

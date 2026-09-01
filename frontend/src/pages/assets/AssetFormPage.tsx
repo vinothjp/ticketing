@@ -1,19 +1,19 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ArrowLeft, IdCard, UserRound, Building, CircleDot, CalendarCheck, CalendarClock } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import PicklistSelect from '@/components/PicklistSelect';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { useDateFormat } from '@/lib/dateFormat';
-import { allocationStatusLabel, allocationStatusPill, dateInputValue } from '../employees/employeeMeta';
-import type { Asset, AssetHolder } from './assetMeta';
+import AssetAllocationGrid from '@/components/AssetAllocationGrid';
+import AssetActivityTimeline from '@/components/AssetActivityTimeline';
+import { ASSET_CONDITIONS, dateInputValue } from '../employees/employeeMeta';
+import type { Asset } from './assetMeta';
 
 /**
  * The form's own fields. Free text apart from the three dates and the two
@@ -22,7 +22,7 @@ import type { Asset, AssetHolder } from './assetMeta';
 const EMPTY = {
   assetId: '', assetName: '', description: '', assetType: '', assetCategory: '',
   serialNumber: '', manufacturer: '', model: '', barcode: '', poNumber: '',
-  supplierName: '', invoiceNumber: '', lifespan: '',
+  supplierName: '', invoiceNumber: '', lifespan: '', condition: 'OK',
   warrantyStart: '', warrantyEnd: '', purchaseDate: '',
 };
 type Form = typeof EMPTY;
@@ -32,20 +32,14 @@ export default function AssetFormPage() {
   const isEditing = !!id;
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { fmtDate } = useDateFormat();
-  const [form, setForm] = useState<Form>(EMPTY);
+  const [params] = useSearchParams();
+  // Adding from a type card on the overview carries that type through, so the
+  // one field the card already knows is not retyped here.
+  const [form, setForm] = useState<Form>(() => ({ ...EMPTY, assetType: params.get('type') ?? '' }));
 
   const { data: asset } = useQuery<Asset>({
     queryKey: ['asset', id],
     queryFn: async () => (await api.get(`/api/assets/${id}`)).data,
-    enabled: isEditing,
-  });
-
-  // Who has held this asset. Read-only: the allocation itself is edited on the
-  // employee's own screen, which is where each row links to.
-  const { data: holders = [] } = useQuery<AssetHolder[]>({
-    queryKey: ['asset-holders', id],
-    queryFn: async () => (await api.get(`/api/assets/${id}/allocations`)).data,
     enabled: isEditing,
   });
 
@@ -68,6 +62,7 @@ export default function AssetFormPage() {
       supplierName: asset.supplierName ?? '',
       invoiceNumber: asset.invoiceNumber ?? '',
       lifespan: asset.lifespan ?? '',
+      condition: asset.condition ?? 'OK',
       warrantyStart: dateInputValue(asset.warrantyStart),
       warrantyEnd: dateInputValue(asset.warrantyEnd),
       purchaseDate: dateInputValue(asset.purchaseDate),
@@ -128,6 +123,25 @@ export default function AssetFormPage() {
     </div>
   );
 
+  // The unit's own condition, which outlives any one allocation: a broken return
+  // sets Damaged, and clearing it back to OK here is how a repaired asset leaves
+  // the "In repair" bucket on the overview.
+  const conditionField = (
+    <div className="space-y-1.5">
+      <Label htmlFor="condition">Condition</Label>
+      <Select value={form.condition} onValueChange={(v) => { if (v) setForm((f) => ({ ...f, condition: v })); }}>
+        <SelectTrigger id="condition" className="w-full">
+          <SelectValue placeholder="Select a condition..." />
+        </SelectTrigger>
+        <SelectContent>
+          {ASSET_CONDITIONS.map((c) => (
+            <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+
   return (
     <div className="w-full">
       <Button variant="ghost" size="sm" className="mb-2 -ml-2" onClick={() => navigate('/admin/assets')}>
@@ -172,6 +186,10 @@ export default function AssetFormPage() {
           {field('lifespan', 'Lifespan')}
         </div>
 
+        <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
+          {conditionField}
+        </div>
+
         <div className="space-y-1.5">
           <Label htmlFor="description">Asset description</Label>
           <Textarea id="description" rows={3} value={form.description} onChange={set('description')} />
@@ -185,85 +203,17 @@ export default function AssetFormPage() {
         </div>
       </form>
 
+      {/* The allocation is edited here, in Asset Master, over the very rows the
+          employee's own screen shows — it is one record, not a copy, so a change
+          made on either side is the change on both. Opening the employee is an
+          explicit icon in the row, never the side effect of a click meant to
+          edit. */}
       {isEditing && (
-        <div className="mt-8 space-y-3">
-          <div>
-            <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground">
-              <UserRound className="size-4" /> Allocated to
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              Read-only. Open a row to edit the allocation on that employee's screen.
-            </p>
-          </div>
-
-          <div className="overflow-hidden rounded-lg border">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-muted/50 hover:bg-muted/50">
-                  <TableHead className="border-r"><HeadLabel icon={IdCard}>Emp ID</HeadLabel></TableHead>
-                  <TableHead className="w-full border-r"><HeadLabel icon={UserRound}>Emp name</HeadLabel></TableHead>
-                  <TableHead className="border-r"><HeadLabel icon={Building}>Department</HeadLabel></TableHead>
-                  <TableHead className="border-r"><HeadLabel icon={CircleDot}>Allocation status</HeadLabel></TableHead>
-                  <TableHead className="border-r"><HeadLabel icon={CalendarCheck}>Issued date</HeadLabel></TableHead>
-                  <TableHead><HeadLabel icon={CalendarClock}>Return date</HeadLabel></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {holders.length === 0 ? (
-                  <TableRow className="hover:bg-transparent">
-                    <TableCell colSpan={6} className="text-center text-muted-foreground">
-                      This asset has never been allocated.
-                    </TableCell>
-                  </TableRow>
-                ) : holders.map((h) => (
-                  <TableRow
-                    key={h.id}
-                    className="cursor-pointer"
-                    title={`Open ${h.employeeName ?? 'this employee'} in Employee Master`}
-                    onClick={() => navigate(`/admin/employees/${h.employeeUserId}`)}
-                  >
-                    <TableCell className="w-px border-r">
-                      {h.employeeCode
-                        ? <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{h.employeeCode}</code>
-                        : <span className="text-muted-foreground">—</span>}
-                    </TableCell>
-                    <TableCell className="w-full border-r font-medium text-foreground">
-                      <span className="block max-w-[16rem] truncate" title={h.employeeName ?? undefined}>
-                        {h.employeeName ?? '—'}
-                      </span>
-                    </TableCell>
-                    <TableCell className="border-r">
-                      {h.department
-                        ? <span className="block max-w-[10rem] truncate" title={h.department}>{h.department}</span>
-                        : <span className="text-muted-foreground">—</span>}
-                    </TableCell>
-                    <TableCell className="border-r whitespace-nowrap">
-                      <span className={`rounded px-1.5 py-0.5 text-xs font-bold uppercase ${allocationStatusPill(h.status)}`}>
-                        {allocationStatusLabel(h.status)}
-                      </span>
-                    </TableCell>
-                    <TableCell className="border-r whitespace-nowrap">
-                      {h.issuedDate ? fmtDate(h.issuedDate) : <span className="text-muted-foreground">—</span>}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      {h.returnDate ? fmtDate(h.returnDate) : <span className="text-muted-foreground">—</span>}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+        <div className="mt-8 space-y-8">
+          <AssetAllocationGrid assetId={id} />
+          <AssetActivityTimeline assetId={id} />
         </div>
       )}
     </div>
-  );
-}
-
-function HeadLabel({ icon: Icon, children }: { icon: LucideIcon; children: ReactNode }) {
-  return (
-    <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
-      <Icon className="size-3.5 shrink-0" />
-      {children}
-    </span>
   );
 }

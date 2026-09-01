@@ -34,6 +34,8 @@ function build(task: TaskRow, events: EventRow[] = [], worklogHours: number | nu
     ticketTask: {
       findFirst: jest.fn().mockResolvedValue(task),
       findMany: jest.fn().mockResolvedValue([task]),
+      aggregate: jest.fn().mockResolvedValue({ _max: { sortOrder: 2, taskNumber: 2 } }),
+      create: jest.fn().mockImplementation(({ data }: { data: TaskRow }) => ({ id: 'task-2', ...data })),
       update: jest.fn().mockImplementation(({ data }: { data: TaskRow }) => ({ ...task, ...data })),
       delete: jest.fn().mockResolvedValue(task),
     },
@@ -43,17 +45,14 @@ function build(task: TaskRow, events: EventRow[] = [], worklogHours: number | nu
         return data;
       }),
       findMany: jest.fn().mockImplementation(() => Promise.resolve(trail)),
-      // The last stamp is where `bookRunningStretch` measures the closing stretch
-      // from — the entry that put the task IN_PROGRESS.
       findFirst: jest.fn().mockImplementation(() => Promise.resolve(trail[trail.length - 1] ?? null)),
     },
-    // The task's own hours are derived from the trail; the billable figure the
-    // DONE gate checks is the worklog total. `worklogHours` lets a test say the
-    // timer has already booked time against the task.
+    // The task's own `hoursSpent` is derived from the trail and audit only; the
+    // billable figure — what the DONE gate checks and what every screen quotes —
+    // is the worklog total. `worklogHours` lets a test say time has already been
+    // entered against the task.
     ticketWorklog: {
       aggregate: jest.fn().mockResolvedValue({ _sum: { hours: worklogHours } }),
-      // What the grid quotes as Time spent: the hours the timer actually booked
-      // against the task, not the trail it derives its stored figure from.
       groupBy: jest.fn().mockResolvedValue([
         { taskId: 'task-1', _sum: { hours: worklogHours } },
       ]),
@@ -63,8 +62,7 @@ function build(task: TaskRow, events: EventRow[] = [], worklogHours: number | nu
   };
   const tickets = {
     findOne: jest.fn().mockResolvedValue({ id: TICKET_ID, clientId: CLIENT_ID }),
-    // Leaving IN_PROGRESS books the elapsed stretch through here — the timer is
-    // the billable record now.
+    // The hours typed on the edit screen's status prompt are booked through here.
     addWorklog: jest.fn().mockResolvedValue({ id: 'wl-1' }),
   };
   const activity = { log: jest.fn().mockResolvedValue(undefined) };
@@ -82,8 +80,12 @@ const otherAgent: TicketViewer = { id: 'agent-9', roles: ['Viewer'] };
 const admin: TicketViewer = { id: 'admin-1', roles: ['Admin'] };
 
 const hoursAgo = (n: number) => new Date(Date.now() - n * 3_600_000);
-const move = (service: TasksService, status: string, viewer: TicketViewer = assignee) =>
-  service.update(TICKET_ID, 'task-1', CLIENT_ID, { status }, viewer.id, viewer);
+const move = (
+  service: TasksService,
+  status: string,
+  viewer: TicketViewer = assignee,
+  extra: Record<string, unknown> = {},
+) => service.update(TICKET_ID, 'task-1', CLIENT_ID, { status, ...extra }, viewer.id, viewer);
 
 describe('hoursFromEvents', () => {
   it('sums every stretch the task stood in progress', () => {
@@ -157,25 +159,24 @@ describe('TasksService — status changes drive the clock', () => {
     expect(prisma.ticketTask.update.mock.calls[0][0].data.hoursSpent).toBe(3);
   });
 
-  it('books the running stretch to a worklog when the timer stops', async () => {
-    // Leaving IN_PROGRESS is what charges the pool now: the elapsed since the
-    // task entered the running state is booked through `addWorklog`, so the timer
-    // — not a hand-typed figure — is the billable record.
-    const { service, tickets } = build(
-      taskRow({ status: 'IN_PROGRESS' }),
-      [{ toStatus: 'IN_PROGRESS', at: hoursAgo(2) }],
-    );
+  it('books the hours entered with the status change as a worklog', async () => {
+    // The log-time prompt on the edit screen is what charges the pool: whatever
+    // the consultant confirms there is booked through `addWorklog`, tagged with
+    // the task it was spent on.
+    const { service, tickets } = build(taskRow({ status: 'IN_PROGRESS' }));
 
-    await move(service, 'OPEN');
+    await move(service, 'DONE', assignee, { logHours: 2.5 });
 
     expect(tickets.addWorklog).toHaveBeenCalledTimes(1);
     const [ticketId, dto] = tickets.addWorklog.mock.calls[0];
     expect(ticketId).toBe(TICKET_ID);
     expect(dto.taskId).toBe('task-1');
-    expect(dto.hours).toBeCloseTo(2, 1);
+    expect(dto.hours).toBe(2.5);
   });
 
-  it('books nothing when a status change does not leave the running state', async () => {
+  it('books nothing when no time is entered', async () => {
+    // A move that logs nothing charges nothing — renaming a task or picking up an
+    // open one must not touch the customer's hours.
     const { service, tickets } = build(taskRow({ status: 'OPEN' }));
 
     await move(service, 'IN_PROGRESS');
@@ -183,9 +184,55 @@ describe('TasksService — status changes drive the clock', () => {
     expect(tickets.addWorklog).not.toHaveBeenCalled();
   });
 
-  it('blocks marking a task done when the timer booked no time', async () => {
-    // A task that never ran has no worklog behind it, so the DONE gate refuses it
-    // — settling it would under-bill the contract.
+  it('books the entered hours before the done gate reads them', async () => {
+    // The gate asks the worklog table, so the booking has to happen first or a
+    // task whose only time is the figure just typed would be refused.
+    const { service, tickets } = build(taskRow({ status: 'IN_PROGRESS' }), [], 0);
+    const order: string[] = [];
+    tickets.addWorklog.mockImplementation(async () => { order.push('book'); return { id: 'wl-1' }; });
+    (service as unknown as { prisma: { ticketWorklog: { aggregate: jest.Mock } } })
+      .prisma.ticketWorklog.aggregate.mockImplementation(async () => {
+        order.push('gate');
+        return { _sum: { hours: 1 } };
+      });
+
+    await move(service, 'DONE', assignee, { logHours: 1 });
+
+    expect(order).toEqual(['book', 'gate']);
+  });
+
+  it('refuses to start a task nobody is assigned to', async () => {
+    // A task may be raised unassigned, but not started that way: the trail is a
+    // timesheet, and a stretch in progress has to belong to someone.
+    const { service } = build(taskRow({ assigneeUserId: null, assigneeName: null }));
+
+    await expect(move(service, 'IN_PROGRESS', admin)).rejects.toThrow(/assign/i);
+  });
+
+  it('starts it when the assignee arrives with the same move', async () => {
+    // What the edit screen's prompt sends: the person taking the task and the
+    // move to In progress, in one PATCH — so the incoming value has to be read
+    // before the stored one.
+    const { service, prisma } = build(taskRow({ assigneeUserId: null, assigneeName: null }));
+
+    await move(service, 'IN_PROGRESS', admin, { assigneeUserId: 'agent-1' });
+
+    const { data } = prisma.ticketTask.update.mock.calls[0][0];
+    expect(data.status).toBe('IN_PROGRESS');
+    expect(data.assigneeUserId).toBe('agent-1');
+  });
+
+  it('does not demand an assignee to pause, cancel or complete a task', async () => {
+    // The rule is about work *in progress*, not about the task itself — settling
+    // an orphaned task must not be blocked by it.
+    const { service } = build(taskRow({ assigneeUserId: null, assigneeName: null }));
+
+    await expect(move(service, 'CANCELLED', admin)).resolves.toBeDefined();
+  });
+
+  it('blocks marking a task done when no time was ever logged against it', async () => {
+    // A task nobody entered time for has no worklog behind it, so the DONE gate
+    // refuses it — settling it would under-bill the contract.
     const { service } = build(taskRow({ status: 'OPEN' }), [], 0);
 
     await expect(move(service, 'DONE')).rejects.toThrow(/log the time/i);
@@ -235,57 +282,48 @@ describe('TasksService — status changes drive the clock', () => {
 });
 
 describe('TasksService — reading tasks', () => {
-  it('adds the stretch still running to what the task has booked', async () => {
-    const { service, prisma } = build(taskRow(), [], 2);
-    prisma.ticketTask.findMany.mockResolvedValue([
-      {
-        ...taskRow({ status: 'IN_PROGRESS' }),
-        _count: { comments: 2 },
-        statusEvents: [
-          { toStatus: 'OPEN', at: hoursAgo(5) },
-          { toStatus: 'IN_PROGRESS', at: hoursAgo(1) },
-        ],
-      },
-    ]);
-
-    const [task] = await service.list(TICKET_ID, CLIENT_ID, assignee);
-
-    // 2h booked + the open hour. Only the open stretch is added — the closed one
-    // is already a worklog, so counting it off the trail as well would double it.
-    expect(task.hoursSpent).toBe(3);
-    expect(task.commentCount).toBe(2);
-  });
-
-  it('quotes the booked hours once the task has stopped, not the stored trail figure', async () => {
-    // The stored `hoursSpent` is audit only, and a stretch the timer never
-    // managed to book must not inflate the grid past what the contract was
-    // charged — the worklog total is the one figure every screen quotes.
+  it('quotes the booked hours, not the stored trail figure', async () => {
+    // The stored `hoursSpent` is audit only — time the task stood in progress,
+    // which nothing charges. The worklog total is the one figure every screen
+    // quotes, so the grid can never claim hours the contract never saw.
     const { service, prisma } = build(taskRow(), [], 2.5);
     prisma.ticketTask.findMany.mockResolvedValue([
-      {
-        ...taskRow({ status: 'DONE', hoursSpent: 10.72 }),
-        _count: { comments: 0 },
-        statusEvents: [
-          { toStatus: 'IN_PROGRESS', at: hoursAgo(4) },
-          { toStatus: 'DONE', at: hoursAgo(1.5) },
-        ],
-      },
+      { ...taskRow({ status: 'DONE', hoursSpent: 10.72 }), _count: { comments: 2 } },
     ]);
 
     const [task] = await service.list(TICKET_ID, CLIENT_ID, assignee);
 
     expect(task.hoursSpent).toBe(2.5);
+    expect(task.commentCount).toBe(2);
   });
 
-  it('shows nothing for a task the timer never booked against', async () => {
+  it('shows nothing for a task no time was booked against', async () => {
     const { service, prisma } = build(taskRow());
     prisma.ticketWorklog.groupBy.mockResolvedValue([]);
     prisma.ticketTask.findMany.mockResolvedValue([
-      { ...taskRow({ status: 'OPEN', hoursSpent: 1.5 }), _count: { comments: 0 }, statusEvents: [] },
+      { ...taskRow({ status: 'OPEN', hoursSpent: 1.5 }), _count: { comments: 0 } },
     ]);
 
     const [task] = await service.list(TICKET_ID, CLIENT_ID, assignee);
 
     expect(task.hoursSpent).toBe(0);
+  });
+});
+
+describe('TasksService — creating a task', () => {
+  it('numbers the task max+1 and keeps the estimate it was raised with', async () => {
+    // max+1, never a count: deleting a task must not hand its Task ID to the next
+    // one, or a comment naming T-003 would come to mean a different task.
+    const { service, prisma } = build(taskRow());
+
+    await service.create(
+      TICKET_ID, CLIENT_ID,
+      { title: 'Swap the drive', estimatedHours: 1.5 },
+      assignee.id, assignee,
+    );
+
+    const { data } = prisma.ticketTask.create.mock.calls[0][0];
+    expect(data.taskNumber).toBe(3);
+    expect(data.estimatedHours).toBe(1.5);
   });
 });

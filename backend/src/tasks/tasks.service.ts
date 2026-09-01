@@ -127,10 +127,9 @@ export class TasksService {
    * `TicketWorklog` — not the derived status trail — is the figure every other
    * surface quotes: the ticket header's Time spent, the task dialog's own total
    * and the customer's support-hours pool are all sums of these rows. Reading the
-   * grid off the same table is what keeps those numbers equal by construction; a
-   * stretch the timer never managed to book (a stop that predates the booking, a
-   * worklog since deleted) can then no longer inflate the grid past the hours the
-   * contract was charged.
+   * grid off the same table is what keeps those numbers equal by construction —
+   * the stored `hoursSpent` (time the task stood in progress) is audit only and
+   * would otherwise quote hours the contract was never charged.
    */
   private async bookedHours(ticketId: string): Promise<Map<string, number>> {
     const rows = await this.prisma.ticketWorklog.groupBy({
@@ -143,41 +142,19 @@ export class TasksService {
     );
   }
 
-  /**
-   * Hours to show for a task: what the timer has booked against it, plus the
-   * stretch running right now — the open stretch alone, since every closed one
-   * is already a worklog and counting it from the trail as well would double it.
-   */
-  private liveHours(
-    task: { id: string; status: string },
-    events: StatusEvent[],
-    booked: Map<string, number>,
-  ) {
-    const total = booked.get(task.id) ?? 0;
-    if (task.status !== RUNNING_TASK_STATUS) return round4(total);
-    // The last stamp is the one that entered IN_PROGRESS — the same point
-    // `bookRunningStretch` will measure the closing stretch from.
-    const startedAt = [...events].sort((a, b) => a.at.getTime() - b.at.getTime()).at(-1);
-    return round4(total + (startedAt ? hoursBetween(startedAt.at, new Date()) : 0));
-  }
-
   async list(ticketId: string, clientId: string, viewer: TicketViewer) {
     await this.tickets.findOne(ticketId, clientId, viewer);
     const [tasks, booked] = await Promise.all([
       this.prisma.ticketTask.findMany({
         where: { ticketId },
         orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-        include: {
-          _count: { select: { comments: true } },
-          // Only what the live-hours sum needs — the full trail is the dialog's job.
-          statusEvents: { select: { toStatus: true, at: true }, orderBy: { at: 'asc' } },
-        },
+        include: { _count: { select: { comments: true } } },
       }),
       this.bookedHours(ticketId),
     ]);
-    return tasks.map(({ statusEvents, _count, ...t }) => ({
+    return tasks.map(({ _count, ...t }) => ({
       ...t,
-      hoursSpent: this.liveHours(t, statusEvents, booked),
+      hoursSpent: round4(booked.get(t.id) ?? 0),
       commentCount: _count.comments,
     }));
   }
@@ -194,7 +171,7 @@ export class TasksService {
     });
     if (!task) throw new NotFoundException('Task not found');
     const booked = await this.bookedHours(ticketId);
-    return { ...task, hoursSpent: this.liveHours(task, task.statusEvents, booked) };
+    return { ...task, hoursSpent: round4(booked.get(task.id) ?? 0) };
   }
 
   /**
@@ -224,20 +201,24 @@ export class TasksService {
 
   async create(ticketId: string, clientId: string, dto: CreateTaskDto, actorId: string, viewer: TicketViewer) {
     await this.tickets.findOne(ticketId, clientId, viewer);
-    const last = await this.prisma.ticketTask.findFirst({
+    // Both counters are max+1 rather than a count, so deleting a task never hands
+    // its number to the next one — the grid's Task ID has to keep meaning the same
+    // task in a comment or a conversation about it.
+    const last = await this.prisma.ticketTask.aggregate({
       where: { ticketId },
-      orderBy: { sortOrder: 'desc' },
-      select: { sortOrder: true },
+      _max: { sortOrder: true, taskNumber: true },
     });
     const task = await this.prisma.ticketTask.create({
       data: {
         ticketId,
+        taskNumber: (last._max.taskNumber ?? 0) + 1,
         title: dto.title,
         description: dto.description,
         assigneeUserId: dto.assigneeUserId,
         assigneeName: await this.assigneeName(dto.assigneeUserId),
         dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
-        sortOrder: (last?.sortOrder ?? -1) + 1,
+        estimatedHours: dto.estimatedHours ?? null,
+        sortOrder: (last._max.sortOrder ?? -1) + 1,
         createdBy: actorId,
       },
     });
@@ -271,13 +252,39 @@ export class TasksService {
       this.assertMayTrack(existing, viewer);
     }
 
-    // Leaving the running state closes a timer stretch, so the elapsed is booked
-    // as a worklog here — the Start/Stop timer, not a hand-typed figure, is what
-    // charges the customer's support-hours pool. Runs *before* the DONE gate
-    // below, so those freshly-booked hours are what satisfy it.
-    const leavingRunning =
-      !!movingTo && existing.status === RUNNING_TASK_STATUS && movingTo !== RUNNING_TASK_STATUS;
-    if (leavingRunning) await this.bookRunningStretch(existing, clientId, actorId, viewer);
+    // Work in progress is somebody's work. A task may be *raised* unassigned —
+    // often it is, before anyone has picked it up — but it cannot be started
+    // that way, or the status trail records a stretch with no one on it and
+    // `assertMayTrack` has nobody to answer to afterwards. The assignee may
+    // arrive in this very PATCH (that is what the edit screen's prompt sends),
+    // so read the incoming value first and fall back to the stored one.
+    if (movingTo === RUNNING_TASK_STATUS) {
+      const assignee = dto.assigneeUserId !== undefined
+        ? dto.assigneeUserId || null
+        : existing.assigneeUserId;
+      if (!assignee) {
+        throw new BadRequestException(
+          `Assign "${existing.title}" to someone before starting it`,
+        );
+      }
+    }
+
+    // The hours typed on the edit screen's completion prompt, booked as a worklog —
+    // that entry, not the status trail, is what charges the customer's
+    // support-hours pool. It runs *before* the DONE gate below, so the time just
+    // entered is what satisfies it, and before the status is written, so an
+    // exhausted pool refuses the whole move rather than settling the task with
+    // nothing behind it.
+    const logHours = Number(dto.logHours ?? 0);
+    if (logHours > 0) {
+      await this.tickets.addWorklog(
+        ticketId,
+        { hours: logHours, taskId },
+        clientId,
+        actorId,
+        viewer,
+      );
+    }
 
     // Done means the work is finished and booked. CANCELLED is deliberately
     // exempt — a task that turned out not to be needed is settled honestly with
@@ -324,49 +331,11 @@ export class TasksService {
   }
 
   /**
-   * Book the stretch the task has just spent running as a `TicketWorklog`.
-   *
-   * This is what makes the Start/Stop timer the billable record: every time a
-   * task leaves IN_PROGRESS the elapsed since it entered is charged to the
-   * customer's support-hours pool, so a consultant never types an hours figure by
-   * hand. Routed through `tickets.addWorklog` so the allowance check, the ledger
-   * write and the low-hours alert fire exactly as a manual entry's would — an
-   * exhausted pool refuses the stop the same way it refused a manual log, and the
-   * excess-approval flow is what unlocks it.
-   *
-   * The stretch is measured from the last status event (the one that entered
-   * IN_PROGRESS — server-stamped, never client-supplied) to now. Sub-minute work
-   * rounds to zero and books nothing.
-   */
-  private async bookRunningStretch(
-    existing: { id: string; ticketId: string },
-    clientId: string,
-    actorId: string,
-    viewer: TicketViewer,
-  ) {
-    const last = await this.prisma.ticketTaskStatusEvent.findFirst({
-      where: { taskId: existing.id },
-      orderBy: { at: 'desc' },
-      select: { at: true },
-    });
-    if (!last) return;
-    const elapsed = hoursBetween(last.at, new Date());
-    if (!(elapsed > 0)) return;
-    await this.tickets.addWorklog(
-      existing.ticketId,
-      { hours: elapsed, taskId: existing.id },
-      clientId,
-      actorId,
-      viewer,
-    );
-  }
-
-  /**
    * A task is only done once the work on it has been booked. `TicketWorklog` is
-   * the billable record, now written by the timer itself (`bookRunningStretch`) —
-   * so a task ticked done against an empty timesheet is one that never ran, and
-   * settling it would silently under-bill the contract, the same hole
-   * `assertTimeLogged` closes at the ticket level.
+   * the billable record, written by the log-time prompt the edit screen raises on
+   * a status change — so a task ticked done against an empty timesheet is one
+   * nobody entered time for, and settling it would silently under-bill the
+   * contract, the same hole `assertTimeLogged` closes at the ticket level.
    */
   private async assertTaskTimeLogged(
     ticketId: string,

@@ -85,9 +85,13 @@ export interface DefaultList {
 //   KB articleType / status / audience (form branching and visibility),
 //   consultant track, message channel, approval states, SLA operational hours,
 //   project priority (badge tone + DTO validation), and ticket template category
-//   (the Templates screen's own field). In Employee/Asset Master: the asset
-//   allocation statuses, since RETURNED is what frees an asset for the next
-//   person and `OPEN_ALLOCATION_STATUSES` branches on that literal.
+//   (the Templates screen's own field). In Employee/Asset Master: every
+//   vocabulary in `assets/allocation-status.ts` — allocation status (RETURNED is
+//   what frees an asset for the next person, and `OPEN_ALLOCATION_STATUSES`
+//   branches on that literal), return condition (BROKEN damages the unit),
+//   retention (UNTIL_EXIT exempts a row from chasing and builds the exit
+//   clearance list) and asset condition (DAMAGED / RETIRED decide the register
+//   state a unit shows in).
 //   In Projects specifically: risk probability/impact, issue priority and every
 //   register status stay hard-coded — `RegisterSection` picks its badge tone off
 //   the literals, the analytics screen orders by them, and a change request's

@@ -1,9 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode, type SyntheticEvent } from 'react';
+import { useState, type ReactNode, type SyntheticEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
-  Plus, Trash2, MessageSquare, AlignLeft, CircleDot, AtSign, Calendar, Play, Square, Timer,
-  RotateCcw,
+  Plus, Trash2, Pencil, AlignLeft, CircleDot, AtSign, Calendar, Timer, Hash,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import api from '../../../lib/api';
@@ -11,6 +10,7 @@ import { useAuth } from '../../../context/AuthContext';
 import { useConfirm } from '@/hooks/useConfirm';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
@@ -18,24 +18,25 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { CellPopover } from '@/components/ui/cell-popover';
 import WorklogSection from './WorklogSection';
-import TaskComments from './TaskComments';
 import { useWorklogInvalidate, useWorklogs } from './ticketQueries';
 import TicketTaskDialog from './TicketTaskDialog';
-import { Textarea } from '@/components/ui/textarea';
 import { useDateFormat } from '@/lib/dateFormat';
 import {
-  COMPLETED_TASK_STATUS, TASK_STATUSES, hrs, isSettledTask, taskStatusLabel, taskStatusPill,
+  COMPLETED_TASK_STATUS, TASK_STATUSES, hrs, isSettledTask, taskCode, taskStatusLabel, taskStatusPill,
 } from './taskMeta';
 
 export interface Task {
   id: string;
+  /** Per-ticket sequence, shown as T-001. Null only on rows that predate the column. */
+  taskNumber?: number | null;
   title: string;
   status: string;
   assigneeUserId?: string | null;
   assigneeName?: string | null;
   dueDate?: string | null;
+  /** What the task was expected to take — the default the log-time prompt offers. */
+  estimatedHours?: number | string | null;
   hoursSpent?: number | string | null;
   commentCount?: number;
 }
@@ -57,9 +58,15 @@ export default function TasksTab({
   // The rows ticked for a bulk action. Kept as ids rather than indexes so a
   // refetch that reorders or drops a task can't silently retarget the selection.
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  // Which task's detail dialog is up. Null closes it.
+  // Which task's edit dialog is up. Null closes it. Both doors into it — the row
+  // itself and the Edit action — set this, so there is one editor, not two.
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  // A status picked in the grid is not written here: it is handed to the edit
+  // dialog, which is where the time spent on the move is entered.
+  const [pendingStatus, setPendingStatus] = useState<string | null>(null);
   const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [estimate, setEstimate] = useState('');
   const [assignee, setAssignee] = useState('');
   const [dueDate, setDueDate] = useState('');
 
@@ -76,39 +83,17 @@ export default function TasksTab({
   const mayReopen = isAdmin || (!!ticketAssigneeId && ticketAssigneeId === user?.id);
   const isCompleted = (t: Task) => t.status === COMPLETED_TASK_STATUS;
 
-  // The task being reopened and the reason typed for it. A reopen is refused
-  // without one — server-side too — so the dialog is the only door.
-  const [reopening, setReopening] = useState<{ task: Task; to: string } | null>(null);
-  const [reopenNote, setReopenNote] = useState('');
-
-  const { data: tasks = [], dataUpdatedAt } = useQuery<Task[]>({
+  const { data: tasks = [] } = useQuery<Task[]>({
     queryKey: ['ticket-tasks', ticketId],
     queryFn: async () => (await api.get(`/api/tickets/${ticketId}/tasks`)).data,
   });
 
-  // A running task's Time spent has to advance without a refetch. `hoursSpent`
-  // comes back already counting the open stretch up to the moment it was
-  // fetched, so live elapsed is that figure plus the wall-clock time since — no
-  // second timestamp from the server needed. Re-render on a ticker only while
-  // something is actually running, so an idle grid does no work.
-  const anyRunning = tasks.some((t) => t.status === 'IN_PROGRESS');
-  const [, forceTick] = useState(0);
-  useEffect(() => {
-    if (!anyRunning) return;
-    const id = setInterval(() => forceTick((n) => n + 1), 30_000);
-    return () => clearInterval(id);
-  }, [anyRunning]);
-  const liveHours = (t: Task) => {
-    const base = Number(t.hoursSpent ?? 0);
-    if (t.status !== 'IN_PROGRESS') return base;
-    return base + Math.max(0, Date.now() - dataUpdatedAt) / 3_600_000;
-  };
   const { data: users = [] } = useQuery<UserOption[]>({
     queryKey: ['users'],
     queryFn: async () => (await api.get('/api/users')).data,
   });
-  // Not a total for display — the per-row Time spent figures and the delete
-  // confirmation are filtered out of this one cache entry.
+  // Not a total for display — the delete confirmation says what hours go with the
+  // task, and the dialog prefills its log-time prompt from what is already booked.
   const { data: logs = [] } = useWorklogs(ticketId);
 
   // A task deleted elsewhere must fall out of the selection, or a bulk action
@@ -127,44 +112,60 @@ export default function TasksTab({
     qc.invalidateQueries({ queryKey: ['ticket-tasks', ticketId] });
     qc.invalidateQueries({ queryKey: ['ticket-task'] });
     qc.invalidateQueries({ queryKey: ['ticket-activity', ticketId] });
-    // Task time is audit only and charges nothing, but the ticket's open-task
-    // count gates resolving it, so the ticket itself still has to be refetched.
+    // The ticket's open-task count gates resolving it, so the ticket itself still
+    // has to be refetched.
     qc.invalidateQueries({ queryKey: ['tickets', ticketId] });
+  };
+  const closeAdd = () => {
+    setAddOpen(false);
+    setTitle(''); setDescription(''); setEstimate(''); setAssignee(''); setDueDate('');
   };
   const create = useMutation({
     mutationFn: () => api.post(`/api/tickets/${ticketId}/tasks`, {
       title,
+      description: description.trim() || undefined,
+      // Sent as a number or not at all — an empty box means "no estimate", not zero.
+      estimatedHours: estimate.trim() ? Number(estimate) : undefined,
       assigneeUserId: assignee || undefined,
       dueDate: dueDate || undefined,
     }),
-    onSuccess: () => { invalidate(); setAddOpen(false); setTitle(''); setAssignee(''); setDueDate(''); },
+    onSuccess: () => { invalidate(); closeAdd(); },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error adding task'),
   });
+
   const patch = useMutation({
     mutationFn: ({ taskId, data }: { taskId: string; data: Record<string, unknown> }) =>
       api.patch(`/api/tickets/${ticketId}/tasks/${taskId}`, data),
     onSuccess: invalidate,
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error updating task'),
   });
-  // A reopen is a status change carrying its reason. Separate from `patch` only
-  // so the dialog closes on success and the reason is cleared - the endpoint is
-  // the same PATCH, and it is the backend that refuses a blank note.
-  const reopen = useMutation({
-    mutationFn: ({ taskId, to, note }: { taskId: string; to: string; note: string }) =>
-      api.patch(`/api/tickets/${ticketId}/tasks/${taskId}`, { status: to, reopenNote: note }),
-    onSuccess: () => {
-      invalidate();
-      setReopening(null);
-      setReopenNote('');
-      toast.success('Task reopened');
-    },
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error reopening task'),
-  });
 
-  /** Open the reason dialog rather than patching - a reopen is never silent. */
-  const askReopen = (task: Task, to: string) => {
-    setReopenNote('');
-    setReopening({ task, to });
+  /**
+   * A status picked in the grid, routed by what the move still needs.
+   *
+   * Three moves have something to collect, and each opens the task's edit screen
+   * with the move queued rather than writing it: **Completed** wants the hours
+   * the task took, **In progress** on an unassigned task wants whoever is taking
+   * it, and leaving Completed is a reopen and wants its reason. Every other move
+   * — pausing a task, cancelling one, starting one that already has an assignee —
+   * asks nothing, so it is written straight from the pill.
+   */
+  const askStatus = (task: Task, to: string) => {
+    const needsInput =
+      to === COMPLETED_TASK_STATUS
+      || isCompleted(task)
+      || (to === 'IN_PROGRESS' && !task.assigneeUserId);
+    if (!needsInput) {
+      patch.mutate({ taskId: task.id, data: { status: to } });
+      return;
+    }
+    setPendingStatus(to);
+    setOpenTaskId(task.id);
+  };
+
+  const openTask = (taskId: string) => {
+    setPendingStatus(null);
+    setOpenTaskId(taskId);
   };
 
   const invalidateWorklogs = useWorklogInvalidate(ticketId);
@@ -223,6 +224,9 @@ export default function TasksTab({
     if (failures.length) toast.error(`${failures.length} failed · ${failures[0]}`);
   };
 
+  // A bulk move books no time — there is one figure to type and many tasks, so
+  // the hours belong on each task's own edit screen. A task that has nothing
+  // logged against it is refused Completed here, exactly as the API refuses it.
   const bulkStatus = (status: string) =>
     runBulk('Updated', (t) => api.patch(`/api/tickets/${ticketId}/tasks/${t.id}`, { status }));
   const bulkAssign = (assigneeUserId: string) =>
@@ -247,13 +251,13 @@ export default function TasksTab({
   // its status, so the bulk control is offered only when every ticked row
   // qualifies — rather than firing and collecting 403s.
   // A completed row is deliberately excluded: reopening one demands a reason, so
-  // it happens from its own row where that can be asked for.
+  // it happens from its own edit screen where that can be asked for.
   const mayTrackAll = chosen.length > 0 && chosen.every((t) => mayTrack(t) && !isCompleted(t));
 
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <Dialog open={addOpen} onOpenChange={(o) => { if (!o) closeAdd(); }}>
           <DialogContent>
             <DialogHeader><DialogTitle>Add task</DialogTitle></DialogHeader>
             <div className="space-y-4">
@@ -261,20 +265,41 @@ export default function TasksTab({
                 <label className="text-sm font-medium">Title</label>
                 <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Order replacement part" />
               </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Description</label>
+                <Textarea
+                  rows={3}
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="What does this task involve?"
+                />
+              </div>
+              {/* The estimate is asked for here because it is what the log-time
+                  prompt offers as its default when the task's status moves — so
+                  the usual case is a confirm rather than a figure typed twice. */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium">Assignee</label>
-                  <Select value={assignee || undefined} onValueChange={setAssignee}>
-                    <SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
-                    <SelectContent>
-                      {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
+                  <label className="text-sm font-medium">Estimated hours</label>
+                  <Input
+                    type="number" min="0" step="0.25" inputMode="decimal"
+                    value={estimate}
+                    onChange={(e) => setEstimate(e.target.value)}
+                    placeholder="e.g. 2"
+                  />
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-sm font-medium">Due date</label>
                   <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
                 </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Assignee</label>
+                <Select value={assignee || undefined} onValueChange={setAssignee}>
+                  <SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
+                  <SelectContent>
+                    {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
             <DialogFooter>
@@ -283,9 +308,6 @@ export default function TasksTab({
           </DialogContent>
         </Dialog>
 
-        {/* A grid, so the figures that matter per task — the hours booked against
-            it and the size of its thread — read down a column instead of being
-            buried in a run of interpuncts. */}
         {/* Only present while something is ticked, so the grid is uncluttered at
             rest and the actions appear exactly when they can be used. */}
         {chosen.length > 0 && (
@@ -299,8 +321,8 @@ export default function TasksTab({
                   <Button size="sm" variant="outline" disabled={bulkBusy || !mayTrackAll}
                     title={mayTrackAll ? undefined
                       : chosen.some(isCompleted)
-                        ? 'Reopen a completed task from its own row — it needs a reason'
-                        : 'Only a task\u2019s assignee or an admin can move its status'}>
+                        ? 'Reopen a completed task from its own edit screen — it needs a reason'
+                        : 'Only a task’s assignee or an admin can move its status'}>
                     Status
                   </Button>
                 </DropdownMenuTrigger>
@@ -355,41 +377,29 @@ export default function TasksTab({
                   />
                 </div>
               </TableHead>
+              <TableHead className="border-r"><HeadLabel icon={Hash}>Task ID</HeadLabel></TableHead>
               <TableHead className="w-full border-r"><HeadLabel icon={AlignLeft}>Task</HeadLabel></TableHead>
               <TableHead className="border-r"><HeadLabel icon={CircleDot}>Status</HeadLabel></TableHead>
               <TableHead className="border-r"><HeadLabel icon={AtSign}>Assignee</HeadLabel></TableHead>
               <TableHead className="border-r"><HeadLabel icon={Calendar}>Due</HeadLabel></TableHead>
-              <TableHead className="border-r"><HeadLabel icon={Play}>Timer</HeadLabel></TableHead>
               <TableHead className="border-r"><HeadLabel icon={Timer}>Time spent</HeadLabel></TableHead>
-              <TableHead className="border-r"><HeadLabel icon={MessageSquare}>Comments</HeadLabel></TableHead>
-              <TableHead className="w-10" />
+              <TableHead className="w-px" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {tasks.length === 0 ? (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={9} className="text-center text-muted-foreground">No tasks yet.</TableCell>
+                <TableCell colSpan={8} className="text-center text-muted-foreground">No tasks yet.</TableCell>
               </TableRow>
             ) : tasks.map((t) => {
-              const canTrack = mayTrack(t);
-              const running = t.status === 'IN_PROGRESS';
               const completed = isCompleted(t);
-              // Moving a completed task at all is a reopen, whichever control does
-              // it — so the status dropdown opens to the ticket's agent and admins
-              // even when they are not the task's assignee, and to nobody else.
-              const canEditStatus = completed ? mayReopen : canTrack;
-              // What Time spent reports: the time the task has stood in progress,
-              // summed over its Start/Stop trail and advancing live while it runs.
-              // Every stopped stretch is booked to the contract as a worklog, so
-              // this figure and the hours charged to the customer's pool are one
-              // and the same. `logged` is that booked total, kept only for the
-              // delete confirmation and the "done needs time" gate below.
-              const logged = logs
-                .filter((l) => l.taskId === t.id)
-                .reduce((sum, l) => sum + Number(l.hours), 0);
-              const spent = liveHours(t);
+              // Moving a completed task at all is a reopen, so the status dropdown
+              // opens to the ticket's agent and admins even when they are not the
+              // task's assignee, and to nobody else.
+              const canEditStatus = completed ? mayReopen : mayTrack(t);
+              const spent = Number(t.hoursSpent ?? 0);
               // Every cell that carries a control stops the click, or using it
-              // also pops the task dialog the row opens.
+              // also opens the edit dialog the row opens.
               const stop = {
                 onClick: (e: SyntheticEvent) => e.stopPropagation(),
                 onKeyDown: (e: SyntheticEvent) => e.stopPropagation(),
@@ -399,7 +409,7 @@ export default function TasksTab({
                   key={t.id}
                   className="cursor-pointer"
                   data-state={selected.has(t.id) ? 'selected' : undefined}
-                  onClick={() => setOpenTaskId(t.id)}
+                  onClick={() => openTask(t.id)}
                 >
                   <TableCell className="border-r p-0" {...stop}>
                     <div className="flex w-14 items-center justify-center py-3">
@@ -410,35 +420,33 @@ export default function TasksTab({
                       />
                     </div>
                   </TableCell>
+
+                  {/* The task's own id, so a task can be named in a comment or a
+                      call without quoting its whole title. Per ticket, and never
+                      reused once a task is deleted. */}
+                  <TableCell className="border-r font-mono text-xs whitespace-nowrap text-muted-foreground">
+                    {taskCode(t)}
+                  </TableCell>
+
                   <TableCell className={`w-full border-r whitespace-normal ${isSettledTask(t.status) ? 'text-muted-foreground line-through' : 'text-foreground'}`}>
                     {t.title}
                     {t.status === 'CANCELLED' && <span className="ml-2 text-xs no-underline">(cancelled)</span>}
                   </TableCell>
 
                   {/* The status is the task's clock: every change is stamped, and
-                      the trail is what the dialog shows as its audit. Rendered as
-                      a bare pill — the select's box, padding and shadow are
-                      stripped so a column of these reads at a glance, and the
-                      chevron fades in on hover to say it is still editable. */}
+                      the trail is what the edit screen shows as its audit.
+                      Rendered as a bare pill — the select's box, padding and
+                      shadow are stripped so a column of these reads at a glance,
+                      and the chevron fades in on hover to say it is still
+                      editable. Picking a value opens the edit screen rather than
+                      writing: that is where the time it took is entered. */}
                   <TableCell className="border-r" {...stop}>
                     <Select
                       value={t.status}
                       disabled={!canEditStatus}
                       onValueChange={(v) => {
                         if (!v || v === t.status) return;
-                        // Leaving Completed is a reopen: ask why first, and let
-                        // the dialog do the writing.
-                        if (completed) return askReopen(t, v);
-                        // Done means the work is finished *and booked*. A running
-                        // task books its open stretch on the way out, so it
-                        // qualifies; only a task that never ran and has nothing
-                        // booked is refused. Mirrors the backend gate so the agent
-                        // hears why here rather than bouncing off a 400.
-                        if (v === 'DONE' && logged <= 0 && !running) {
-                          toast.error(`Start the timer on "${t.title}" before marking it done`);
-                          return;
-                        }
-                        patch.mutate({ taskId: t.id, data: { status: v } });
+                        askStatus(t, v);
                       }}
                     >
                       <SelectTrigger
@@ -476,98 +484,30 @@ export default function TasksTab({
                       : <span className="text-muted-foreground">—</span>}
                   </TableCell>
 
-                  {/* The task's clock, and the only three buttons on it: Start
-                      puts the task in progress, Stop closes the stretch and books
-                      the elapsed to the contract, and Reopen pulls a completed
-                      task back — with a reason, and only for the ticket's own
-                      agent or an admin. A completed task otherwise reads Closed.
-                      There is no hand-typed hours entry: the time between Start
-                      and Stop is the time spent. */}
-                  <TableCell className="border-r" {...stop}>
-                    {completed ? (
-                      // One button, never two: a completed task offers Reopen to
-                      // whoever may use it, and nothing at all to anyone else —
-                      // the status pill already says the task is closed.
-                      mayReopen ? (
-                        <Button
-                          size="sm" variant="outline"
-                          className="h-7 gap-1 border-amber-300 px-2 text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:border-amber-900 dark:text-amber-400 dark:hover:bg-amber-950/40"
-                          disabled={reopen.isPending}
-                          title="Reopen this task"
-                          onClick={() => askReopen(t, 'OPEN')}
-                        >
-                          <RotateCcw className="size-3.5" /> Reopen
-                        </Button>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )
-                    ) : t.status === 'CANCELLED' ? (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    ) : running ? (
-                      <Button
-                        size="sm" variant="outline"
-                        className="h-7 gap-1 border-red-300 px-2 text-red-600 hover:bg-red-50 hover:text-red-700 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
-                        disabled={!canTrack || patch.isPending}
-                        title={canTrack ? 'Stop the timer' : 'Only the assignee or an admin can run this timer'}
-                        onClick={() => patch.mutate({ taskId: t.id, data: { status: 'OPEN' } })}
-                      >
-                        <Square className="size-3.5 fill-current" /> Stop
-                      </Button>
-                    ) : (
-                      <Button
-                        size="sm" variant="outline"
-                        className="h-7 gap-1 border-emerald-300 px-2 text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800 dark:border-emerald-900 dark:text-emerald-400 dark:hover:bg-emerald-950/40"
-                        disabled={!canTrack || patch.isPending}
-                        title={canTrack ? 'Start the timer' : 'Only the assignee or an admin can run this timer'}
-                        onClick={() => patch.mutate({ taskId: t.id, data: { status: 'IN_PROGRESS' } })}
-                      >
-                        <Play className="size-3.5 fill-current" /> Start
-                      </Button>
-                    )}
-                  </TableCell>
-
                   <TableCell
-                    className={`border-r tabular-nums ${spent > 0 ? 'font-semibold text-foreground' : 'text-muted-foreground'}`}
-                    title="Time this task has stood in progress, booked to the contract"
+                    className={`border-r tabular-nums whitespace-nowrap ${spent > 0 ? 'font-semibold text-foreground' : 'text-muted-foreground'}`}
+                    title="Time logged against this task and charged to the contract"
                   >
-                    {running && <span className="mr-1.5 inline-block size-2 animate-pulse rounded-full bg-red-500 align-middle" aria-hidden />}
                     {spent > 0 ? hrs(spent) : '—'}
-                    {running && <span className="ml-1 text-xs font-normal text-muted-foreground">· running</span>}
                   </TableCell>
 
-                  <TableCell className="border-r" {...stop}>
-                    <CellPopover
-                      width={380}
-                      estimatedHeight={320}
-                      trigger={({ toggle }) => (
-                        <Button
-                          size="sm" variant="outline" className="h-7 px-2"
-                          onClick={toggle} title="Comments on this task"
-                        >
-                          <MessageSquare className="size-3.5" />
-                          {t.commentCount ? <span className="tabular-nums">{t.commentCount}</span> : 'Comment'}
-                        </Button>
-                      )}
-                    >
-                      {() => (
-                        <div className="space-y-2">
-                          <div className="text-xs font-medium text-muted-foreground">
-                            Comments on <span className="text-foreground">{t.title}</span>
-                          </div>
-                          <TaskCommentsPanel ticketId={ticketId} taskId={t.id} />
-                        </div>
-                      )}
-                    </CellPopover>
-                  </TableCell>
-
-                  <TableCell {...stop}>
-                    <Button
-                      size="icon" variant="ghost" className="size-8 text-destructive hover:text-destructive"
-                      title="Delete task"
-                      onClick={() => confirmRemove(t)}
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
+                  <TableCell className="w-px whitespace-nowrap" {...stop}>
+                    <div className="flex items-center justify-end">
+                      <Button
+                        size="icon" variant="ghost" className="size-8"
+                        title="Edit task"
+                        onClick={() => openTask(t.id)}
+                      >
+                        <Pencil className="size-4" />
+                      </Button>
+                      <Button
+                        size="icon" variant="ghost" className="size-8 text-destructive hover:text-destructive"
+                        title="Delete task"
+                        onClick={() => confirmRemove(t)}
+                      >
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               );
@@ -575,7 +515,7 @@ export default function TasksTab({
             {/* The foot of the grid is where a new row is added, so that is where
                 the control lives — not in a band of its own above the table. */}
             <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={9} className="p-0">
+              <TableCell colSpan={8} className="p-0">
                 <button
                   type="button"
                   onClick={() => setAddOpen(true)}
@@ -597,50 +537,15 @@ export default function TasksTab({
 
       {ConfirmDialog}
 
-      {/* Reopening is the one status move that has to say why: the task was
-          called finished, and the trail should carry what pulled it back. The
-          note is mandatory here and on the server, so neither door lets a silent
-          reopen through. */}
-      <Dialog open={!!reopening} onOpenChange={(o) => { if (!o) setReopening(null); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Reopen &ldquo;{reopening?.task.title}&rdquo;?</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Why is this being reopened?</label>
-            <Textarea
-              rows={3}
-              autoFocus
-              value={reopenNote}
-              onChange={(e) => setReopenNote(e.target.value)}
-              placeholder="e.g. The fix did not hold — the customer reported it again"
-            />
-            <p className="text-xs text-muted-foreground">
-              Recorded on the task&rsquo;s status trail and in the ticket history.
-            </p>
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setReopening(null)}>Cancel</Button>
-            <Button
-              disabled={!reopenNote.trim() || reopen.isPending}
-              onClick={() => reopening && reopen.mutate({
-                taskId: reopening.task.id, to: reopening.to, note: reopenNote.trim(),
-              })}
-            >
-              {reopen.isPending ? 'Reopening…' : 'Reopen task'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       <TicketTaskDialog
         ticketId={ticketId}
         taskId={openTaskId}
         users={users}
         canTrack={(t) => mayTrack(t)}
         canReopen={mayReopen}
-        onReopen={askReopen}
-        onClose={() => setOpenTaskId(null)}
+        pendingStatus={pendingStatus}
+        onPendingHandled={() => setPendingStatus(null)}
+        onClose={() => { setOpenTaskId(null); setPendingStatus(null); }}
         onDelete={(taskId) => {
           const t = tasks.find((x) => x.id === taskId);
           if (t) confirmRemove(t);
@@ -660,27 +565,5 @@ function HeadLabel({ icon: Icon, children }: { icon: LucideIcon; children: React
       <Icon className="size-3.5 shrink-0" />
       {children}
     </span>
-  );
-}
-
-/**
- * The task's thread inside a popover, scrolled to its foot on open.
- *
- * `TaskComments` orders oldest-first with the composer below it — the same
- * thread the task dialog and the Comments tab render, off the same cache entry,
- * so a count can never disagree with the list it labels. In a panel this short
- * that puts both the newest comments and the box you type in below the fold,
- * hence the nudge.
- */
-function TaskCommentsPanel({ ticketId, taskId }: { ticketId: string; taskId: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = ref.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, []);
-  return (
-    <div ref={ref} className="max-h-64 overflow-y-auto">
-      <TaskComments ticketId={ticketId} taskId={taskId} />
-    </div>
   );
 }

@@ -1,9 +1,10 @@
-import { IsOptional, IsString, IsNotEmpty, IsDateString } from 'class-validator';
+import { IsOptional, IsString, IsNotEmpty, IsIn, IsDateString } from 'class-validator';
+import { ASSET_CONDITIONS } from '../allocation-status';
 
 /**
  * Every descriptive field on an asset is free text by design — the Asset Master
- * form has no dropdowns. Only the three dates are typed, and they arrive as
- * `YYYY-MM-DD` from the form's date inputs.
+ * form has no dropdowns. Only the three dates and `condition` are typed, and the
+ * dates arrive as `YYYY-MM-DD` from the form's date inputs.
  */
 export class CreateAssetDto {
   @IsString() @IsNotEmpty() assetId!: string;
@@ -20,6 +21,7 @@ export class CreateAssetDto {
   @IsOptional() @IsString() supplierName?: string;
   @IsOptional() @IsString() invoiceNumber?: string;
   @IsOptional() @IsString() lifespan?: string;
+  @IsOptional() @IsIn(ASSET_CONDITIONS as unknown as string[]) condition?: string;
 
   @IsOptional() @IsDateString() warrantyStart?: string | null;
   @IsOptional() @IsDateString() warrantyEnd?: string | null;
@@ -41,6 +43,7 @@ export class UpdateAssetDto {
   @IsOptional() @IsString() supplierName?: string;
   @IsOptional() @IsString() invoiceNumber?: string;
   @IsOptional() @IsString() lifespan?: string;
+  @IsOptional() @IsIn(ASSET_CONDITIONS as unknown as string[]) condition?: string;
 
   @IsOptional() @IsDateString() warrantyStart?: string | null;
   @IsOptional() @IsDateString() warrantyEnd?: string | null;

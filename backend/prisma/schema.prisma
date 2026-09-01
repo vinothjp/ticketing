@@ -889,19 +889,25 @@ model TicketTask {
   id             String    @id @default(uuid())
   ticketId       String
   ticket         Ticket    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  // Per-ticket sequence, shown in the grid's Task ID column as T-001. Assigned as
+  // max+1 on create so it is never reused after a delete, and nullable only for
+  // the rows that predate the column (backfilled by the manual migration).
+  taskNumber     Int?
   title          String
   description    String?
   assigneeUserId String?
   assigneeName   String?
   status         String    @default("OPEN")
   dueDate        DateTime?
+  // What the task was expected to take, typed when it is raised. It is the
+  // default the "log time" prompt on a status change is prefilled with — an
+  // estimate, never itself charged to the support-hours pool.
+  estimatedHours Decimal?
   sortOrder      Int       @default(0)
   completedAt    DateTime?
-  // Time the task stood in IN_PROGRESS, summed from its status trail. Audit only:
-  // it books no TicketWorklog and is never charged to the support-hours pool —
-  // billable time is logged by hand on the Tasks tab. Stored so the list renders
-  // without walking the events; a task that is in progress right now has its open
-  // interval added on read.
+  // Time the task stood in IN_PROGRESS, summed from its status trail. Audit only
+  // and displayed nowhere: the billable figure is `TicketWorklog`, entered on the
+  // task's own edit screen when its status moves.
   hoursSpent     Decimal?
   createdBy      String?
   createdAt      DateTime  @default(now())
@@ -1712,6 +1718,11 @@ model Asset {
   supplierName  String?
   invoiceNumber String?
   lifespan      String?                                         // free text, e.g. "3 years"
+  // The unit's own condition, which outlives any one allocation. A BROKEN return
+  // sets it to DAMAGED; an admin flips it back to OK once the unit is repaired.
+  // Deriving "in repair" from the last allocation instead would be a state
+  // nothing could ever leave.
+  condition     String    @default("OK")                        // OK | DAMAGED | RETIRED
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   createdBy     String?
@@ -1719,6 +1730,7 @@ model Asset {
 
   allocations   AssetAllocation[]
   approvals     TicketApproval[]
+  activities    AssetActivity[]
 
   @@unique([clientId, assetId])
   @@index([clientId])
@@ -1726,32 +1738,67 @@ model Asset {
 
 // An asset issued to an employee (an internal `User`). The rule "an allocated
 // asset is not available to anyone else" is *at most one open allocation per
-// asset*, where open is every status except RETURNED — BROKEN and NOT_RETURNED
-// still have the unit off the shelf. It is enforced in the service with a
-// ConflictException that names the current holder (the house convention), not by
-// a partial unique index: `prisma db push --accept-data-loss` runs on every
-// container start and would drop an index the schema cannot express.
+// asset*, and with only two statuses open means exactly ISSUED. It is enforced in
+// the service with a ConflictException that names the current holder (the house
+// convention), not by a partial unique index: `prisma db push --accept-data-loss`
+// runs on every container start and would drop an index the schema cannot express.
+//
+// `status` says only whether the unit is out or back. How it came back is
+// `returnCondition`, and damage that outlives the allocation is `Asset.condition`
+// — the old BROKEN / NOT_RETURNED statuses conflated all three.
 model AssetAllocation {
-  id             String    @id @default(uuid())
-  clientId       String
-  client         Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  assetId        String
-  asset          Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  employeeUserId String
-  employee       User      @relation(fields: [employeeUserId], references: [id], onDelete: Cascade)
-  status         String    @default("ISSUED")                   // ISSUED | RETURNED | BROKEN | NOT_RETURNED
-  issuedDate     DateTime?
-  returnDate     DateTime?
-  notes          String?
+  id                 String    @id @default(uuid())
+  clientId           String
+  client             Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  assetId            String
+  asset              Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  employeeUserId     String
+  employee           User      @relation(fields: [employeeUserId], references: [id], onDelete: Cascade)
+  status             String    @default("ISSUED")               // ISSUED | RETURNED
+  returnCondition    String?                                    // GOOD | BROKEN — set only while RETURNED
+  // Some units (phone, laptop) are never handed back until the employee leaves.
+  // UNTIL_EXIT says so, so such a row reads as normal rather than permanently
+  // overdue, and becomes the exit-clearance list when the employee is deactivated.
+  retention          String    @default("RETURNABLE")           // RETURNABLE | UNTIL_EXIT
+  expectedReturnDate DateTime?                                  // meaningful only for RETURNABLE
+  issuedDate         DateTime?
+  returnDate         DateTime?
+  notes              String?
   // Denormalised at write time so neither grid needs a join — the same reason
   // ClientVisit carries consultantName / productName.
-  assetCode      String?
-  assetName      String?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  createdBy      String?
-  updatedBy      String?
+  assetCode          String?
+  assetName          String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  createdBy          String?
+  updatedBy          String?
 
   @@index([clientId, employeeUserId])
   @@index([assetId])
+}
+
+// The audit trail of one asset's life: created, issued, returned (and in what
+// condition), reassigned, repaired, deleted. Modelled on `TicketActivity` —
+// written best-effort after the operation, never inside its transaction.
+//
+// `allocationId` is deliberately a plain column and not a relation: removing an
+// allocation is exactly the event the trail exists to record, so it must not
+// cascade the history away with it.
+model AssetActivity {
+  id             String   @id @default(uuid())
+  clientId       String
+  assetId        String
+  asset          Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  allocationId   String?
+  employeeUserId String?
+  employeeName   String?                                        // denormalised, like TicketTaskStatusEvent.actorName
+  type           String
+  summary        String
+  meta           Json?
+  actorUserId    String?
+  actorName      String?
+  createdAt      DateTime @default(now())
+
+  @@index([clientId, assetId, createdAt])
+  @@index([clientId, employeeUserId, createdAt])
 }

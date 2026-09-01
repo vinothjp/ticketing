@@ -24,9 +24,11 @@ export interface TicketComment {
 
 /**
  * The ticket's logged time. This is the **only** thing that charges the
- * customer's support-hours pool — a task's own hours are an audit of how long it
- * stood in progress and are deliberately never booked here, or the same work
- * would be counted twice.
+ * customer's support-hours pool, and every figure any screen quotes as time
+ * spent — the task grid included — is a sum of these rows. Entries are written
+ * by the log-time prompt a task's status change raises on its edit screen; the
+ * task's own `hoursSpent` column is an audit of how long it stood in progress
+ * and is never charged, or the same work would be counted twice.
  */
 export function useWorklogs(ticketId: string) {
   return useQuery<Worklog[]>({

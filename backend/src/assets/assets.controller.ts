@@ -28,10 +28,9 @@ export class AssetsController {
     return this.assets.findOne(id, req.user.clientId);
   }
 
-  @Get(':id/allocations')
-  allocations(@Request() req: AuthedRequest, @Param('id') id: string) {
-    return this.assets.listAllocations(id, req.user.clientId);
-  }
+  // No `:id/allocations` route: an asset's allocations are read through
+  // `GET api/asset-allocations?assetId=`, the same door the employee screen uses,
+  // so one grid component serves both masters and neither can drift.
 
   @Post()
   create(@Request() req: AuthedRequest, @Body() dto: CreateAssetDto) {

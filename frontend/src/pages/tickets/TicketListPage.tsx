@@ -13,7 +13,7 @@ import {
   DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
-import { getPriorityMeta, getSlaMeta, isOverdueTicket, isCreatedTodayTicket, getApprovalMeta, type TicketSummary } from './ticketHelpers';
+import { getPriorityMeta, getSlaMeta, isOverdueTicket, isCreatedTodayTicket, getApprovalMeta, monthKey, monthLabel, type TicketSummary } from './ticketHelpers';
 import { useDateFormat } from '@/lib/dateFormat';
 
 interface TemplateSummary { id: string; name: string; }
@@ -84,6 +84,10 @@ export default function TicketListPage() {
   const [companyFilter, setCompanyFilter] = useState<string>('all');
   // Queue default: incoming order — newest first, so the latest arrivals lead.
   const [sort, setSort] = useState<SortKey>('newest');
+  // Local state like the other filters, not a URL param: the template dropdown
+  // below owns the query string and rewrites it wholesale, so a ?month= would be
+  // wiped the moment a template is picked.
+  const [month, setMonth] = useState('all');
 
   const { data: tickets = [], isLoading } = useQuery<TicketSummary[]>({
     queryKey: ['tickets'],
@@ -116,9 +120,27 @@ export default function TicketListPage() {
     [tickets],
   );
 
+  // Months that have tickets, newest first, plus the current month whether or not
+  // anything has landed in it yet — the month you are standing in is the one you
+  // most want to watch, and deriving purely from the data made it vanish until
+  // the first ticket of the month arrived.
+  const monthOptions = useMemo(
+    () => Array.from(new Set([monthKey(new Date()), ...tickets.map((t) => monthKey(new Date(t.createdAt)))]))
+      .sort()
+      .reverse(),
+    [tickets],
+  );
+
+  // The month sits upstream of every other filter, so it scopes the tab counts
+  // as well as the rows — a count of 69 above four rows would just read wrong.
+  const scoped = useMemo(
+    () => (month === 'all' ? tickets : tickets.filter((t) => monthKey(new Date(t.createdAt)) === month)),
+    [tickets, month],
+  );
+
   const byType = useMemo(
-    () => (typeFilter ? tickets.filter((t) => t.template?.name === typeFilter) : tickets),
-    [tickets, typeFilter],
+    () => (typeFilter ? scoped.filter((t) => t.template?.name === typeFilter) : scoped),
+    [scoped, typeFilter],
   );
 
   const viewCounts = useMemo(() => ({
@@ -213,7 +235,7 @@ export default function TicketListPage() {
             {view === 'tasks' ? 'Assigned tasks' : (typeFilter || 'All tickets')}
           </h1>
           <p className="text-sm text-muted-foreground">
-            {view === 'tasks' ? `${myTasks.length} open task(s)` : `${sorted.length} of ${tickets.length}`}
+            {view === 'tasks' ? `${myTasks.length} open task(s)` : `${sorted.length} of ${scoped.length}`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -228,8 +250,9 @@ export default function TicketListPage() {
         </div>
       </div>
 
-      {/* Views (segmented) */}
-      <div className="flex flex-wrap gap-1 border-b pb-3">
+      {/* Views (segmented) — the month picker rides the same row, pushed right,
+          because it scopes the counts beside it rather than filtering under them. */}
+      <div className="flex flex-wrap items-center gap-1 border-b pb-3">
         {views.map((v) => (
           <button
             key={v.key}
@@ -244,6 +267,13 @@ export default function TicketListPage() {
             <span className={cn('rounded-full px-1.5 text-xs', view === v.key ? 'bg-primary/15' : 'bg-muted text-muted-foreground')}>{v.count}</span>
           </button>
         ))}
+        <Select value={month} onValueChange={setMonth}>
+          <SelectTrigger className="ml-auto w-44"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All months</SelectItem>
+            {monthOptions.map((m) => <SelectItem key={m} value={m}>{monthLabel(m)}</SelectItem>)}
+          </SelectContent>
+        </Select>
       </div>
 
       {/* Filters + sort (tickets only) — single row */}

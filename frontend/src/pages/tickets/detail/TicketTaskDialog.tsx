@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Combobox } from '@/components/ui/combobox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { COMPLETED_TASK_STATUS, TASK_STATUSES, hrs, taskCode } from './taskMeta';
 import type { Task, UserOption } from './TasksTab';
@@ -113,6 +114,13 @@ export default function TicketTaskDialog({
   // picking someone there clears this on the next read. Mirrors the same refusal
   // in `TasksService.update`.
   const asksForAssignee = pending === 'IN_PROGRESS' && !task?.assigneeUserId;
+
+  // Unassigned leads, then every agent. A task is routinely raised with nobody
+  // on it, so clearing the field has to be as reachable as picking someone.
+  const assigneeOptions = [
+    { value: UNASSIGNED, label: 'Unassigned' },
+    ...users.map((u) => ({ value: u.id, label: u.username })),
+  ];
 
   /**
    * What the log-time box opens with: the estimate the task was raised with,
@@ -271,25 +279,23 @@ export default function TicketTaskDialog({
                 <label className={`text-sm font-medium ${asksForAssignee ? 'text-amber-700 dark:text-amber-400' : ''}`}>
                   Assignee
                 </label>
-                <Select
+                {/* A combobox rather than a plain select: a tenant's agent list
+                    runs long enough that scrolling it to find one name is the
+                    slow way round. Ringed while a queued Start is waiting on it,
+                    so the panel's line below has something to point at. */}
+                <Combobox
                   value={task.assigneeUserId ?? UNASSIGNED}
                   disabled={!editable}
-                  onValueChange={(v) => {
+                  options={assigneeOptions}
+                  placeholder="Unassigned"
+                  emptyText="No agent matches that"
+                  className={asksForAssignee ? 'rounded-md ring-2 ring-amber-400 ring-offset-1' : ''}
+                  onChange={(v) => {
                     if (!v) return;
                     const next = v === UNASSIGNED ? '' : v;
                     if (next !== (task.assigneeUserId ?? '')) patch.mutate({ assigneeUserId: next });
                   }}
-                >
-                  {/* Ringed while a queued Start is waiting on it, so the panel's
-                      line below has something to point at. */}
-                  <SelectTrigger className={`w-full ${asksForAssignee ? 'ring-2 ring-amber-400 ring-offset-1' : ''}`}>
-                    <SelectValue placeholder="Unassigned" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
-                    {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                />
                 {asksForAssignee && (
                   <p className="text-xs text-amber-700 dark:text-amber-400">
                     Pick someone to start this task.

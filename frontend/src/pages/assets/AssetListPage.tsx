@@ -11,6 +11,7 @@ import type { LucideIcon } from 'lucide-react';
 import api from '../../lib/api';
 import { useConfirm } from '@/hooks/useConfirm';
 import { useOptionValues } from '@/lib/optionLists';
+import ImportExportBar from '@/components/ImportExportBar';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
@@ -180,22 +181,12 @@ export default function AssetListPage() {
 
   return (
     <div className="w-full">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Asset Master</h1>
-          <p className="text-sm text-muted-foreground">
-            {rows.length} {rows.length === 1 ? 'asset' : 'assets'}. Each is one physical unit,
-            identified by its own asset ID.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" onClick={() => navigate('/admin/assets/types')}>
-            <LayoutGrid className="size-4" /> By type
-          </Button>
-          <Button onClick={() => navigate(`/admin/assets/new${type !== ALL && type !== NONE ? `?type=${encodeURIComponent(type)}` : ''}`)}>
-            <Plus className="size-4" /> New asset
-          </Button>
-        </div>
+      <div className="mb-4 min-w-0">
+        <h1 className="text-2xl font-bold tracking-tight">Asset Master</h1>
+        <p className="text-sm text-muted-foreground">
+          {rows.length} {rows.length === 1 ? 'asset' : 'assets'}. Each is one physical unit,
+          identified by its own asset ID.
+        </p>
       </div>
 
       {/* Filters have their own bar rather than living in the column headings —
@@ -245,6 +236,23 @@ export default function AssetListPage() {
             <X className="size-4" /> Clear filters
           </Button>
         )}
+
+        {/* The actions share the filter row rather than sitting up beside the
+            page title — same one-row shape the Employee Master uses. */}
+        <Button variant="outline" onClick={() => navigate('/admin/assets/types')}>
+          <LayoutGrid className="size-4" /> By type
+        </Button>
+        <ImportExportBar
+          noun="assets"
+          templateName="asset-import-template.xlsx"
+          exportUrl="/api/assets/export"
+          templateUrl="/api/assets/import-template"
+          importUrl="/api/assets/import"
+          onImported={invalidateAllocation}
+        />
+        <Button onClick={() => navigate(`/admin/assets/new${type !== ALL && type !== NONE ? `?type=${encodeURIComponent(type)}` : ''}`)}>
+          <Plus className="size-4" /> New asset
+        </Button>
       </div>
 
       {isLoading ? (

@@ -131,10 +131,12 @@ export default function SupportHoursConfig({
           approver or a tenant Admin gets a live radio — everyone else reads it. */}
       {value.allowExcess && value.excessApproval && request && (
         <Row
-          label={`Excess request${request.periodLabel !== 'ALL' ? ` · ${request.periodLabel}` : ''}`}
+          label={decided
+            ? `Excess hours ${request.status === 'APPROVED' ? 'approved' : 'rejected'}${request.periodLabel !== 'ALL' ? ` · ${request.periodLabel}` : ''}`
+            : `Waiting for approval from ${request.approverName ?? 'the approver'}${request.periodLabel !== 'ALL' ? ` · ${request.periodLabel}` : ''}`}
           hint={decided
             ? `${request.status === 'APPROVED' ? 'Approved' : 'Declined'} by ${request.approverName ?? 'the approver'}${request.decidedAt ? ` · ${stampExcess(request.decidedAt)}` : ''}`
-            : `${request.requestedByName ?? 'A consultant'} asked to log beyond ${request.allocated} h (${Number(request.usedAtRequest)} h used)`}
+            : `Logging beyond the ${request.allocated} h allowance needs their sign-off (${Number(request.usedAtRequest)} h used so far).`}
           indent>
           <RadioGroup value={picked} disabled={!canDecide || deciding}
             onValueChange={(v) => { if (v && v !== picked) onDecide?.(v === 'APPROVE'); }} className="flex gap-5">

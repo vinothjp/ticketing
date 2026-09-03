@@ -6,6 +6,7 @@ import { TicketsService, TicketViewer } from '../tickets/tickets.service';
 import { ActivityService } from '../activity/activity.service';
 import { MailerService } from '../mail/mailer.service';
 import { AssetAllocationsService } from '../assets/asset-allocations.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { RequestApprovalDto, DecideApprovalDto, UpdateApprovalDto } from './dto/approval.dto';
 
 /**
@@ -25,6 +26,7 @@ export class ApprovalsService {
     private activity: ActivityService,
     private mailer: MailerService,
     private allocations: AssetAllocationsService,
+    private notifications: NotificationsService,
   ) {}
 
   list(ticketId: string, clientId: string, viewer: TicketViewer) {
@@ -78,11 +80,33 @@ export class ApprovalsService {
         : `Approval requested from ${approval.approverName}`,
     });
 
-    // Best-effort email notification — fire-and-forget so a slow SMTP send never
-    // blocks the response (which would freeze the "Request asset" dialog).
     const subject = asset
       ? `Asset request: ${asset.assetId} — ${asset.assetName}`
       : `Approval requested: ${ticket.subject}`;
+
+    // The bell, not just the inbox. Email was the only push this flow had, so an
+    // approver who missed the mail had nowhere in the app to find the request —
+    // there is no approvals queue, only the tab on the ticket itself. The `link`
+    // opens that tab directly rather than the ticket's default one.
+    try {
+      await this.notifications.notify({
+        clientId,
+        userId: approver.id,
+        type: asset ? 'ASSET_REQUESTED' : 'APPROVAL_REQUESTED',
+        ticketId,
+        title: asset ? 'Asset request for you to approve' : 'Approval requested from you',
+        body: asset
+          ? `${approval.requestedByName ?? 'A colleague'} requested ${asset.assetId} — ${asset.assetName} on ${ticket.ticketNumber}`
+          : `${approval.requestedByName ?? 'A colleague'} asked for your approval on ${ticket.ticketNumber} — ${ticket.subject}`,
+        link: `/tickets/${ticketId}?tab=approvals`,
+      });
+    } catch {
+      // Best-effort, like the email below: a notification that fails to write
+      // must not lose the request it was announcing.
+    }
+
+    // Best-effort email notification — fire-and-forget so a slow SMTP send never
+    // blocks the response (which would freeze the "Request asset" dialog).
     void this.mailer
       .sendMail({
         to: approver.email,

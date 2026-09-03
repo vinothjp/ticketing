@@ -191,37 +191,44 @@ export class ProductsService {
 
   /**
    * Pick the consultant to auto-assign for a module + track (ticket routing).
-   * Always the primary, then list order — never load-balanced.
+   * The query's `isPrimary desc, sortOrder asc` order IS the walk order — the
+   * primary leads, and the first candidate the caller accepts takes the ticket.
    */
-  async resolveConsultant(clientId: string, moduleId: string, track: 'TECHNICAL' | 'FUNCTIONAL' | null): Promise<string | null> {
+  async resolveConsultant(clientId: string, moduleId: string, track: 'TECHNICAL' | 'FUNCTIONAL' | null, isEligible: (userId: string) => boolean): Promise<string | null> {
     const agents = await this.prisma.moduleConsultant.findMany({
       // No track on the ticket (single-track or unsplit module) — any agent will do.
       where: { moduleId, ...(track ? { track } : {}), module: { product: { clientId } } },
       orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }],
     });
-    return this.firstInOrder(agents);
+    return this.firstAvailable(agents, isEligible);
   }
 
   /**
    * Product-screen consultants for a product that isn't split into modules
-   * (or whose module carries no list). Same primary-then-list-order rule.
+   * (or whose module carries no list). Same primary-then-list-order walk.
    */
-  async resolveProductConsultant(clientId: string, productId: string, track: 'TECHNICAL' | 'FUNCTIONAL' | null): Promise<string | null> {
+  async resolveProductConsultant(clientId: string, productId: string, track: 'TECHNICAL' | 'FUNCTIONAL' | null, isEligible: (userId: string) => boolean): Promise<string | null> {
     const agents = await this.prisma.productConsultant.findMany({
       where: { productId, ...(track ? { track } : {}), product: { clientId } },
       orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }],
     });
-    return this.firstInOrder(agents);
+    return this.firstAvailable(agents, isEligible);
   }
 
   /**
-   * The first agent in the caller's order — the primary, since every query sorts
-   * `isPrimary desc, sortOrder asc`. Routing is deliberately NOT balanced by
-   * workload: a consultant who already holds open tickets still gets the next
-   * one, so the same product/module always lands on the same person. The only
-   * reason to move down a tier is an empty list, never a busy agent.
+   * The first agent in the caller's order the caller will accept. The order is
+   * the primary first, since every query sorts `isPrimary desc, sortOrder asc`;
+   * `isEligible` is the availability test — an active staff user holding no open
+   * ticket — computed once per routing pass in `TicketsService.create()` and
+   * threaded down, so a five-tier walk never issues a per-candidate count.
+   *
+   * Routing IS balanced by availability: a consultant already holding an open
+   * ticket is skipped and the next name in the list takes it. A tier is left
+   * only when every candidate in it is busy or inactive, and when no tier has
+   * anyone free the ticket stays unassigned — there is deliberately no fallback
+   * to the primary.
    */
-  private firstInOrder(agents: { userId: string }[]): string | null {
-    return agents[0]?.userId ?? null;
+  private firstAvailable(agents: { userId: string }[], isEligible: (userId: string) => boolean): string | null {
+    return agents.find((a) => isEligible(a.userId))?.userId ?? null;
   }
 }

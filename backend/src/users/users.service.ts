@@ -8,6 +8,13 @@ import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcryptjs';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { OPEN_ALLOCATION_STATUSES } from '../assets/allocation-status';
+import { EMPLOYEE_COLUMNS, EMPLOYEE_IMPORT_NOTES } from './employee-sheet';
+import type { EmployeeSheetRow } from './employee-sheet';
+import {
+  exportSheet, importTemplate, readSheet, rowReader, asText, errorText,
+} from '../lib/spreadsheet';
+import type { ImportResult } from '../lib/spreadsheet';
 
 /**
  * What every user read returns. Internal staff *are* the employees, so the
@@ -140,6 +147,187 @@ export class UsersService {
     await this.findOne(id, clientId);
     await this.prisma.user.delete({ where: { id } });
     return { message: 'User deleted' };
+  }
+
+
+  // ---- Employee Master import / export -------------------------------------
+
+  /**
+   * Every internal staff member as a spreadsheet, in the columns the importer
+   * accepts — so an export can be edited and posted straight back. Customer
+   * contacts are never employees, so they are out of it by the same rule
+   * `findAll` applies.
+   */
+  async exportEmployees(clientId: string) {
+    const staff = await this.prisma.user.findMany({
+      where: { clientId, customerCompanyId: null },
+      orderBy: [{ employeeId: 'asc' }, { username: 'asc' }],
+      select: {
+        id: true, employeeId: true, name: true, username: true, email: true,
+        department: true, designation: true, phone: true, isActive: true,
+        manager: { select: { name: true, username: true } },
+      },
+    });
+
+    // One grouped count rather than a query per person — the Assets held column
+    // reads exactly what the list screen's Assets column does.
+    const held = await this.prisma.assetAllocation.groupBy({
+      by: ['employeeUserId'],
+      where: { clientId, status: { in: OPEN_ALLOCATION_STATUSES } },
+      _count: { _all: true },
+    });
+    const counts = new Map(held.map((h) => [h.employeeUserId, h._count._all]));
+
+    const rows: EmployeeSheetRow[] = staff.map((u) => ({ ...u, assetsHeld: counts.get(u.id) ?? 0 }));
+    return exportSheet('Employees', EMPLOYEE_COLUMNS, rows);
+  }
+
+  /** The blank template: the same columns, minus the ones an import cannot set. */
+  employeeImportTemplate() {
+    return importTemplate('Employees', EMPLOYEE_COLUMNS, EMPLOYEE_IMPORT_NOTES);
+  }
+
+  /**
+   * Bulk add/update from a spreadsheet, matched on employee ID and falling back
+   * to username.
+   *
+   * Every row goes through the ordinary `create` / `update`, so the licence seat
+   * limit, the unique employee ID, the username/email conflict check and the
+   * Manager-role rule all apply exactly as they do on the form — an import is a
+   * fast way to type, not a second way in. Rows run **serially**: the seat limit
+   * and the uniqueness checks count what earlier rows have already written, which
+   * a `Promise.all` would race past.
+   */
+  async importEmployees(clientId: string, actorId: string, file?: Express.Multer.File): Promise<ImportResult> {
+    const records = readSheet(file);
+    const result: ImportResult = { created: 0, updated: 0, skipped: 0, errors: [] };
+
+    const column = (header: string) => EMPLOYEE_COLUMNS.find((c) => c.header === header)!;
+    const COLS = {
+      employeeId: column('Employee ID'),
+      name: column('Employee name'),
+      username: column('Username'),
+      email: column('Email'),
+      password: column('Password'),
+      department: column('Department'),
+      designation: column('Designation'),
+      phone: column('Phone'),
+      manager: column('Manager'),
+      status: column('Status'),
+    };
+
+    // The manager candidates, once — a manager is a staff user carrying the
+    // Manager role, and a sheet may name them by code, full name or login.
+    const managers = await this.prisma.user.findMany({
+      where: { clientId, customerCompanyId: null, userRoles: { some: { role: { name: 'Manager' } } } },
+      select: { id: true, employeeId: true, name: true, username: true },
+    });
+    const managerBy = new Map<string, string>();
+    for (const m of managers) {
+      for (const key of [m.employeeId, m.name, m.username]) {
+        if (key) managerBy.set(key.trim().toLowerCase(), m.id);
+      }
+    }
+
+    for (const [i, record] of records.entries()) {
+      const line = i + 2; // the header is row 1, so a sheet row is its index + 2
+      try {
+        // A trailing blank row is the normal shape of a hand-edited sheet, not an error.
+        if (!Object.values(record).some((v) => asText(v))) continue;
+
+        const read = rowReader(record);
+        const cell = (c: keyof typeof COLS) => asText(read(COLS[c]));
+        const employeeId = cell('employeeId');
+        const username = cell('username');
+
+        const byCode = employeeId
+          ? await this.prisma.user.findFirst({
+              where: { clientId, customerCompanyId: null, employeeId },
+              select: { id: true },
+            })
+          : null;
+        const matched =
+          byCode ??
+          (username
+            ? await this.prisma.user.findFirst({
+                where: { clientId, customerCompanyId: null, username },
+                select: { id: true },
+              })
+            : null);
+
+        // A blank cell on an update means "leave it alone", so only the columns
+        // the sheet actually carries are sent — the DTO's undefined-skips-the-field
+        // rule does the rest.
+        const fields: Record<string, unknown> = {};
+        for (const key of ['name', 'department', 'designation', 'phone'] as const) {
+          const v = cell(key);
+          if (v) fields[key] = v;
+        }
+
+        const managerCell = cell('manager');
+        if (managerCell) {
+          // "none" is the one way a sheet can *clear* a value: a manager is a
+          // reporting line an employee can genuinely leave, unlike a blank cell,
+          // which means the row simply says nothing about it.
+          if (['none', 'no manager', '-'].includes(managerCell.toLowerCase())) {
+            fields.managerId = null;
+          } else {
+            const managerId = managerBy.get(managerCell.toLowerCase());
+            if (!managerId) {
+              throw new BadRequestException(
+                `Manager: no staff user with the Manager role matches "${managerCell}"`,
+              );
+            }
+            fields.managerId = managerId;
+          }
+        }
+
+        const status = cell('status');
+        if (status) {
+          const on = ['active', 'yes', 'true', 'y', '1'];
+          const off = ['inactive', 'no', 'false', 'n', '0'];
+          const want = status.toLowerCase();
+          if (!on.includes(want) && !off.includes(want)) {
+            throw new BadRequestException(`Status: "${status}" is not Active or Inactive`);
+          }
+          fields.isActive = on.includes(want);
+        }
+
+        const email = cell('email');
+        const password = cell('password');
+
+        if (matched) {
+          // Username is the fallback match key, so an import never rewrites it —
+          // renaming a login is an edit on the Users screen.
+          if (employeeId) fields.employeeId = employeeId;
+          if (email) fields.email = email;
+          if (password) fields.password = password;
+          await this.update(matched.id, fields as UpdateUserDto, clientId, actorId);
+          result.updated += 1;
+        } else {
+          if (!username) throw new BadRequestException('Username is required to add a new employee');
+          if (!email) throw new BadRequestException('Email is required to add a new employee');
+          if (password.length < 8) {
+            throw new BadRequestException('Password is required to add a new employee, at least 8 characters');
+          }
+          // isActive is not a create field — a new employee starts active, so a
+          // row asking for Inactive is deactivated straight after.
+          const { isActive, ...creatable } = fields;
+          const created = await this.create(
+            { ...creatable, username, email, password, employeeId: employeeId || undefined } as CreateUserDto,
+            clientId,
+            actorId,
+          );
+          if (isActive === false) await this.update(created.id, { isActive: false }, clientId, actorId);
+          result.created += 1;
+        }
+      } catch (e) {
+        result.skipped += 1;
+        result.errors.push({ row: line, message: errorText(e) });
+      }
+    }
+
+    return result;
   }
 
   /**

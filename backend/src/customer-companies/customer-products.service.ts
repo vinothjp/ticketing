@@ -1,5 +1,7 @@
 import { Injectable, NotFoundException, ConflictException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { CustomerCompanyProduct, CustomerCompany, Prisma } from '@prisma/client';
+import { unlink } from 'fs/promises';
+import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailerService } from '../mail/mailer.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -310,13 +312,17 @@ export class CustomerProductsService {
     cfg: { clientId: string; excessApproverId: string | null; scope?: 'CONTRACT' | 'PRODUCT'; ownerId?: string },
     companyId: string,
     cap: number,
+    /** Overrides the default "allowance reached" wording — a request raised when
+     *  the approver was named has not reached anything yet. */
+    body?: string,
   ) {
     if (!cfg.excessApproverId) return;
     const company = await this.prisma.customerCompany.findUnique({ where: { id: companyId }, select: { name: true } });
     await this.notifications.notify({
       clientId: cfg.clientId, userId: cfg.excessApproverId, type: 'SUPPORT_HOURS_EXCESS',
       title: 'Excess support-hours approval needed',
-      body: `${company?.name ?? 'A client'} has reached its ${cap}h support-hours allowance — a request to log beyond it needs your approval.`,
+      body: body
+        ?? `${company?.name ?? 'A client'} has reached its ${cap}h support-hours allowance — a request to log beyond it needs your approval.`,
       link: cfg.scope === 'PRODUCT' && cfg.ownerId
         ? `/admin/clients/${companyId}/products/${cfg.ownerId}`
         : `/admin/clients/${companyId}`,
@@ -345,6 +351,113 @@ export class CustomerProductsService {
     if (cfg.excessApproval) {
       await this.assertExcessApproved(cfg, companyId, pool.allocated, pool.used, productId ?? null, actorId);
     }
+  }
+
+  /**
+   * Naming an approver IS the request. The moment a pool is saved with Limited
+   * hours, excess logging on, approval required and an approver named, a PENDING
+   * request is raised for that pool's current period and the approver notified —
+   * so the pool's own screen shows "Waiting for <approver>" straight away, and
+   * turns into "Approved by …" / "Declined by …" once they decide, instead of
+   * staying blank until some consultant happens to hit the cap.
+   *
+   * Scope-blind on purpose: it reads `resolvePoolConfig`, so a shared customer
+   * contract and a per-product AMC behave identically — the rule is the same
+   * wherever the Limited hours are configured.
+   *
+   * Idempotent, and driven entirely by the saved config:
+   *  - config incomplete (Unlimited pool, excess off, approval off, no approver)
+   *    → a PENDING row is withdrawn, since nothing is being asked any more. A
+   *    decided row is left alone: it is a record, not a pending question.
+   *  - a PENDING row already there → re-targeted if the approver changed, and
+   *    the new approver notified; otherwise left as it is, so re-saving the
+   *    same settings does not spam anyone.
+   *  - already APPROVED/REJECTED for this period → left alone. Only a new period
+   *    (a MONTHLY pool rolling over) asks again.
+   */
+  private async ensureExcessApprovalRequest(
+    clientId: string,
+    companyId: string,
+    productId: string | null,
+    actorId?: string,
+  ) {
+    const cfg = await this.resolvePoolConfig(clientId, companyId, productId);
+    if (!cfg) return;
+    const periodLabel = this.excessPeriodLabel(cfg.period);
+    // Flipping a pool between "for the whole AMC" and "per month" changes which
+    // period governs, stranding the other one's open question — it could never be
+    // answered usefully but would sit in the approver's queue forever. Decided
+    // rows stay: they record a decision that was genuinely made at the time.
+    await this.prisma.supportHoursExcessRequest.deleteMany({
+      where: {
+        scope: cfg.scope, ownerId: cfg.ownerId, status: 'PENDING',
+        periodLabel: { not: periodLabel },
+      },
+    });
+    const existing = await this.prisma.supportHoursExcessRequest.findUnique({
+      where: { scope_ownerId_periodLabel: { scope: cfg.scope, ownerId: cfg.ownerId, periodLabel } },
+    });
+
+    // An Unlimited pool has no allowance to exceed, so there is nothing to ask.
+    // The permission is only as live as the config that asked for it. Turning
+    // excess off, or moving the pool to Unlimited, retires the question — and a
+    // decided row is retired with it, or toggling the setting off and on again
+    // would silently re-activate an old approval nobody re-asked for.
+    const wanted = !cfg.unlimited && cfg.allowExcess && cfg.excessApproval && !!cfg.excessApproverId;
+    if (!wanted) {
+      if (existing) await this.prisma.supportHoursExcessRequest.delete({ where: { id: existing.id } });
+      return;
+    }
+    // Same question, same person — nothing to do, so re-saving the settings
+    // never duplicates a row or re-notifies anyone.
+    if (existing && existing.approverUserId === cfg.excessApproverId) return;
+    // The approver changed. A still-open question is simply re-addressed; one
+    // already decided is dropped and asked afresh, because the new approver has
+    // agreed to nothing and the old decision was theirs to give, not to inherit.
+    if (existing && existing.status !== 'PENDING') {
+      await this.prisma.supportHoursExcessRequest.delete({ where: { id: existing.id } });
+    }
+
+    const company = await this.prisma.customerCompany.findUnique({
+      where: { id: companyId }, select: { name: true },
+    });
+    const [approver, product] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: cfg.excessApproverId! }, select: { username: true } }),
+      productId ? this.prisma.product.findUnique({ where: { id: productId }, select: { name: true } }) : null,
+    ]);
+    const cap = Number(cfg.hours ?? 0);
+    const notifyBody =
+      `${company?.name ?? 'A client'} has ${cap}h of support hours` +
+      `${product?.name ? ` on ${product.name}` : ''} and needs your approval before time can be logged beyond it.`;
+
+    if (existing?.status === 'PENDING') {
+      await this.prisma.supportHoursExcessRequest.update({
+        where: { id: existing.id },
+        data: { approverUserId: cfg.excessApproverId, approverName: approver?.username ?? null },
+      });
+      await this.notifyExcessApprover(cfg, companyId, cap, notifyBody);
+      return;
+    }
+
+    const pool = await this.productSupportHours(clientId, companyId, productId ?? '');
+    const requester = actorId
+      ? await this.prisma.user.findUnique({ where: { id: actorId }, select: { username: true } })
+      : null;
+    await this.prisma.supportHoursExcessRequest.create({
+      data: {
+        clientId, customerCompanyId: companyId,
+        scope: cfg.scope, ownerId: cfg.ownerId, periodLabel,
+        allocated: cap,
+        // Where the pool stood when the approval was asked for.
+        usedAtRequest: pool.used ?? 0,
+        productName: product?.name ?? null,
+        requestedById: actorId ?? null,
+        requestedByName: requester?.username ?? null,
+        approverUserId: cfg.excessApproverId,
+        approverName: approver?.username ?? null,
+      },
+    });
+    await this.notifyExcessApprover(cfg, companyId, cap, notifyBody);
   }
 
   /**
@@ -538,6 +651,12 @@ export class CustomerProductsService {
         used: cp.visitsUsed,
         left: allocVisits == null ? null : Math.max(0, allocVisits - cp.visitsUsed),
       },
+      // This product's own purchase order, used when the client is on PRODUCT
+      // scope. On CUSTOMER scope one PO covers everything and the screens read
+      // the contract's fields instead.
+      poNumber: cp.poNumber,
+      poFileUrl: cp.poFileUrl,
+      poFileName: cp.poFileName,
       // Paid-AMC terms shown so the customer knows what a subscription buys.
       paidTerms: {
         months: cp.paidAmcMonths,
@@ -655,7 +774,7 @@ export class CustomerProductsService {
 
   // ---- provider: assign / edit / renew / remove ------------------------------
 
-  async assignProduct(companyId: string, dto: AssignProductDto, clientId: string) {
+  async assignProduct(companyId: string, dto: AssignProductDto, clientId: string, actorId?: string) {
     // Under a shared contract the covered products are chosen by `setContract`,
     // which owns the one timeline; assigning per-product terms here would write
     // coverage no screen reads.
@@ -719,6 +838,9 @@ export class CustomerProductsService {
     if (cp.amcHoursPeriod === 'MONTHLY' && !effUnlimited && effHours != null) {
       await this.resetLedgerForRenewal('PRODUCT', cp.id, clientId, effHours);
     }
+    // A product can be assigned with its excess settings already filled in, so
+    // this door raises the approval request too — see ensureExcessApprovalRequest.
+    await this.ensureExcessApprovalRequest(clientId, companyId, dto.productId, actorId);
     return cp;
   }
 
@@ -732,7 +854,7 @@ export class CustomerProductsService {
     return cp;
   }
 
-  async updateTerms(cpId: string, dto: UpdateProductTermsDto, clientId: string) {
+  async updateTerms(cpId: string, dto: UpdateProductTermsDto, clientId: string, actorId?: string) {
     const cp = await this.ownedCpInScope(cpId, clientId);
     const wasType = cp.amcType === 'PAID' ? 'AMC' : 'WARRANTY';
     const coverageType = dto.coverageType ?? wasType;
@@ -801,6 +923,8 @@ export class CustomerProductsService {
     if (updated.amcHoursPeriod === 'MONTHLY' && !effUnlimited && effHours != null) {
       await this.refreshLedgerAllocation('PRODUCT', updated.id, clientId, effHours, updated.amcCarryForward);
     }
+    // Naming an approver raises the request — see ensureExcessApprovalRequest.
+    await this.ensureExcessApprovalRequest(clientId, updated.customerCompanyId, updated.productId, actorId);
     return updated;
   }
 
@@ -946,6 +1070,13 @@ export class CustomerProductsService {
       hours: allocHours,
       visits: c.contractVisits,
       monthlyCost: hideMoney || c.contractMonthlyCost == null ? null : Number(c.contractMonthlyCost),
+      // The purchase order this contract was raised against. Deliberately NOT
+      // withheld from a non-Admin the way the money is: a PO number and its
+      // invoice are the paperwork a consultant may legitimately need to quote,
+      // and neither states what the client pays.
+      poNumber: c.contractPoNumber,
+      poFileUrl: c.contractPoFileUrl,
+      poFileName: c.contractPoFileName,
       period: {
         pct: this.pctElapsed(c.contractStart, c.contractEnd),
         daysLeft: this.daysLeft(c.contractEnd),
@@ -986,7 +1117,7 @@ export class CustomerProductsService {
     return { ...(await this.contractViewFor(c, hideMoney)), productIds: links.map((l) => l.productId) };
   }
 
-  async setContract(companyId: string, dto: SetContractDto, clientId: string) {
+  async setContract(companyId: string, dto: SetContractDto, clientId: string, actorId?: string) {
     const company = await this.ownedCompany(companyId, clientId);
 
     if (dto.scope === 'CUSTOMER') {
@@ -1070,7 +1201,121 @@ export class CustomerProductsService {
     } else {
       await this.prisma.customerCompany.update({ where: { id: companyId }, data: { contractScope: 'PRODUCT' } });
     }
+    // Switching scope moves which pool governs, so the pools left behind stop
+    // deciding anything. Their still-open questions are withdrawn — otherwise a
+    // PENDING request sits in an approver's queue forever, addressed to a pool
+    // no screen renders any more. Decided rows are kept: they are the record of
+    // a decision that really was made, and the pool's own screen still shows them.
+    if (company.contractScope !== dto.scope) {
+      await this.prisma.supportHoursExcessRequest.deleteMany({
+        where: {
+          customerCompanyId: companyId,
+          status: 'PENDING',
+          scope: dto.scope === 'CUSTOMER' ? 'PRODUCT' : 'CONTRACT',
+        },
+      });
+    }
+    // Then raise for whichever pools govern now — see ensureExcessApprovalRequest.
+    if (dto.scope === 'CUSTOMER') {
+      await this.ensureExcessApprovalRequest(clientId, companyId, null, actorId);
+    } else {
+      const covered = await this.prisma.customerCompanyProduct.findMany({
+        where: { customerCompanyId: companyId }, select: { productId: true },
+      });
+      for (const cp of covered) {
+        await this.ensureExcessApprovalRequest(clientId, companyId, cp.productId, actorId);
+      }
+    }
     return this.getContract(companyId, clientId);
+  }
+
+  // ---- purchase order: the number and its invoice ---------------------------
+  //
+  // Both save on their own, the moment they are entered — neither waits for the
+  // Save press the terms beside them use. That is deliberate: a PO and its
+  // invoice are paperwork attached to a contract rather than terms of it, and
+  // half-entering one, navigating away and finding it gone is not a trade anyone
+  // would make. It also keeps them off `updateTerms`, which normalises the
+  // coverage window and re-activates the row on every call — side effects that
+  // have no business firing because someone typed a PO number.
+
+  async setContractPoNumber(companyId: string, clientId: string, poNumber?: string | null) {
+    await this.ownedCompany(companyId, clientId);
+    await this.prisma.customerCompany.update({
+      where: { id: companyId },
+      data: { contractPoNumber: poNumber?.trim() || null },
+    });
+    return this.getContract(companyId, clientId);
+  }
+
+  async setProductPoNumber(cpId: string, clientId: string, poNumber?: string | null) {
+    await this.ownedCp(cpId, clientId);
+    return this.prisma.customerCompanyProduct.update({
+      where: { id: cpId },
+      data: { poNumber: poNumber?.trim() || null },
+      select: { id: true, poNumber: true, poFileUrl: true, poFileName: true },
+    });
+  }
+
+
+  /**
+   * The PO invoice is a file, so it cannot ride the contract's JSON body — it
+   * gets a multipart route of its own, on the same template as the client logo:
+   * store the served path, keep the name the admin uploaded, and unlink the file
+   * being replaced so the disk does not fill with orphans.
+   *
+   * Which pair is written follows the contract scope, exactly as the terms do —
+   * one invoice for a shared customer contract, one per product otherwise.
+   */
+  async setContractPoInvoice(
+    companyId: string, clientId: string, file: { url: string; name: string },
+  ) {
+    const c = await this.ownedCompany(companyId, clientId);
+    if (c.contractPoFileUrl) await this.deletePoFile(c.contractPoFileUrl);
+    await this.prisma.customerCompany.update({
+      where: { id: companyId },
+      data: { contractPoFileUrl: file.url, contractPoFileName: file.name },
+    });
+    return this.getContract(companyId, clientId);
+  }
+
+  async clearContractPoInvoice(companyId: string, clientId: string) {
+    const c = await this.ownedCompany(companyId, clientId);
+    if (c.contractPoFileUrl) await this.deletePoFile(c.contractPoFileUrl);
+    await this.prisma.customerCompany.update({
+      where: { id: companyId },
+      data: { contractPoFileUrl: null, contractPoFileName: null },
+    });
+    return this.getContract(companyId, clientId);
+  }
+
+  async setProductPoInvoice(cpId: string, clientId: string, file: { url: string; name: string }) {
+    const cp = await this.ownedCp(cpId, clientId);
+    if (cp.poFileUrl) await this.deletePoFile(cp.poFileUrl);
+    return this.prisma.customerCompanyProduct.update({
+      where: { id: cpId },
+      data: { poFileUrl: file.url, poFileName: file.name },
+      select: { id: true, poNumber: true, poFileUrl: true, poFileName: true },
+    });
+  }
+
+  async clearProductPoInvoice(cpId: string, clientId: string) {
+    const cp = await this.ownedCp(cpId, clientId);
+    if (cp.poFileUrl) await this.deletePoFile(cp.poFileUrl);
+    return this.prisma.customerCompanyProduct.update({
+      where: { id: cpId },
+      data: { poFileUrl: null, poFileName: null },
+      select: { id: true, poNumber: true, poFileUrl: true, poFileName: true },
+    });
+  }
+
+  /** Best-effort unlink of a replaced/removed invoice — mirrors deleteLogoFile. */
+  private async deletePoFile(fileUrl: string) {
+    try {
+      await unlink(join(process.cwd(), fileUrl.replace(/^\//, '')));
+    } catch {
+      // best-effort cleanup — the file may already be gone
+    }
   }
 
   /** Contract view for the signed-in customer (drives their My Products layout). */
@@ -1376,13 +1621,36 @@ export class CustomerProductsService {
   }
 
   /**
+   * Whether this client's tickets are auto-routed at all. Off means every ticket
+   * they raise lands unassigned for a manager to pick — regardless of
+   * contractScope, which is why the flag carries no contract* prefix. A ticket
+   * with no company (staff-raised) is never auto-routed, so it reads false.
+   */
+  async autoAssignEnabled(clientId: string, customerCompanyId: string | null): Promise<boolean> {
+    if (!customerCompanyId) return false;
+    const company = await this.prisma.customerCompany.findFirst({
+      where: { id: customerCompanyId, clientId },
+      select: { autoAssignTickets: true },
+    });
+    return company?.autoAssignTickets ?? false;
+  }
+
+  /**
    * Pick a customer-level consultant override for a ticket, most specific first:
-   * product+module(+track) → product+module → the customer's default. Returns a
-   * userId only when the user is still active. Null means "use module routing".
+   * product+module(+track) → product-wide → the customer's default. Within each
+   * tier the ordered candidates are walked and the FIRST one the caller accepts
+   * wins; a tier is left only when every candidate in it is rejected. Null means
+   * "try the product's own routing" — or, once that is exhausted too, leave the
+   * ticket unassigned.
+   *
+   * `isEligible` is the caller's availability test (an active staff user holding
+   * no open ticket) — see `TicketsService.create()`. It is deliberately not
+   * computed here: one query serves every tier instead of one per candidate.
    */
   async resolveCustomerConsultant(
     clientId: string, customerCompanyId: string | null,
     productId: string | null, moduleId: string | null, track: 'TECHNICAL' | 'FUNCTIONAL' | null,
+    isEligible: (userId: string) => boolean,
   ): Promise<string | null> {
     if (!customerCompanyId) return null;
     const rows = await this.prisma.customerConsultant.findMany({ where: { clientId, customerCompanyId } });
@@ -1397,7 +1665,8 @@ export class CustomerProductsService {
     // Tier 2 — contract-level common consultants (no product/module) handle every
     // covered product; match the ticket's track first, then a track-less catch-all.
     const contract = rows.filter((r) => !r.productId && !r.moduleId);
-    // Within a matching cell, the primary agent wins.
+    // Within a matching cell, the primary agent leads the walk — but the first
+    // one who is actually free takes the ticket.
     const byPrimary = (a: typeof rows[number], b: typeof rows[number]) => Number(b.isPrimary) - Number(a.isPrimary);
     // A row only serves the ticket's track. A track-less row is the grid's
     // "Others" column, so it answers a ticket that names no track — it must NOT
@@ -1406,14 +1675,26 @@ export class CustomerProductsService {
       track
         ? list.filter((r) => r.track === track).sort(byPrimary)
         : [...list.filter((r) => !r.track).sort(byPrimary), ...[...list].sort(byPrimary)];
-    const pick =
-      forTrack(scoped)[0]        // 1) client-level, this product + module
-      ?? forTrack(productWide)[0] // 1) client-level, this product (any module)
-      ?? forTrack(contract)[0];   // 2) the client's default consultants
-    if (!pick) return null;
-
-    const user = await this.prisma.user.findFirst({ where: { id: pick.userId, clientId, isActive: true }, select: { id: true } });
-    return user?.id ?? null;
+    // `forTrack`'s no-track branch deliberately concatenates the track-less rows
+    // with the whole list (track-less first, then anyone). Taking [0] hid the
+    // overlap; walking the list does not, so collapse repeats by userId — the
+    // earlier position is the stronger claim. `isEligible` also carries the
+    // active-user test the old trailing lookup did, so an inactive consultant is
+    // now stepped over rather than aborting the walk.
+    const walk = (list: typeof rows) => {
+      const seen = new Set<string>();
+      for (const r of forTrack(list)) {
+        if (seen.has(r.userId)) continue;
+        seen.add(r.userId);
+        if (isEligible(r.userId)) return r.userId;
+      }
+      return null;
+    };
+    return (
+      walk(scoped)          // 1) client-level, this product + module
+      ?? walk(productWide)  // 1) client-level, this product (any module)
+      ?? walk(contract)     // 2) the client's default consultants
+    );
   }
 
   // ---- monthly ledger roll-forward (called by the timer) ---------------------
@@ -1440,6 +1721,11 @@ export class CustomerProductsService {
       const exists = await this.prisma.supportHoursLedger.findUnique({
         where: { scope_ownerId_periodLabel: { scope: 'CONTRACT', ownerId: c.id, periodLabel: label } },
       });
+      // A MONTHLY pool's approval is per calendar month, so the new month needs
+      // its own ask — without this the approval tab goes blank on the 1st until
+      // somebody happens to re-save the settings. Idempotent, so running it on
+      // every sweep is safe.
+      await this.ensureExcessApprovalRequest(c.clientId, c.id, null);
       if (exists) continue;
       await this.ledgerRowFor('CONTRACT', c.id, c.clientId, c.contractHours!, c.contractCarryForward);
       created++;
@@ -1448,7 +1734,7 @@ export class CustomerProductsService {
     const cps = await this.prisma.customerCompanyProduct.findMany({
       where: { customerCompany: { contractScope: 'PRODUCT' }, amcHoursPeriod: 'MONTHLY' },
       select: {
-        id: true, amcType: true, amcCarryForward: true,
+        id: true, amcType: true, amcCarryForward: true, customerCompanyId: true, productId: true,
         paidAmcHours: true, paidAmcHoursUnlimited: true, freeAmcHours: true, freeAmcHoursUnlimited: true,
         customerCompany: { select: { clientId: true } },
       },
@@ -1461,6 +1747,7 @@ export class CustomerProductsService {
       const exists = await this.prisma.supportHoursLedger.findUnique({
         where: { scope_ownerId_periodLabel: { scope: 'PRODUCT', ownerId: cp.id, periodLabel: label } },
       });
+      await this.ensureExcessApprovalRequest(cp.customerCompany.clientId, cp.customerCompanyId, cp.productId);
       if (exists) continue;
       await this.ledgerRowFor('PRODUCT', cp.id, cp.customerCompany.clientId, hours, cp.amcCarryForward);
       created++;

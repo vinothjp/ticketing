@@ -197,6 +197,15 @@ export default function TicketDetailPage() {
   const loggedHours = ticket?.totalHoursSpent ?? 0;
   const openTasks = ticket?.openTaskCount ?? 0;
 
+  // A refused sign-off doesn't only land the agent on Tasks — it flags the rows
+  // that are in the way. A bumped nonce rather than a boolean, so a second
+  // attempt re-fires the hint even after the first one has faded.
+  const [taskHint, setTaskHint] = useState(0);
+  const sendToOpenTasks = () => {
+    setTaskHint((n) => n + 1);
+    setTab('tasks');
+  };
+
   // The contract pool this ticket draws against — shown in the sticky header so
   // it stays visible while working the ticket. Staff read the ticket-scoped
   // endpoint (the same figure the Tasks tab totals); the customer-side one is
@@ -701,7 +710,7 @@ export default function TicketDetailPage() {
                 loggedHours={loggedHours}
                 openTasks={openTasks}
                 onLogTime={() => setTab('tasks')}
-                onViewTasks={() => setTab('tasks')}
+                onViewTasks={sendToOpenTasks}
               />
             </TabsContent>
             <TabsContent value="tasks">
@@ -710,6 +719,9 @@ export default function TicketDetailPage() {
                 // Reopening a completed task belongs to the ticket's own agent
                 // (or an admin), never the task assignee who closed it.
                 ticketAssigneeId={ticket.technicians[0]?.user.id ?? null}
+                // Bumped when a sign-off was refused for outstanding work: the
+                // grid then marks the rows that blocked it.
+                hintNonce={taskHint}
               />
             </TabsContent>
             <TabsContent value="approvals">
@@ -785,7 +797,7 @@ export default function TicketDetailPage() {
                           toast.error(
                             `${openTasks} task${openTasks === 1 ? ' is' : 's are'} still open — complete or cancel ${openTasks === 1 ? 'it' : 'them'} before marking it ${meaning}`,
                           );
-                          setTab('tasks');
+                          sendToOpenTasks();
                           return;
                         }
                         if (signingOff && loggedHours <= 0) {

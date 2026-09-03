@@ -209,6 +209,15 @@ model CustomerCompany {
   contractHoursUsed        Decimal  @default(0)
   contractVisitsUsed       Int      @default(0)
   contractMonthlyCost      Decimal?
+  // The purchase order this contract was raised against, and the PO invoice
+  // scanned in beside it. `contractPoFileUrl` is a served path like the logos
+  // ("/uploads/po/<file>"); `contractPoFileName` keeps the name the admin
+  // uploaded, since the stored filename is prefixed and time-stamped and would
+  // be unrecognisable in a link. Shared-contract scope only — the per-product
+  // twin lives on CustomerCompanyProduct.
+  contractPoNumber         String?
+  contractPoFileUrl        String?
+  contractPoFileName       String?
   contractAlertSentAt      DateTime?
   excessRequests           SupportHoursExcessRequest[]
   // How the shared-contract support-hours allowance is read: FULL_AMC = one pool
@@ -228,6 +237,11 @@ model CustomerCompany {
   contractAllowTicketsAfterHours Boolean @default(true)
   contractExcessApproverId String?
   contractExcessApprover   User?    @relation("ContractExcessApprover", fields: [contractExcessApproverId], references: [id], onDelete: SetNull)
+  // Whether tickets this client raises are auto-routed to a free consultant at
+  // all. Off = every ticket lands unassigned for a manager to pick. Applies
+  // whatever the contractScope is, hence no contract* prefix. Unrelated to the
+  // (dead) Product.autoAssign.
+  autoAssignTickets        Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   createdBy    String?
@@ -515,6 +529,13 @@ model CustomerCompanyProduct {
   amcAllowTicketsAfterHours Boolean @default(true)
   amcExcessApproverId  String?
   amcExcessApprover    User?    @relation("ProductExcessApprover", fields: [amcExcessApproverId], references: [id], onDelete: SetNull)
+  // Per-product purchase order + its invoice, the twin of the shared contract's
+  // contractPo* fields. A client on PRODUCT scope raises one PO per product, so
+  // these are what that screen edits; on CUSTOMER scope one PO covers everything
+  // and the company's own fields are read instead.
+  poNumber             String?
+  poFileUrl            String?
+  poFileName           String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 

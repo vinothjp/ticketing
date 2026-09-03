@@ -247,29 +247,36 @@ export class TicketsService {
       summary: 'Ticket created',
     });
 
-    // Auto-route a customer ticket to the consultant configured for it. The tiers
-    // are tried most-specific-first and a tier is skipped ONLY when it holds no
-    // consultant for this product/module/track — never because the consultant is
-    // busy. The same product+module always routes to the same person, however
-    // many open tickets they already hold. "Others"/no module stays unassigned
-    // for an admin to pick.
+    // Auto-route a customer ticket to a consultant configured for it. The tiers
+    // are tried most-specific-first, and WITHIN each tier the ordered list is
+    // walked and the first consultant who is free — active and holding no open
+    // ticket — takes it. A tier is left only when every candidate in it is busy
+    // or inactive; when nobody anywhere is free the ticket stays unassigned for
+    // a manager to pick, with no fallback to the primary. Same for "Others"/no
+    // module, which names no consultant at all.
+    //
+    // The whole block is gated on the client's own `autoAssignTickets` switch —
+    // off means every ticket they raise is assigned by hand. Building the
+    // availability test inside the guard keeps a manual-routing client at zero
+    // extra queries. Racy by design: two tickets created in the same instant can
+    // both see the same consultant as free.
     let assignedConsultantId: string | null = null;
-    if (isCustomerTicket) {
+    if (isCustomerTicket && (await this.customerProducts.autoAssignEnabled(clientId, ticket.customerCompanyId))) {
       const track = dto.consultantType === 'TECHNICAL' ? 'TECHNICAL' : dto.consultantType === 'FUNCTIONAL' ? 'FUNCTIONAL' : null;
+      const isEligible = await this.consultantAvailability(clientId);
       // 1) & 2) The customer's own consultants — product-scoped first, then their
       //    default set — override the product's routing.
       assignedConsultantId = await this.customerProducts.resolveCustomerConsultant(
-        clientId, ticket.customerCompanyId, dto.productId ?? null, dto.moduleId ?? null, track,
+        clientId, ticket.customerCompanyId, dto.productId ?? null, dto.moduleId ?? null, track, isEligible,
       );
       // 3) Otherwise fall back to the consultants set on the Product screen —
       //    the module's list first, then the product-level list for an unsplit
-      //    product. A ticket only stays unassigned when the named product has no
-      //    consultants at all (e.g. "Others"), and an admin picks someone.
+      //    product.
       if (!assignedConsultantId && dto.productId) {
         if (dto.moduleId) {
-          assignedConsultantId = await this.products.resolveConsultant(clientId, dto.moduleId, track);
+          assignedConsultantId = await this.products.resolveConsultant(clientId, dto.moduleId, track, isEligible);
         }
-        assignedConsultantId ??= await this.products.resolveProductConsultant(clientId, dto.productId, track);
+        assignedConsultantId ??= await this.products.resolveProductConsultant(clientId, dto.productId, track, isEligible);
       }
       if (assignedConsultantId) {
         await this.prisma.ticketTechnician.create({ data: { ticketId: ticket.id, userId: assignedConsultantId } });
@@ -1056,6 +1063,63 @@ export class TicketsService {
     return (
       options.find((o) => (o.label ?? o.value).trim().toLowerCase() === 'closed')?.value ?? 'Closed'
     );
+  }
+
+  /**
+   * Every status *value* this tenant treats as settled — Resolved, Closed or
+   * Rejected. A ticket in one of these does not make its holder busy for ticket
+   * routing. Matched by LABEL with the seeded literal as a per-label fallback,
+   * the same way `resolvedStatusValues` / `closedStatusValue` do; it deliberately
+   * overlaps both rather than replacing them, since those two have their own
+   * callers and their own shapes (a Set, and one active value in sortOrder).
+   *
+   * Inactive options are included on purpose: a status retired after tickets were
+   * closed under it must still read as settled. 'Rejected' is appended
+   * unconditionally because `reject()` and `rejectByCustomerAdmin()` write that
+   * literal directly instead of resolving the picklist.
+   */
+  private async settledStatusValues(clientId: string): Promise<string[]> {
+    const options = await this.prisma.picklistOption.findMany({
+      where: { clientId, listKey: 'ticketStatus' },
+      select: { value: true, label: true },
+    });
+    const byLabel = (want: string, fallback: string) => {
+      const hits = options
+        .filter((o) => (o.label ?? o.value).trim().toLowerCase() === want)
+        .map((o) => o.value);
+      return hits.length ? hits : [fallback];
+    };
+    return [...new Set([
+      ...byLabel('resolved', 'Resolved'),
+      ...byLabel('closed', 'Closed'),
+      ...byLabel('rejected', 'Rejected'),
+      'Rejected',
+    ])];
+  }
+
+  /**
+   * Who may receive an auto-routed ticket right now: an active user of this
+   * tenant who holds ZERO open tickets. Two queries serve the whole routing pass
+   * — the resolvers only test membership, so walking five tiers never issues a
+   * per-candidate count.
+   *
+   * The active check is `clientId + isActive` alone. Narrowing it with
+   * `customerCompanyId: null` looks tighter but would silently make a mis-seeded
+   * staff row permanently unassignable, with no error to explain it.
+   */
+  private async consultantAvailability(clientId: string): Promise<(userId: string) => boolean> {
+    const settled = await this.settledStatusValues(clientId);
+    const [active, busy] = await Promise.all([
+      this.prisma.user.findMany({ where: { clientId, isActive: true }, select: { id: true } }),
+      this.prisma.ticketTechnician.findMany({
+        where: { ticket: { clientId, ticketStatus: { notIn: settled } } },
+        select: { userId: true },
+        distinct: ['userId'],
+      }),
+    ]);
+    const activeIds = new Set(active.map((u) => u.id));
+    const busyIds = new Set(busy.map((b) => b.userId));
+    return (userId: string) => activeIds.has(userId) && !busyIds.has(userId);
   }
 
   /**

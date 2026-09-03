@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import CompanyLogo from '@/components/CompanyLogo';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAuth } from '../context/AuthContext';
+import ImportExportBar from '@/components/ImportExportBar';
 import type { ReactNode } from 'react';
 import { MyExcessApprovals } from '@/components/MyExcessApprovals';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
@@ -163,17 +164,32 @@ export default function CustomerCompaniesPage() {
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Clients</h1>
-          <p className="text-sm text-muted-foreground">External clients whose contacts can log in and raise tickets.</p>
-        </div>
-        {isAdmin && <Button onClick={openCreate}><Plus className="size-4" /> New Client</Button>}
+      <div className="mb-4 min-w-0">
+        <h1 className="text-2xl font-bold text-foreground">Clients</h1>
+        <p className="text-sm text-muted-foreground">External clients whose contacts can log in and raise tickets.</p>
       </div>
 
-      <div className="relative mb-5 max-w-sm">
-        <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search clients…" className="pl-8" />
+      {/* Search and every action on one row, the shape both masters use. The
+          import/export trio is Admin-only: the sheet carries contact detail, and
+          posting one back adds and edits clients. */}
+      <div className="mb-5 flex flex-wrap items-center gap-2">
+        <div className="relative w-full max-w-xs">
+          <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search clients…" className="pl-8" />
+        </div>
+        {isAdmin && (
+          <>
+            <ImportExportBar
+              noun="clients"
+              templateName="client-import-template.xlsx"
+              exportUrl="/api/customer-companies/export"
+              templateUrl="/api/customer-companies/import-template"
+              importUrl="/api/customer-companies/import"
+              onImported={() => qc.invalidateQueries({ queryKey: ['customer-companies'] })}
+            />
+            <Button onClick={openCreate}><Plus className="size-4" /> New Client</Button>
+          </>
+        )}
       </div>
 
       {/* Create / edit dialog */}

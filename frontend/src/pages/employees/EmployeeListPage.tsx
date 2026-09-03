@@ -19,6 +19,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import PicklistSelect from '@/components/PicklistSelect';
+import ImportExportBar from '@/components/ImportExportBar';
 import { personName, isManager } from './employeeMeta';
 import type { Employee, AssetAllocation } from './employeeMeta';
 
@@ -170,26 +171,40 @@ export default function EmployeeListPage() {
 
   return (
     <div className="w-full">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-bold tracking-tight">Employee Master</h1>
-          <p className="text-sm text-muted-foreground">
-            Your staff and the assets allocated to them. An employee is a staff login — roles are set on the Users screen.
-          </p>
+      <div className="mb-4 min-w-0">
+        <h1 className="text-2xl font-bold tracking-tight">Employee Master</h1>
+        <p className="text-sm text-muted-foreground">
+          Your staff and the assets allocated to them. An employee is a staff login — roles are set on the Users screen.
+        </p>
+      </div>
+
+      {/* Search and every action on one row, in the shape the asset register's
+          filter bar uses — the controls that act on the list sit with the list,
+          not up beside the page title. */}
+      <div className="mb-5 flex flex-wrap items-center gap-2">
+        <div className="relative w-full max-w-xs">
+          <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search employees…"
+            className="pl-8"
+          />
         </div>
+        <ImportExportBar
+          noun="employees"
+          templateName="employee-import-template.xlsx"
+          exportUrl="/api/users/employees/export"
+          templateUrl="/api/users/employees/import-template"
+          importUrl="/api/users/employees/import"
+          onImported={() => {
+            qc.invalidateQueries({ queryKey: ['employees'] });
+            qc.invalidateQueries({ queryKey: ['users'] });
+          }}
+        />
         <Button onClick={() => { createForm.reset(EMPTY_CREATE); setCreateOpen(true); }}>
           <Plus className="size-4" /> New employee
         </Button>
-      </div>
-
-      <div className="relative mb-5 max-w-sm">
-        <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search employees…"
-          className="pl-8"
-        />
       </div>
 
       {isLoading ? (

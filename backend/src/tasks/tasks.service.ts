@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { TicketsService, TicketViewer } from '../tickets/tickets.service';
 import { ActivityService } from '../activity/activity.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CreateTaskDto, UpdateTaskDto } from './dto/task.dto';
 import {
   COMPLETED_TASK_STATUS,
@@ -76,6 +77,7 @@ export class TasksService {
     private prisma: PrismaService,
     private tickets: TicketsService,
     private activity: ActivityService,
+    private notifications: NotificationsService,
   ) {}
 
   private async assigneeName(userId?: string | null) {
@@ -142,11 +144,33 @@ export class TasksService {
     );
   }
 
+  /**
+   * Which of a ticket's tasks a viewer is shown. The grid is open to every agent
+   * — an agent lands on a ticket because a task on it is theirs, and the tab has
+   * to be there for them to work in — but a plain agent sees **their own tasks
+   * only**, not the rest of the ticket's board.
+   *
+   * Two viewers still see all of them, because the module's other rights already
+   * assume they can: a tenant Admin, and the agent the *ticket* is assigned to —
+   * who resolves it, and who `assertMayReopen` lets pull a completed task back
+   * open. Hiding the tasks they delegated from the person accountable for the
+   * ticket would break both.
+   */
+  private async taskScope(ticketId: string, viewer: TicketViewer) {
+    if (viewer.roles.includes('Admin')) return {};
+    const ownsTicket = await this.prisma.ticketTechnician.findFirst({
+      where: { ticketId, userId: viewer.id },
+      select: { id: true },
+    });
+    return ownsTicket ? {} : { assigneeUserId: viewer.id };
+  }
+
   async list(ticketId: string, clientId: string, viewer: TicketViewer) {
     await this.tickets.findOne(ticketId, clientId, viewer);
+    const scope = await this.taskScope(ticketId, viewer);
     const [tasks, booked] = await Promise.all([
       this.prisma.ticketTask.findMany({
-        where: { ticketId },
+        where: { ticketId, ...scope },
         orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         include: { _count: { select: { comments: true } } },
       }),
@@ -162,8 +186,11 @@ export class TasksService {
   /** One task with its full status trail and comments — the task detail dialog. */
   async findOne(ticketId: string, taskId: string, clientId: string, viewer: TicketViewer) {
     await this.tickets.findOne(ticketId, clientId, viewer);
+    // Scoped like the list: a task an agent is not shown must not open by id
+    // either, or the filter is only a filter on the grid.
+    const scope = await this.taskScope(ticketId, viewer);
     const task = await this.prisma.ticketTask.findFirst({
-      where: { id: taskId, ticketId },
+      where: { id: taskId, ticketId, ...scope },
       include: {
         statusEvents: { orderBy: { at: 'asc' } },
         comments: { orderBy: { createdAt: 'asc' } },
@@ -199,8 +226,47 @@ export class TasksService {
     });
   }
 
+  /**
+   * Tell an agent a task is now theirs. Until this existed the only way to learn
+   * of one was to open the ticket and look — the assignment fired no email and no
+   * bell, so a task could sit untouched simply because nobody knew about it.
+   *
+   * The `link` opens the ticket's Tasks tab rather than its default one: that is
+   * the tab the agent has to be in, and with the grid scoped to the viewer it now
+   * shows exactly the task this notification is about.
+   *
+   * Never fired at the actor — assigning a task to yourself is not news — and
+   * best-effort, so a notification that fails to write cannot lose the task it
+   * was announcing.
+   */
+  private async notifyAssignee(p: {
+    clientId: string;
+    assigneeUserId: string;
+    actorId: string;
+    ticketId: string;
+    ticketNumber: string;
+    subject: string;
+    title: string;
+    reassigned: boolean;
+  }) {
+    if (p.assigneeUserId === p.actorId) return;
+    try {
+      await this.notifications.notify({
+        clientId: p.clientId,
+        userId: p.assigneeUserId,
+        type: 'TASK_ASSIGNED',
+        ticketId: p.ticketId,
+        title: p.reassigned ? 'Task reassigned to you' : 'Task assigned to you',
+        body: `"${p.title}" on ${p.ticketNumber} — ${p.subject}`,
+        link: `/tickets/${p.ticketId}?tab=tasks`,
+      });
+    } catch {
+      /* best-effort, like every other notification in this codebase */
+    }
+  }
+
   async create(ticketId: string, clientId: string, dto: CreateTaskDto, actorId: string, viewer: TicketViewer) {
-    await this.tickets.findOne(ticketId, clientId, viewer);
+    const ticket = await this.tickets.findOne(ticketId, clientId, viewer);
     // Both counters are max+1 rather than a count, so deleting a task never hands
     // its number to the next one — the grid's Task ID has to keep meaning the same
     // task in a comment or a conversation about it.
@@ -223,11 +289,20 @@ export class TasksService {
       },
     });
     await this.activity.log({ ticketId, actorUserId: actorId, type: 'TASK_ADDED', summary: `Task added: ${dto.title}` });
+    // A task is often raised unassigned and picked up later; only an assignment
+    // made here is news to anyone.
+    if (dto.assigneeUserId) {
+      await this.notifyAssignee({
+        clientId, assigneeUserId: dto.assigneeUserId, actorId, ticketId,
+        ticketNumber: ticket.ticketNumber, subject: ticket.subject,
+        title: task.title, reassigned: false,
+      });
+    }
     return task;
   }
 
   async update(ticketId: string, taskId: string, clientId: string, dto: UpdateTaskDto, actorId: string, viewer: TicketViewer) {
-    await this.tickets.findOne(ticketId, clientId, viewer);
+    const ticket = await this.tickets.findOne(ticketId, clientId, viewer);
     const existing = await this.prisma.ticketTask.findFirst({ where: { id: taskId, ticketId } });
     if (!existing) throw new NotFoundException('Task not found');
 
@@ -315,6 +390,22 @@ export class TasksService {
         }),
       },
     });
+
+    // A handover, not merely a PATCH that happened to carry the field: only a
+    // change to somebody new is announced, so re-saving the form or clearing the
+    // assignee notifies nobody.
+    const handedTo = dto.assigneeUserId !== undefined
+      && !!dto.assigneeUserId
+      && dto.assigneeUserId !== existing.assigneeUserId
+      ? dto.assigneeUserId
+      : null;
+    if (handedTo) {
+      await this.notifyAssignee({
+        clientId, assigneeUserId: handedTo, actorId, ticketId,
+        ticketNumber: ticket.ticketNumber, subject: ticket.subject,
+        title: task.title, reassigned: !!existing.assigneeUserId,
+      });
+    }
 
     if (movingTo) {
       const label = (s: string) => TASK_STATUS_LABELS[s] ?? s;

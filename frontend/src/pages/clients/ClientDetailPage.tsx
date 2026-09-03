@@ -12,10 +12,12 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import ProductIcon from '@/components/ProductIcon';
 import ConsultantGrid from '@/components/ConsultantGrid';
 import SupportHoursChoice from '@/components/SupportHoursChoice';
+import AutoAssignChoice from '@/components/AutoAssignChoice';
 import SupportHoursConfig from '@/components/SupportHoursConfig';
+import PurchaseOrderFields from '@/components/PurchaseOrderFields';
 import { useExcessRequests, useDecideExcess, latestExcessFor } from '@/components/excessHoursQueries';
 import { useAuth } from '../../context/AuthContext';
-import CoverageMeter from '@/components/CoverageMeter';
+import CoverageMeter, { wholeHrs } from '@/components/CoverageMeter';
 import { cn } from '@/lib/utils';
 
 interface Pool { allocated: number | null; used: number; left: number | null }
@@ -24,7 +26,7 @@ interface Purchased {
   id: string; productId: string; productName: string; productCode: string; status: string; agents: string[];
   warranty: Cov & { months: number }; amc: Cov & { type: 'FREE' | 'PAID' }; hours: Pool; visits: Pool;
 }
-interface Client { id: string; name: string; code: string | null; status: string }
+interface Client { id: string; name: string; code: string | null; status: string; autoAssignTickets?: boolean }
 interface CPool { allocated: number | null; used: number; left: number | null; unlimited?: boolean }
 interface Support {
   period: 'FULL_AMC' | 'MONTHLY'; carryForward: boolean; allowTicketsAfterHours: boolean; allowExcess: boolean; excessApproval: boolean;
@@ -34,6 +36,9 @@ interface Support {
 interface Contract {
   scope: 'PRODUCT' | 'CUSTOMER'; coverageType: 'WARRANTY' | 'AMC'; start: string | null; end: string | null; hoursUnlimited: boolean; hours: number | null; visits: number | null; monthlyCost: number | null;
   productIds: string[]; period: { pct: number; daysLeft: number | null; active: boolean }; hoursPool: CPool; visitsPool: CPool; support?: Support;
+  // The PO this contract was raised against. On CUSTOMER scope one PO covers
+  // every product, so it lives here; per-product POs are on ClientProductPage.
+  poNumber: string | null; poFileUrl: string | null; poFileName: string | null;
 }
 interface Consultant { id: string; userId: string; username: string | null; productId: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
 interface CatAgent { track: string; user: { id: string; username: string } }
@@ -63,6 +68,10 @@ export default function ClientDetailPage() {
     qc.invalidateQueries({ queryKey: ['client-products', companyId] });
     qc.invalidateQueries({ queryKey: ['client-contract', companyId] });
     qc.invalidateQueries({ queryKey: ['client-consultants', companyId] });
+    // Saving the pool's settings can raise or withdraw the excess-hours request
+    // server-side, so the approval tab has to be re-read or it stays invisible
+    // until the page is reloaded by hand.
+    qc.invalidateQueries({ queryKey: ['excess-requests', companyId] });
   };
   const run = async (p: Promise<unknown>, ok?: string) => { try { await p; invalidate(); if (ok) toast.success(ok); } catch (e: any) { toast.error(e.response?.data?.message || 'Error'); } };
 
@@ -122,6 +131,22 @@ export default function ClientDetailPage() {
       pendingScope === 'PRODUCT' ? 'Switched to per-product contracts' : 'Switched to one customer contract',
     );
   };
+  /**
+   * The excess-hours trio saves on change rather than waiting for Save contract.
+   * The approval request is raised server-side off the *saved* config, so an
+   * approver still sitting unsaved in the form raises nothing and the tab below
+   * never appears. Only these three fields are sent — a partial contract write
+   * leaves every other term alone — so it cannot commit half-typed dates or
+   * hours, and Save contract still carries them for the normal path.
+   */
+  const saveExcess = (next: { allowExcess: boolean; excessApproval: boolean; excessApproverId: string }) =>
+    run(api.put(`/api/customer-companies/${companyId}/product-contract`, {
+      scope: 'CUSTOMER',
+      allowExcess: next.allowExcess,
+      excessApproval: next.allowExcess && next.excessApproval,
+      excessApproverId: next.allowExcess && next.excessApproval && next.excessApproverId ? next.excessApproverId : null,
+    }));
+
   const saveCustomer = () => {
     if (cust.start && cust.end && cust.end <= cust.start) { toast.error('End date must be after the start date'); return; }
     if (!cust.hoursUnlimited && (cust.hours === '' || Number(cust.hours) <= 0)) { toast.error('Enter support hours greater than 0, or choose Unlimited'); return; }
@@ -157,6 +182,20 @@ export default function ClientDetailPage() {
   // Every write behind these controls is Admin-only on the API.
   const { user } = useAuth();
   const isAdmin = !!user?.roles.includes('Admin');
+
+  // Auto-assignment is a client-level switch, not a contract term, so it writes
+  // on click through PATCH :id rather than riding the Save contract payload —
+  // which early-returns on an invalid date or hours figure and would otherwise
+  // make the flag unsettable while the form is being fixed. `['client', id]` is
+  // the same key the per-product screen reads, so both stay in sync.
+  const setAutoAssign = (autoAssignTickets: boolean) => {
+    if (!client) return;
+    run(
+      api.patch(`/api/customer-companies/${companyId}`, { autoAssignTickets })
+        .then(() => qc.invalidateQueries({ queryKey: ['client', companyId] })),
+      autoAssignTickets ? 'Tickets will be auto-assigned' : 'Tickets will be assigned manually',
+    );
+  };
   // The live excess-hours request on the shared contract, decided inline in the
   // support-hours card. On a shared contract the pool's owner is the company
   // itself; per-product requests are decided on the product's own screen.
@@ -283,10 +322,10 @@ export default function ClientDetailPage() {
                   right={contract.period.active ? timeLeft(contract.period.daysLeft) : 'Ended'} />
                 <CoverageMeter icon={<Clock className="size-4" />} title={monthlyHrs ? 'Support hours (this month)' : 'Support hours'}
                   subtitle={hUnlimited
-                    ? `Unlimited — ${hUsed} spent`
+                    ? `Unlimited — ${wholeHrs(hUsed)} spent`
                     : hAlloc == null
                       ? 'Not included'
-                      : `${hLeft} of ${hAlloc} hrs left${monthlyHrs ? ' this month' : ''}`}
+                      : `${wholeHrs(hLeft)} of ${wholeHrs(hAlloc)} hrs left${monthlyHrs ? ' this month' : ''}`}
                   pct={hAlloc ? Math.round((hUsed / hAlloc) * 100) : 0}
                   active={hUnlimited || (hLeft ?? 0) > 0}
                   right={hUnlimited ? 'Unlimited' : ''} />
@@ -325,6 +364,24 @@ export default function ClientDetailPage() {
                   <Field label="Contract amount" value={cust.monthlyCost} onChange={(v) => setCust({ ...cust, monthlyCost: v === '' ? '' : Number(v) })} />
                 )}
               </div>
+              {/* The purchase order this contract was raised against. On CUSTOMER
+                  scope one PO covers every product, so it sits here with the
+                  shared terms; per-product POs are on the product screen. Both
+                  halves save themselves — they are not part of Save contract. */}
+              <PurchaseOrderFields
+                baseUrl={`/api/customer-companies/${companyId}`}
+                poNumber={contract?.poNumber}
+                fileUrl={contract?.poFileUrl}
+                fileName={contract?.poFileName}
+                readOnly={!isAdmin}
+                invalidate={[['client-contract', companyId!]]}
+              />
+              {/* Client-level, so it saves on click rather than with the contract
+                  below — see setAutoAssign. */}
+              <AutoAssignChoice
+                value={client?.autoAssignTickets ?? true}
+                disabled={!isAdmin || !client}
+                onChange={setAutoAssign} />
               {isAdmin && (
                 <div className="mt-auto flex flex-wrap justify-end gap-2 pt-2">
                   <Button size="sm" variant="outline" disabled={!canRenew}
@@ -346,7 +403,12 @@ export default function ClientDetailPage() {
               ) : (
                 <SupportHoursConfig
                   value={{ hoursPeriod: cust.hoursPeriod, carryForward: cust.carryForward, allowTicketsAfterHours: cust.allowTicketsAfterHours, allowExcess: cust.allowExcess, excessApproval: cust.excessApproval, excessApproverId: cust.excessApproverId }}
-                  onChange={(patch) => setCust((s) => ({ ...s, ...patch }))}
+                  onChange={(patch) => {
+                    const next = { ...cust, ...patch };
+                    setCust(next);
+                    // Only the three that gate the approval request write at once.
+                    if ('allowExcess' in patch || 'excessApproval' in patch || 'excessApproverId' in patch) saveExcess(next);
+                  }}
                   staff={staff}
                   live={contract?.support ?? null}
                   readOnly={!isAdmin}

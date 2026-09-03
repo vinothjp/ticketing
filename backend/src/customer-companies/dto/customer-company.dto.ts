@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsInt, IsNumber, Min, Max, IsEmail, IsArray, IsDateString } from 'class-validator';
+import { IsOptional, IsString, IsInt, IsNumber, Min, Max, IsEmail, IsArray, IsDateString, IsBoolean } from 'class-validator';
 
 // Agreed support-hours pool. Shared by create + update so both validate the same way.
 class SupportHoursFields {
@@ -34,6 +34,10 @@ export class UpdateCompanyDto extends SupportHoursFields {
   @IsOptional() @IsInt() @Min(1) @Max(50) maxContacts?: number;
   @IsOptional() @IsString() status?: string;
   @IsOptional() @IsArray() @IsString({ each: true }) productIds?: string[];
+  // Whether tickets this client raises are auto-routed to a free consultant.
+  // Scope-independent, so it is written here rather than through SetContractDto,
+  // whose settings block only runs for a CUSTOMER-scope contract.
+  @IsOptional() @IsBoolean() autoAssignTickets?: boolean;
 }
 
 export class CreateContactDto {

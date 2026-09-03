@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Combobox, type ComboboxOption } from '@/components/ui/combobox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { useDateFormat } from '@/lib/dateFormat';
 
@@ -157,6 +158,27 @@ export default function ApprovalsTab({ ticketId, canManage }: { ticketId: string
     if (ok) remove.mutate(a.id);
   };
 
+  /**
+   * What the asset picker offers: the no-asset sentinel, then every free unit —
+   * plus, while editing, the unit this request already names even if it has since
+   * been taken, or the field would render empty and a save would silently drop it.
+   */
+  const assetOptions: ComboboxOption[] = [
+    { value: NO_ASSET, label: 'No asset — approval only' },
+    ...freeAssets.map((a) => ({
+      value: a.id,
+      label: `${a.assetId} — ${a.assetName}`,
+      hint: a.assetType ?? null,
+    })),
+    ...(editing?.assetId && !freeAssets.some((a) => a.id === editing.assetId)
+      ? [{
+          value: editing.assetId,
+          label: `${editing.assetCode ?? ''} — ${editing.assetName ?? ''}`.trim(),
+          hint: 'currently requested',
+        }]
+      : []),
+  ];
+
   // Picking an asset fills in its type; the admin can still override it.
   const pickAsset = (v: string) => {
     if (!v) return;
@@ -187,23 +209,16 @@ export default function ApprovalsTab({ ticketId, canManage }: { ticketId: string
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Asset</label>
               {/* Only what is free is offered; the server refuses a held asset
-                  anyway, naming whoever has it. */}
-              <Select value={assetId} onValueChange={pickAsset}>
-                <SelectTrigger className="w-full [&>span]:min-w-0 [&>span]:truncate">
-                  <SelectValue placeholder="Select an asset..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NO_ASSET}>No asset — approval only</SelectItem>
-                  {freeAssets.map((a) => (
-                    <SelectItem key={a.id} value={a.id}>{a.assetId} — {a.assetName}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {editing?.assetId && !freeAssets.some((a) => a.id === editing.assetId) && (
-                <p className="text-xs text-muted-foreground">
-                  Currently requesting {editing.assetCode} — {editing.assetName}.
-                </p>
-              )}
+                  anyway, naming whoever has it. A register runs to hundreds of
+                  units, so the picker is a combobox: click for the whole list,
+                  type to narrow it by code, name or type. */}
+              <Combobox
+                value={assetId}
+                options={assetOptions}
+                onChange={pickAsset}
+                placeholder="Select or type an asset code…"
+                emptyText="No free asset matches that"
+              />
             </div>
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Asset type</label>

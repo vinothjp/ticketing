@@ -1,10 +1,14 @@
 import {
-  Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, Request,
+  Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, Request, Res,
+  UseInterceptors, UploadedFile,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { AssignRolesDto } from './dto/assign-roles.dto';
+import { sendWorkbook, stamp } from '../lib/spreadsheet';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -25,6 +29,33 @@ export class UsersController {
   @UseGuards(StaffGuard)
   findAll(@Request() req: AuthedRequest, @Query('includeCustomers') includeCustomers?: string) {
     return this.usersService.findAll(req.user.clientId, includeCustomers === 'true');
+  }
+
+  // ---- Employee Master import / export ----
+  // An employee *is* a staff user, so these live here rather than on an
+  // `employees` controller there is deliberately no such thing as. Declared
+  // before `:id`, or the param route swallows them.
+
+  /** Every employee as a spreadsheet, ready to be edited and posted back. */
+  @Get('employees/export')
+  @Roles('Admin')
+  async exportEmployees(@Request() req: AuthedRequest, @Res() res: Response) {
+    sendWorkbook(res, `employees-${stamp()}.xlsx`, await this.usersService.exportEmployees(req.user.clientId));
+  }
+
+  /** The blank import template — the same columns, with an Instructions sheet. */
+  @Get('employees/import-template')
+  @Roles('Admin')
+  employeeTemplate(@Res() res: Response) {
+    sendWorkbook(res, 'employee-import-template.xlsx', this.usersService.employeeImportTemplate());
+  }
+
+  /** Bulk add/update, matched on employee ID then username. */
+  @Post('employees/import')
+  @Roles('Admin')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
+  importEmployees(@UploadedFile() file: Express.Multer.File, @Request() req: AuthedRequest) {
+    return this.usersService.importEmployees(req.user.clientId, req.user.id, file);
   }
 
   @Get(':id')

@@ -3,6 +3,7 @@ import { TasksService, hoursFromEvents } from './tasks.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { TicketsService, TicketViewer } from '../tickets/tickets.service';
 import type { ActivityService } from '../activity/activity.service';
+import type { NotificationsService } from '../notifications/notifications.service';
 
 const CLIENT_ID = 'tenant-1';
 const TICKET_ID = 'ticket-1';
@@ -58,6 +59,10 @@ function build(task: TaskRow, events: EventRow[] = [], worklogHours: number | nu
       ]),
     },
     ticket: { findUniqueOrThrow: jest.fn().mockResolvedValue({ clientId: CLIENT_ID }) },
+    // Who holds the ticket, which is what decides whether a viewer reads the
+    // whole task board or only their own rows. Defaults to "the viewer does",
+    // so a test about anything else sees every task.
+    ticketTechnician: { findFirst: jest.fn().mockResolvedValue({ id: 'tt-1' }) },
     user: { findUnique: jest.fn().mockResolvedValue({ username: 'agent1' }) },
   };
   const tickets = {
@@ -66,13 +71,15 @@ function build(task: TaskRow, events: EventRow[] = [], worklogHours: number | nu
     addWorklog: jest.fn().mockResolvedValue({ id: 'wl-1' }),
   };
   const activity = { log: jest.fn().mockResolvedValue(undefined) };
+  const notifications = { notify: jest.fn().mockResolvedValue(undefined) };
 
   const service = new TasksService(
     prisma as unknown as PrismaService,
     tickets as unknown as TicketsService,
     activity as unknown as ActivityService,
+    notifications as unknown as NotificationsService,
   );
-  return { service, prisma, tickets, activity, trail };
+  return { service, prisma, tickets, activity, notifications, trail };
 }
 
 const assignee: TicketViewer = { id: 'agent-1', roles: ['Viewer'] };
@@ -307,6 +314,47 @@ describe('TasksService — reading tasks', () => {
     const [task] = await service.list(TICKET_ID, CLIENT_ID, assignee);
 
     expect(task.hoursSpent).toBe(0);
+  });
+
+  it('shows a plain agent only the tasks assigned to them', async () => {
+    // An agent lands on a ticket because a task on it is theirs; the rest of the
+    // board is somebody else's work and is not theirs to read.
+    const { service, prisma } = build(taskRow());
+    prisma.ticketTechnician.findFirst.mockResolvedValue(null); // holds no ticket
+    prisma.ticketTask.findMany.mockResolvedValue([]);
+
+    await service.list(TICKET_ID, CLIENT_ID, otherAgent);
+
+    expect(prisma.ticketTask.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { ticketId: TICKET_ID, assigneeUserId: otherAgent.id },
+      }),
+    );
+  });
+
+  it('shows the whole board to the agent the ticket is assigned to', async () => {
+    // They resolve the ticket and may reopen a completed task on it — both rights
+    // are meaningless if the tasks they delegated are hidden from them.
+    const { service, prisma } = build(taskRow());
+    prisma.ticketTask.findMany.mockResolvedValue([]);
+
+    await service.list(TICKET_ID, CLIENT_ID, assignee);
+
+    expect(prisma.ticketTask.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { ticketId: TICKET_ID } }),
+    );
+  });
+
+  it('shows the whole board to an admin without asking who holds the ticket', async () => {
+    const { service, prisma } = build(taskRow());
+    prisma.ticketTask.findMany.mockResolvedValue([]);
+
+    await service.list(TICKET_ID, CLIENT_ID, admin);
+
+    expect(prisma.ticketTechnician.findFirst).not.toHaveBeenCalled();
+    expect(prisma.ticketTask.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { ticketId: TICKET_ID } }),
+    );
   });
 });
 

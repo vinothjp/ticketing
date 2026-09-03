@@ -65,6 +65,24 @@ export function isCreatedTodayTicket(t: Pick<TicketSummary, 'ticketStatus' | 'du
   return new Date(t.createdAt).toDateString() === new Date().toDateString() && !isOverdueTicket(t);
 }
 
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+
+/** A sortable 'YYYY-MM' key for the month a date falls in, in local time. */
+export function monthKey(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/**
+ * 'August 2026' from a monthKey. Spelled out from a fixed list rather than
+ * `toLocaleString`, which follows whichever machine the user is sitting at —
+ * the same reason nothing here calls `toLocaleDateString`.
+ */
+export function monthLabel(key: string) {
+  const [year, month] = key.split('-');
+  return `${MONTH_NAMES[Number(month) - 1] ?? month} ${year}`;
+}
+
 export function formatDueStatus(dueDate?: string | null, statusLabel?: string | null): { label: string; tone: 'overdue' | 'today' | 'soon' | 'ok' | 'none' } {
   if (isTerminalStatus(statusLabel)) return { label: statusLabel ?? '', tone: 'ok' };
   if (!dueDate) return { label: 'No due date', tone: 'none' };

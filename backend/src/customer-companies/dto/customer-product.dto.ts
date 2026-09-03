@@ -33,6 +33,17 @@ export class SetContractDto {
   @IsOptional() @IsBoolean() allowTicketsAfterHours?: boolean;
 }
 
+/**
+ * The purchase order a contract was raised against. Its own DTO and its own
+ * endpoint, deliberately NOT part of the terms above: the PO and its invoice are
+ * paperwork attached to the contract, not terms of it, and they save the moment
+ * they are typed rather than waiting for a Save press. Keeping them out of the
+ * terms payload is what stops a stale form value overwriting a PO just entered.
+ */
+export class SetPoNumberDto {
+  @IsOptional() @IsString() poNumber?: string | null;
+}
+
 // Renew a customer contract into a fresh period (resets the used hours/visits).
 export class RenewContractDto {
   @IsInt() @Min(1) months!: number;

@@ -1,6 +1,15 @@
 import { cn } from '@/lib/utils';
 
 /**
+ * Hours as a whole number, for the coverage meters. A pool is summed from
+ * worklogs entered in quarter-hours, so the arithmetic routinely lands on a
+ * float that prints as `80.99000000000001` — and a contract meter is read at a
+ * glance, not audited to the minute. Rounded rather than truncated, so the
+ * figure is the nearest hour rather than always the pessimistic one.
+ */
+export const wholeHrs = (n: number | null | undefined) => Math.round(Number(n ?? 0));
+
+/**
  * One read-only coverage row: what the pool is, how much of the term or
  * allocation has gone (the bar), and the remaining figure beneath it.
  *

@@ -1,8 +1,17 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAssetDto, UpdateAssetDto } from './dto/asset.dto';
-import { OPEN_ALLOCATION_STATUSES, assetConditionLabel } from './allocation-status';
+import {
+  OPEN_ALLOCATION_STATUSES, assetConditionLabel,
+  ASSET_CONDITIONS, ASSET_CONDITION_LABELS,
+} from './allocation-status';
 import { AssetActivityService } from './asset-activity.service';
+import { ASSET_COLUMNS, ASSET_IMPORT_NOTES } from './asset-sheet';
+import type { AssetSheetRow } from './asset-sheet';
+import {
+  exportSheet, importTemplate, readSheet, rowReader, asText, asDate, asEnum, errorText,
+} from '../lib/spreadsheet';
+import type { ImportResult, SheetColumn } from '../lib/spreadsheet';
 
 /** `YYYY-MM-DD` (or null/'') from a form date input -> a Date Prisma can store. */
 const day = (v?: string | null) => (v ? new Date(v) : null);
@@ -192,6 +201,100 @@ export class AssetsService {
     // link (SetNull).
     await this.prisma.asset.delete({ where: { id } });
     return { id };
+  }
+
+
+  /**
+   * The register as a spreadsheet — every column the importer accepts, plus the
+   * current holding as read-back context, so an export can be edited and posted
+   * straight back.
+   */
+  async exportSheet(clientId: string) {
+    const rows = await this.list(clientId);
+    return exportSheet('Assets', ASSET_COLUMNS, rows as unknown as AssetSheetRow[]);
+  }
+
+  /** The blank template: the same columns, minus the ones an import cannot set. */
+  importTemplate() {
+    return importTemplate('Assets', ASSET_COLUMNS, ASSET_IMPORT_NOTES);
+  }
+
+  /**
+   * Bulk add/update from a spreadsheet, matched on `assetId`.
+   *
+   * Every row goes through the ordinary `create` / `update`, so the code-uniqueness
+   * check and the audit trail apply exactly as they do on the form — an import is
+   * a fast way to type, not a second way in. Rows run **serially**: two rows
+   * claiming the same new code have to see each other, which a `Promise.all`
+   * would not.
+   */
+  async importSheet(clientId: string, actorId: string, file?: Express.Multer.File): Promise<ImportResult> {
+    const records = readSheet(file);
+    const result: ImportResult = { created: 0, updated: 0, skipped: 0, errors: [] };
+
+    const column = (header: string) => ASSET_COLUMNS.find((c) => c.header === header)!;
+    const [ID, NAME, CONDITION] = [column('Asset ID'), column('Asset name'), column('Condition')];
+    const DATES = ['Purchase date', 'Warranty start', 'Warranty end'].map(column);
+    const TEXTS: [SheetColumn<AssetSheetRow>, keyof UpdateAssetDto][] = [
+      [column('Type'), 'assetType'],
+      [column('Category'), 'assetCategory'],
+      [column('Serial number'), 'serialNumber'],
+      [column('Manufacturer'), 'manufacturer'],
+      [column('Model'), 'model'],
+      [column('Barcode'), 'barcode'],
+      [column('Description'), 'description'],
+      [column('PO number'), 'poNumber'],
+      [column('Supplier'), 'supplierName'],
+      [column('Invoice number'), 'invoiceNumber'],
+      [column('Lifespan'), 'lifespan'],
+    ];
+    const DATE_KEYS: (keyof UpdateAssetDto)[] = ['purchaseDate', 'warrantyStart', 'warrantyEnd'];
+
+    for (const [i, record] of records.entries()) {
+      const line = i + 2; // the header is row 1, so a sheet row is its index + 2
+      try {
+        const read = rowReader(record);
+        const assetId = asText(read(ID));
+        const assetName = asText(read(NAME));
+        // A trailing blank row is the normal shape of a hand-edited sheet, not an error.
+        if (!assetId && !assetName && !Object.values(record).some((v) => asText(v))) continue;
+        if (!assetId) throw new BadRequestException('Asset ID is required');
+
+        // A blank cell on an update means "leave it alone", so only the columns
+        // the sheet actually carries are sent — the DTO's undefined-skips-the-field
+        // rule does the rest.
+        const dto: UpdateAssetDto = {};
+        for (const [col, key] of TEXTS) {
+          const v = asText(read(col));
+          if (v) (dto as Record<string, unknown>)[key] = v;
+        }
+        for (const [idx, col] of DATES.entries()) {
+          const v = asDate(read(col), col.header);
+          if (v) (dto as Record<string, unknown>)[DATE_KEYS[idx]] = v;
+        }
+        const condition = asEnum(read(CONDITION), ASSET_CONDITIONS, ASSET_CONDITION_LABELS, 'Condition');
+        if (condition) dto.condition = condition;
+
+        const existing = await this.prisma.asset.findFirst({
+          where: { clientId, assetId },
+          select: { id: true },
+        });
+        if (existing) {
+          if (assetName) dto.assetName = assetName;
+          await this.update(existing.id, clientId, dto, actorId);
+          result.updated += 1;
+        } else {
+          if (!assetName) throw new BadRequestException('Asset name is required to add a new asset');
+          await this.create(clientId, { ...dto, assetId, assetName } as CreateAssetDto, actorId);
+          result.created += 1;
+        }
+      } catch (e) {
+        result.skipped += 1;
+        result.errors.push({ row: line, message: errorText(e) });
+      }
+    }
+
+    return result;
   }
 
   /** The asset code identifies one physical unit, so it is unique per tenant. */

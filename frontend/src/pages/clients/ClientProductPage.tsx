@@ -11,8 +11,11 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import ProductIcon from '@/components/ProductIcon';
 import ConsultantGrid from '@/components/ConsultantGrid';
 import SupportHoursChoice from '@/components/SupportHoursChoice';
+import AutoAssignChoice from '@/components/AutoAssignChoice';
+import PurchaseOrderFields from '@/components/PurchaseOrderFields';
 import SupportHoursConfig from '@/components/SupportHoursConfig';
-import CoverageMeter from '@/components/CoverageMeter';
+import ExcessRequestCard from '@/components/ExcessRequestCard';
+import CoverageMeter, { wholeHrs } from '@/components/CoverageMeter';
 import { useExcessRequests, useDecideExcess, latestExcessFor } from '@/components/excessHoursQueries';
 import { useAuth } from '../../context/AuthContext';
 
@@ -29,6 +32,8 @@ interface Purchased {
   hours: Pool; visits: Pool;
   paidTerms: { months: number | null; monthlyCost: number | null; hoursUnlimited?: boolean; hours: number | null; visits: number | null };
   support?: Support;
+  // This product's own PO, used on PRODUCT scope where each product carries one.
+  poNumber: string | null; poFileUrl: string | null; poFileName: string | null;
 }
 interface Consultant { id: string; userId: string; username: string | null; productId: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
 interface CatAgent { user: { id: string; username: string } }
@@ -57,7 +62,7 @@ export default function ClientProductPage() {
   const qc = useQueryClient();
   const [searchParams] = useSearchParams();
 
-  const { data: company } = useQuery<{ name: string; contractScope?: 'PRODUCT' | 'CUSTOMER' }>({ queryKey: ['client', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}`)).data });
+  const { data: company } = useQuery<{ name: string; contractScope?: 'PRODUCT' | 'CUSTOMER'; autoAssignTickets?: boolean }>({ queryKey: ['client', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}`)).data });
   const { data: products = [] } = useQuery<Purchased[]>({ queryKey: ['client-products', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}/purchased-products`)).data });
   const { data: consultants = [] } = useQuery<Consultant[]>({ queryKey: ['client-consultants', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}/consultants`)).data });
   const { data: catalog = [] } = useQuery<CatProduct[]>({ queryKey: ['products'], queryFn: async () => (await api.get('/api/products')).data });
@@ -104,8 +109,40 @@ export default function ClientProductPage() {
     setTerms((t) => ({ ...t, coverageType, supportHoursUnlimited: coverageType === 'WARRANTY' ? true : t.supportHoursUnlimited }));
   };
 
-  const invalidate = () => { qc.invalidateQueries({ queryKey: ['client-products', companyId] }); qc.invalidateQueries({ queryKey: ['client-consultants', companyId] }); };
+  // The excess-requests key matters as much as the others: saving terms can raise
+  // or withdraw the approval request server-side, and without re-reading it the
+  // approval tab only appears after a manual reload.
+  const invalidate = () => { qc.invalidateQueries({ queryKey: ['client-products', companyId] }); qc.invalidateQueries({ queryKey: ['client-consultants', companyId] }); qc.invalidateQueries({ queryKey: ['excess-requests', companyId] }); };
   const run = async (p: Promise<unknown>, ok?: string) => { try { await p; invalidate(); if (ok) toast.success(ok); } catch (e: any) { toast.error(e.response?.data?.message || 'Error'); } };
+
+  // Auto-assignment belongs to the CLIENT, not this product — it gates routing
+  // whatever the contractScope is. So it writes through PATCH :id rather than
+  // this page's Save terms (which writes a CustomerCompanyProduct row and has
+  // nowhere to put it), and invalidates the shared ['client', id] key the client
+  // page reads too.
+  const setAutoAssign = (autoAssignTickets: boolean) => {
+    if (!company) return;
+    run(
+      api.patch(`/api/customer-companies/${companyId}`, { autoAssignTickets })
+        .then(() => qc.invalidateQueries({ queryKey: ['client', companyId] })),
+      autoAssignTickets ? 'Tickets will be auto-assigned' : 'Tickets will be assigned manually',
+    );
+  };
+
+  /**
+   * The excess-hours trio saves the moment it changes, rather than waiting for
+   * Save terms. The approval request is raised server-side off the *saved*
+   * config, so an approver still sitting unsaved in the form raises nothing and
+   * the tab below never appears — which reads as the feature being broken. Same
+   * write-on-change rule as Auto assignment above; the fields stay in the Save
+   * terms payload too, so saving the form is still correct and idempotent.
+   */
+  const saveExcess = (next: { allowExcess: boolean; excessApproval: boolean; excessApproverId: string }) =>
+    run(api.patch(`/api/customer-companies/purchased-products/${cpId}`, {
+      allowExcess: next.allowExcess,
+      excessApproval: next.allowExcess && next.excessApproval,
+      excessApproverId: next.allowExcess && next.excessApproval && next.excessApproverId ? next.excessApproverId : null,
+    }));
 
   const saveTerms = () => {
     if (terms.startDate && terms.endDate && terms.endDate <= terms.startDate) { toast.error('End date must be after the start date'); return; }
@@ -216,7 +253,7 @@ export default function ClientProductPage() {
               subtitle={`ends ${fmt(cp.amc.end)}`} pct={cp.amc.pct} active={cp.amc.active}
               right={cp.amc.active ? cp.amc.label + ' left' : 'Ended'} />
             <CoverageMeter icon={<Clock className="size-4" />} title={monthlyHrs ? 'Support hours (this month)' : 'Support hours'}
-              subtitle={hUnlimited ? `Unlimited — ${hUsed} spent` : hAlloc == null ? 'Not included' : `${hLeft} of ${hAlloc} left${monthlyHrs ? ' this month' : ''}`}
+              subtitle={hUnlimited ? `Unlimited — ${wholeHrs(hUsed)} spent` : hAlloc == null ? 'Not included' : `${wholeHrs(hLeft)} of ${wholeHrs(hAlloc)} left${monthlyHrs ? ' this month' : ''}`}
               pct={hAlloc ? Math.round((hUsed / hAlloc) * 100) : 0}
               active={hUnlimited || (hLeft ?? 0) > 0} right={hUnlimited ? 'Unlimited' : ''} />
             <CoverageMeter icon={<MapPin className="size-4" />} title="Site visits" subtitle={cp.visits.allocated == null ? 'Not included' : `${cp.visits.left} of ${cp.visits.allocated} left`} pct={cp.visits.allocated ? Math.round((cp.visits.used / cp.visits.allocated) * 100) : 0} active={(cp.visits.left ?? 0) > 0} right="" />
@@ -249,6 +286,24 @@ export default function ClientProductPage() {
                 <Num label="Contract amount" value={terms.contractAmount} onChange={(v) => setTerms({ ...terms, contractAmount: Number(v) })} />
               )}
             </div>
+            {/* This product's own purchase order. The client is on PRODUCT scope
+                here, so each product carries its own PO and invoice; a shared
+                customer contract keeps one pair on the client screen instead. */}
+            <PurchaseOrderFields
+              baseUrl={`/api/customer-companies/purchased-products/${cpId}`}
+              poNumber={cp.poNumber}
+              fileUrl={cp.poFileUrl}
+              fileName={cp.poFileName}
+              readOnly={!isAdmin}
+              invalidate={[['client-products', companyId!]]}
+            />
+            {/* A client-level switch, so it saves on click rather than with the
+                terms below — see setAutoAssign. */}
+            <AutoAssignChoice
+              value={company?.autoAssignTickets ?? true}
+              disabled={!isAdmin || !company}
+              hint="Applies to every ticket this client raises, for all their products."
+              onChange={setAutoAssign} />
             {isAdmin && (
               <div className="mt-auto flex justify-end pt-2">
                 <Button size="sm" onClick={saveTerms}>Save terms</Button>
@@ -265,7 +320,12 @@ export default function ClientProductPage() {
             ) : (
               <SupportHoursConfig
                 value={{ hoursPeriod: terms.hoursPeriod, carryForward: terms.carryForward, allowTicketsAfterHours: terms.allowTicketsAfterHours, allowExcess: terms.allowExcess, excessApproval: terms.excessApproval, excessApproverId: terms.excessApproverId }}
-                onChange={(patch) => setTerms((t) => ({ ...t, ...patch }))}
+                onChange={(patch) => {
+                  const next = { ...terms, ...patch };
+                  setTerms(next);
+                  // Only the three that gate the approval request write at once.
+                  if ('allowExcess' in patch || 'excessApproval' in patch || 'excessApproverId' in patch) saveExcess(next);
+                }}
                 staff={staff}
                 live={cp.support ?? null}
                 readOnly={!isAdmin}
@@ -278,6 +338,27 @@ export default function ClientProductPage() {
           </section>
         </div>
       </div>
+      )}
+
+      {/* A live request on this product's pool survives the block above being
+          hidden. Switching the client to one shared customer contract stops the
+          per-product pool governing anything and hides its whole card — which
+          used to take the request with it, leaving it decidable by the API but
+          reachable from no screen, while the approver's banner and the decision
+          notification both still deep-linked to this page. */}
+      {customerScoped && excessRequest && (
+        <section className="mb-8">
+          <ExcessRequestCard
+            request={excessRequest}
+            productName={cp.productName}
+            // Only a real scope switch supersedes the pool. `customerScoped` is
+            // also true for ?view=consultants on a per-product client, where the
+            // allowance still governs and that notice would be a lie.
+            superseded={company?.contractScope === 'CUSTOMER'}
+            canDecide={canDecideExcess}
+            deciding={decideExcess.isPending}
+            onDecide={(approve) => decideExcess.mutate({ id: excessRequest.id, approve })} />
+        </section>
       )}
 
       {/* Consultants — full-width grid of Module × Technical / Functional / Others */}

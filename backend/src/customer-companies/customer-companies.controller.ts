@@ -1,7 +1,8 @@
 import {
-  Controller, Get, Post, Put, Patch, Delete, Body, Param, UseGuards, Request,
+  Controller, Get, Post, Put, Patch, Delete, Body, Param, UseGuards, Request, Res,
   UseInterceptors, UploadedFile, BadRequestException,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { extname, join } from 'path';
@@ -11,8 +12,9 @@ import { CustomerProductsService } from './customer-products.service';
 import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto } from './dto/customer-company.dto';
 import {
   AssignProductDto, UpdateProductTermsDto, RenewAmcDto, GrantRequestDto, DeclineRequestDto, SetContractDto,
-  RenewContractDto, AddCustomerConsultantDto, LogUsageDto, DecideExcessDto,
+  RenewContractDto, AddCustomerConsultantDto, LogUsageDto, DecideExcessDto, SetPoNumberDto,
 } from './dto/customer-product.dto';
+import { sendWorkbook, stamp } from '../lib/spreadsheet';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -23,6 +25,32 @@ type AuthedRequest = { user: { id: string; clientId: string; roles: string[] } }
 
 /** Consultants read the client screens; only a tenant Admin sees what a client pays. */
 const isAdmin = (req: AuthedRequest) => req.user.roles.includes('Admin');
+
+/**
+ * Multer config for a PO invoice, on the same template as the client logo:
+ * disk storage under uploads/, a type filter, a size cap, and the served path
+ * stored on the record. An invoice arrives as a PDF or as a scan, so images are
+ * accepted alongside PDFs — `prefix` keeps one client's uploads identifiable on
+ * disk, and `originalname` is preserved on the record because the stored name is
+ * time-stamped and would read as gibberish in a link.
+ */
+const PO_INVOICE_TYPES = /^(application\/pdf|image\/)/;
+const poInvoiceUpload = (prefix: string, param: string) =>
+  FileInterceptor('invoice', {
+    storage: diskStorage({
+      destination: join(process.cwd(), 'uploads/po'),
+      filename: (req: any, file, cb) =>
+        cb(null, `${prefix}-${req.params[param]}-${Date.now()}${extname(file.originalname)}`),
+    }),
+    fileFilter: (_req, file, cb) => {
+      if (!PO_INVOICE_TYPES.test(file.mimetype)) {
+        cb(new BadRequestException('The PO invoice must be a PDF or an image'), false);
+        return;
+      }
+      cb(null, true);
+    },
+    limits: { fileSize: 5 * 1024 * 1024 },
+  });
 
 @UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
 @Controller('api/customer-companies')
@@ -101,7 +129,7 @@ export class CustomerCompaniesController {
   @Put(':id/product-contract')
   @Roles('Admin')
   setContract(@Param('id') id: string, @Body() dto: SetContractDto, @Request() req: AuthedRequest) {
-    return this.customerProducts.setContract(id, dto, req.user.clientId);
+    return this.customerProducts.setContract(id, dto, req.user.clientId, req.user.id);
   }
 
   @Post(':id/contract-usage')
@@ -125,13 +153,43 @@ export class CustomerCompaniesController {
   @Post(':id/purchased-products')
   @Roles('Admin')
   assignProduct(@Param('id') id: string, @Body() dto: AssignProductDto, @Request() req: AuthedRequest) {
-    return this.customerProducts.assignProduct(id, dto, req.user.clientId);
+    return this.customerProducts.assignProduct(id, dto, req.user.clientId, req.user.id);
   }
 
   @Patch('purchased-products/:cpId')
   @Roles('Admin')
   updateProductTerms(@Param('cpId') cpId: string, @Body() dto: UpdateProductTermsDto, @Request() req: AuthedRequest) {
-    return this.customerProducts.updateTerms(cpId, dto, req.user.clientId);
+    return this.customerProducts.updateTerms(cpId, dto, req.user.clientId, req.user.id);
+  }
+
+  // ---- PO invoice (the file; the PO number itself rides the terms above) ----
+  // One pair per contract scope, mirroring where the terms are edited: the
+  // shared contract's invoice hangs off the company, a per-product one off the
+  // purchase. Stored under uploads/po and served at /uploads, so the admin can
+  // open it from the client screen whenever they want.
+
+  @Patch('purchased-products/:cpId/po')
+  @Roles('Admin')
+  setProductPoNumber(@Param('cpId') cpId: string, @Body() dto: SetPoNumberDto, @Request() req: AuthedRequest) {
+    return this.customerProducts.setProductPoNumber(cpId, req.user.clientId, dto.poNumber);
+  }
+
+  @Post('purchased-products/:cpId/po-invoice')
+  @Roles('Admin')
+  @UseInterceptors(poInvoiceUpload('cp', 'cpId'))
+  uploadProductPoInvoice(
+    @Param('cpId') cpId: string, @UploadedFile() file: Express.Multer.File, @Request() req: AuthedRequest,
+  ) {
+    if (!file) throw new BadRequestException('No file uploaded');
+    return this.customerProducts.setProductPoInvoice(cpId, req.user.clientId, {
+      url: `/uploads/po/${file.filename}`, name: file.originalname,
+    });
+  }
+
+  @Delete('purchased-products/:cpId/po-invoice')
+  @Roles('Admin')
+  removeProductPoInvoice(@Param('cpId') cpId: string, @Request() req: AuthedRequest) {
+    return this.customerProducts.clearProductPoInvoice(cpId, req.user.clientId);
   }
 
   @Post('purchased-products/:cpId/renew')
@@ -183,6 +241,30 @@ export class CustomerCompaniesController {
     return this.customerProducts.setCustomerPrimary(ccId, req.user.clientId);
   }
 
+  @Patch(':id/po')
+  @Roles('Admin')
+  setContractPoNumber(@Param('id') id: string, @Body() dto: SetPoNumberDto, @Request() req: AuthedRequest) {
+    return this.customerProducts.setContractPoNumber(id, req.user.clientId, dto.poNumber);
+  }
+
+  @Post(':id/po-invoice')
+  @Roles('Admin')
+  @UseInterceptors(poInvoiceUpload('contract', 'id'))
+  uploadContractPoInvoice(
+    @Param('id') id: string, @UploadedFile() file: Express.Multer.File, @Request() req: AuthedRequest,
+  ) {
+    if (!file) throw new BadRequestException('No file uploaded');
+    return this.customerProducts.setContractPoInvoice(id, req.user.clientId, {
+      url: `/uploads/po/${file.filename}`, name: file.originalname,
+    });
+  }
+
+  @Delete(':id/po-invoice')
+  @Roles('Admin')
+  removeContractPoInvoice(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.customerProducts.clearContractPoInvoice(id, req.user.clientId);
+  }
+
   // ---- Client logo (stored on disk under uploads/logos, served at /uploads) ----
   @Post(':id/logo')
   @Roles('Admin')
@@ -213,6 +295,33 @@ export class CustomerCompaniesController {
   @Roles('Admin')
   removeLogo(@Param('id') id: string, @Request() req: AuthedRequest) {
     return this.service.removeLogo(id, req.user.clientId, req.user.id);
+  }
+
+  // ---- import / export ----
+  // Admin-only, like every other write on this controller: the sheet carries the
+  // client's contact detail and posting one back adds and edits records.
+  // Declared before `:id`, or the param route swallows them.
+
+  /** The client list as a spreadsheet, ready to be edited and posted back. */
+  @Get('export')
+  @Roles('Admin')
+  async exportClients(@Request() req: AuthedRequest, @Res() res: Response) {
+    sendWorkbook(res, `clients-${stamp()}.xlsx`, await this.service.exportSheet(req.user.clientId));
+  }
+
+  /** The blank import template — the same columns, with an Instructions sheet. */
+  @Get('import-template')
+  @Roles('Admin')
+  clientTemplate(@Res() res: Response) {
+    sendWorkbook(res, 'client-import-template.xlsx', this.service.importTemplate());
+  }
+
+  /** Bulk add/update, matched on code then name. Answers with a per-row account. */
+  @Post('import')
+  @Roles('Admin')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
+  importClients(@UploadedFile() file: Express.Multer.File, @Request() req: AuthedRequest) {
+    return this.service.importSheet(req.user.clientId, req.user.id, file);
   }
 
   // One client's core details (declared last so it doesn't shadow static routes).

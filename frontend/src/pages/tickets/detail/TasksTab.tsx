@@ -1,4 +1,4 @@
-import { useState, type ReactNode, type SyntheticEvent } from 'react';
+import { useEffect, useState, type ReactNode, type SyntheticEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
@@ -11,7 +11,8 @@ import { useConfirm } from '@/hooks/useConfirm';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select';
+import { Combobox } from '@/components/ui/combobox';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -45,10 +46,17 @@ export interface UserOption { id: string; username: string; }
 export default function TasksTab({
   ticketId,
   ticketAssigneeId,
+  hintNonce = 0,
 }: {
   ticketId: string;
   /** The agent the *ticket* is assigned to — who, with an admin, may reopen a completed task. */
   ticketAssigneeId?: string | null;
+  /**
+   * Bumped by the ticket screen when resolving was refused for outstanding work.
+   * Not a boolean: the agent may try again after settling only some of the rows,
+   * and a value that is already `true` would light nothing up the second time.
+   */
+  hintNonce?: number;
 }) {
   const qc = useQueryClient();
   const { user } = useAuth();
@@ -107,6 +115,20 @@ export default function TasksTab({
   });
   const toggleAll = (on: boolean) => setSelected(on ? new Set(tasks.map((t) => t.id)) : new Set());
   const clearSelection = () => setSelected(new Set());
+
+  // The refused sign-off's hint. The *message* is the toast the ticket screen
+  // already raised — this is only the mark on the rows it was about, so there is
+  // no banner standing over the grid. It fades on its own, and `unsettled` is
+  // read live, so settling the last row clears the marks without the timer.
+  const [hinting, setHinting] = useState(false);
+  useEffect(() => {
+    if (!hintNonce) return;
+    setHinting(true);
+    const timer = setTimeout(() => setHinting(false), 12000);
+    return () => clearTimeout(timer);
+  }, [hintNonce]);
+  const unsettled = tasks.filter((t) => !isSettledTask(t.status));
+  const hint = hinting && unsettled.length > 0;
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['ticket-tasks', ticketId] });
@@ -294,12 +316,20 @@ export default function TasksTab({
               </div>
               <div className="space-y-1.5">
                 <label className="text-sm font-medium">Assignee</label>
-                <Select value={assignee || undefined} onValueChange={setAssignee}>
-                  <SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
-                  <SelectContent>
-                    {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                {/* Type-to-search, like the edit screen's — the agent list is
+                    long enough that scrolling it to find one name is the slow
+                    way round. Unassigned is a real option here rather than just
+                    the empty state, so a pick can be taken back. */}
+                <Combobox
+                  value={assignee}
+                  options={[
+                    { value: '', label: 'Unassigned' },
+                    ...users.map((u) => ({ value: u.id, label: u.username })),
+                  ]}
+                  onChange={setAssignee}
+                  placeholder="Unassigned"
+                  emptyText="No agent matches that"
+                />
               </div>
             </div>
             <DialogFooter>
@@ -407,7 +437,13 @@ export default function TasksTab({
               return (
                 <TableRow
                   key={t.id}
-                  className="cursor-pointer"
+                  // Marked amber only while the hint is up, and only on the rows
+                  // that are actually blocking the sign-off.
+                  className={`cursor-pointer ${
+                    hint && !isSettledTask(t.status)
+                      ? 'bg-amber-50 hover:bg-amber-100/70 dark:bg-amber-950/30 dark:hover:bg-amber-950/40'
+                      : ''
+                  }`}
                   data-state={selected.has(t.id) ? 'selected' : undefined}
                   onClick={() => openTask(t.id)}
                 >

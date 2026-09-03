@@ -379,7 +379,7 @@ export default function CreateTicketPage() {
               <Select value={selectedCompanyId || 'none'} onValueChange={(v) => chooseCompany(v === 'none' ? '' : v)}>
                 <SelectTrigger className="w-48"><SelectValue placeholder="Internal ticket" /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">Internal ticket (no client)</SelectItem>
+                  <SelectItem value="none">Internal ticket</SelectItem>
                   {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
                 </SelectContent>
               </Select>

@@ -9,6 +9,11 @@ import { unlink } from 'fs/promises';
 import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto } from './dto/customer-company.dto';
+import { CLIENT_COLUMNS, CLIENT_IMPORT_NOTES, CLIENT_STATUSES, CLIENT_STATUS_LABELS } from './client-sheet';
+import {
+  exportSheet, importTemplate, readSheet, rowReader, asText, asEnum, errorText,
+} from '../lib/spreadsheet';
+import type { ImportResult } from '../lib/spreadsheet';
 
 export const CUSTOMER_ROLE = 'Customer';
 export const CUSTOMER_ADMIN_ROLE = 'CustomerAdmin';
@@ -91,7 +96,108 @@ export class CustomerCompaniesService {
       id: c.id, name: c.name, code: c.code, status: c.status, contactEmail: c.contactEmail,
       contactPerson: c.contactPerson, contactNumber: c.contactNumber, logoUrl: c.logoUrl,
       contractScope: c.contractScope, contractStart: c.contractStart, contractEnd: c.contractEnd, contractHours: c.contractHours,
+      autoAssignTickets: c.autoAssignTickets,
     };
+  }
+
+
+  // ---- import / export -------------------------------------------------------
+
+  /**
+   * The client list as a spreadsheet, in the columns the importer accepts — so an
+   * export can be edited and posted straight back. Built on `list()`, so the
+   * sheet and the screen can never disagree about what a client's row says.
+   */
+  async exportSheet(clientId: string) {
+    return exportSheet('Clients', CLIENT_COLUMNS, await this.list(clientId));
+  }
+
+  /** The blank template: the same columns, minus the ones an import cannot set. */
+  importTemplate() {
+    return importTemplate('Clients', CLIENT_COLUMNS, CLIENT_IMPORT_NOTES);
+  }
+
+  /**
+   * Bulk add/update from a spreadsheet, matched on code and falling back to name.
+   *
+   * Every row goes through the ordinary `create` / `update`, so the unique-name
+   * check applies exactly as it does on the form — an import is a fast way to
+   * type, not a second way in. Rows run **serially**: two rows claiming the same
+   * new name have to see each other, which a `Promise.all` would race past.
+   */
+  async importSheet(clientId: string, actorId: string, file?: Express.Multer.File): Promise<ImportResult> {
+    const records = readSheet(file);
+    const result: ImportResult = { created: 0, updated: 0, skipped: 0, errors: [] };
+
+    const column = (header: string) => CLIENT_COLUMNS.find((c) => c.header === header)!;
+    const COLS = {
+      name: column('Client name'),
+      code: column('Code'),
+      contactPerson: column('Contact person'),
+      contactEmail: column('Contact email'),
+      contactNumber: column('Contact number'),
+      maxContacts: column('Max contacts'),
+      status: column('Status'),
+    };
+
+    for (const [i, record] of records.entries()) {
+      const line = i + 2; // the header is row 1, so a sheet row is its index + 2
+      try {
+        // A trailing blank row is the normal shape of a hand-edited sheet, not an error.
+        if (!Object.values(record).some((v) => asText(v))) continue;
+
+        const read = rowReader(record);
+        const cell = (c: keyof typeof COLS) => asText(read(COLS[c]));
+        const name = cell('name');
+        const code = cell('code');
+
+        const byCode = code
+          ? await this.prisma.customerCompany.findFirst({ where: { clientId, code }, select: { id: true } })
+          : null;
+        const matched =
+          byCode ??
+          (name
+            ? await this.prisma.customerCompany.findFirst({ where: { clientId, name }, select: { id: true } })
+            : null);
+
+        // A blank cell on an update means "leave it alone", so only the columns
+        // the sheet actually carries are sent — the DTO's undefined-skips-the-field
+        // rule does the rest.
+        const fields: Record<string, unknown> = {};
+        if (code) fields.code = code;
+        for (const key of ['contactPerson', 'contactEmail', 'contactNumber'] as const) {
+          const v = cell(key);
+          if (v) fields[key] = v;
+        }
+
+        const max = cell('maxContacts');
+        if (max) {
+          const n = Number(max);
+          if (!Number.isInteger(n) || n < 1 || n > 50) {
+            throw new BadRequestException(`Max contacts: "${max}" is not a whole number between 1 and 50`);
+          }
+          fields.maxContacts = n;
+        }
+
+        const status = asEnum(read(COLS.status), CLIENT_STATUSES, CLIENT_STATUS_LABELS, 'Status');
+        if (status) fields.status = status;
+
+        if (matched) {
+          if (name) fields.name = name;
+          await this.update(matched.id, fields as UpdateCompanyDto, clientId, actorId);
+          result.updated += 1;
+        } else {
+          if (!name) throw new BadRequestException('Client name is required to add a new client');
+          await this.create({ ...fields, name } as CreateCompanyDto, clientId, actorId);
+          result.created += 1;
+        }
+      } catch (e) {
+        result.skipped += 1;
+        result.errors.push({ row: line, message: errorText(e) });
+      }
+    }
+
+    return result;
   }
 
   // Replace the set of products a company uses (validates ownership).

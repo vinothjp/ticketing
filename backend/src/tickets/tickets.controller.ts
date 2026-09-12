@@ -10,7 +10,9 @@ import {
   Request,
   UseInterceptors,
   UploadedFiles,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { extname, join } from 'path';
@@ -23,6 +25,8 @@ import { SetResolutionDto } from './dto/set-resolution.dto';
 import { RejectTicketDto } from './dto/reject-ticket.dto';
 import { ReopenTicketDto } from './dto/reopen-ticket.dto';
 import { CreateWorklogDto } from './dto/worklog.dto';
+import { ExportTicketsDto } from './dto/export-tickets.dto';
+import { sendWorkbook, stamp } from '../lib/spreadsheet';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
 import { StaffGuard } from '../auth/staff.guard';
@@ -42,6 +46,26 @@ export class TicketsController {
   @Get()
   findAll(@Request() req: AuthedRequest) {
     return this.ticketsService.findAll(req.user.clientId, req.user);
+  }
+
+  /**
+   * The list as a spreadsheet. Declared before the `:id` routes, the convention
+   * every export on this codebase follows so a param route can't swallow it.
+   *
+   * A POST because the body carries the ids the screen is showing — a list of
+   * UUIDs is far past what a query string can hold — and the rows are still read
+   * through the list's own visibility rule, so this exports nothing the caller
+   * could not already open. No guard beyond the controller's: whoever can see
+   * the ticket list can download the rows in it, customers included.
+   */
+  @Post('export')
+  async exportTickets(
+    @Body() dto: ExportTicketsDto,
+    @Request() req: AuthedRequest,
+    @Res() res: Response,
+  ) {
+    const book = await this.ticketsService.exportSheet(req.user.clientId, req.user, dto.ids);
+    sendWorkbook(res, `tickets-${stamp()}.xlsx`, book);
   }
 
   @Get(':id')

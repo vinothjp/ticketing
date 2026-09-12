@@ -151,11 +151,22 @@ export class CustomerCompaniesService {
         const name = cell('name');
         const code = cell('code');
 
+        // `code` is the match key but carries no unique constraint — only
+        // (clientId, name) does — so an existing database may legitimately hold
+        // two clients under one code. Picking either of them would quietly
+        // rewrite the wrong client's details, a failure whose symptom (wrong
+        // data) lands nowhere near its cause, so an ambiguous code is refused
+        // and named instead. The name fallback needs no such check.
         const byCode = code
-          ? await this.prisma.customerCompany.findFirst({ where: { clientId, code }, select: { id: true } })
-          : null;
+          ? await this.prisma.customerCompany.findMany({ where: { clientId, code }, select: { id: true }, take: 2 })
+          : [];
+        if (byCode.length > 1) {
+          throw new BadRequestException(
+            `Code ${code} is used by more than one client — give them distinct codes on the Clients screen, or leave the code blank to match on name`,
+          );
+        }
         const matched =
-          byCode ??
+          byCode[0] ??
           (name
             ? await this.prisma.customerCompany.findFirst({ where: { clientId, name }, select: { id: true } })
             : null);

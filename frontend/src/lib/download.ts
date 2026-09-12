@@ -10,8 +10,19 @@ import api from './api';
  * is used when the header is missing.
  */
 export async function downloadFile(url: string, fallback: string) {
-  const res = await api.get(url, { responseType: 'blob' });
+  return saveBlob(await api.get(url, { responseType: 'blob' }), fallback);
+}
 
+/**
+ * The same, for an export whose scope has to be *sent* — the ticket list posts
+ * the ids it is currently showing, which is far past what a query string holds.
+ */
+export async function downloadFilePost(url: string, body: unknown, fallback: string) {
+  return saveBlob(await api.post(url, body, { responseType: 'blob' }), fallback);
+}
+
+/** Hand a fetched blob response to the browser as a download. */
+function saveBlob(res: { data: unknown; headers: Record<string, unknown> }, fallback: string) {
   const disposition = String(res.headers['content-disposition'] ?? '');
   const named = /filename="?([^";]+)"?/i.exec(disposition)?.[1];
 

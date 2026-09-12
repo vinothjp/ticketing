@@ -30,6 +30,65 @@ const monthsBetween = (start: Date, end: Date) =>
 /** One `TicketWorklog` entry, reduced to what the pool maths needs. */
 type LoggedHour = { hours: number; at: Date };
 
+/**
+ * What "no contract yet" looks like on each side, used when a scope switch resets
+ * the contract being entered. These are the models' own defaults — the state a
+ * client has before anyone has agreed terms — so "empty" means the same thing
+ * here as it does for a brand-new client or a freshly assigned product.
+ *
+ * Both cover exactly the terms, the purchase order and its invoice, and the
+ * support-hours settings. Nothing else: consultants, covered products, and the
+ * hours and visits already used are all outside the reset.
+ */
+const BLANK_CONTRACT = {
+  contractCoverageType: 'AMC',
+  contractStart: null,
+  contractEnd: null,
+  contractHours: null,
+  contractHoursUnlimited: false,
+  contractVisits: null,
+  contractMonthlyCost: null,
+  contractPoNumber: null,
+  contractPoFileUrl: null,
+  contractPoFileName: null,
+  contractHoursPeriod: 'FULL_AMC',
+  contractCarryForward: false,
+  contractAllowExcess: false,
+  contractExcessApproval: false,
+  contractAllowTicketsAfterHours: true,
+  contractExcessApprover: { disconnect: true },
+} satisfies Prisma.CustomerCompanyUpdateInput;
+
+const BLANK_PRODUCT_TERMS = {
+  purchaseDate: null,
+  warrantyMonths: 12,
+  warrantyEnd: null,
+  freeAmcMonths: 12,
+  amcType: 'FREE',
+  amcStart: null,
+  amcEnd: null,
+  amcMonthlyCost: null,
+  freeAmcHours: null,
+  freeAmcHoursUnlimited: true,
+  freeAmcVisits: null,
+  paidAmcMonths: null,
+  paidAmcHours: null,
+  paidAmcHoursUnlimited: false,
+  paidAmcVisits: null,
+  poNumber: null,
+  poFileUrl: null,
+  poFileName: null,
+  amcHoursPeriod: 'FULL_AMC',
+  amcCarryForward: false,
+  amcAllowExcess: false,
+  amcExcessApproval: false,
+  amcAllowTicketsAfterHours: true,
+  amcExcessApproverId: null,
+  expiryAlertSentAt: null,
+  hoursAlertSentAt: null,
+  warrantyAlertSentAt: null,
+} satisfies Prisma.CustomerCompanyProductUncheckedUpdateManyInput;
+
 @Injectable()
 export class CustomerProductsService {
   constructor(
@@ -1117,12 +1176,47 @@ export class CustomerProductsService {
     return { ...(await this.contractViewFor(c, hideMoney)), productIds: links.map((l) => l.productId) };
   }
 
+  /**
+   * Every product's terms back to an unconfigured purchase — the state a freshly
+   * assigned product is in. The purchase row itself survives: it is what says the
+   * client owns the product at all, and the switch is a reset of terms, not a
+   * withdrawal of coverage. `hoursUsed` / `visitsUsed` are left alone too — they
+   * record work that really was done, and are not terms anyone re-enters.
+   */
+  private async resetProductTerms(companyId: string) {
+    const rows = await this.prisma.customerCompanyProduct.findMany({
+      where: { customerCompanyId: companyId },
+      select: { id: true, poFileUrl: true },
+    });
+    for (const row of rows) {
+      if (row.poFileUrl) await this.deletePoFile(row.poFileUrl);
+    }
+    await this.prisma.customerCompanyProduct.updateMany({
+      where: { customerCompanyId: companyId },
+      data: BLANK_PRODUCT_TERMS,
+    });
+  }
+
   async setContract(companyId: string, dto: SetContractDto, clientId: string, actorId?: string) {
     const company = await this.ownedCompany(companyId, clientId);
 
+    // Changing scope moves which pool governs the client, so the contract they
+    // are arriving at starts from nothing: its terms, purchase order, invoice and
+    // support-hours settings are blanked and have to be entered afresh. Carrying
+    // them over resurrected figures nobody had agreed for this contract. Only the
+    // scope being *entered* is reset — leaving one alone until it is next arrived
+    // at keeps the rule true in both directions without destroying more than the
+    // switch actually invalidates. Consultants are untouched, deliberately.
+    const switched = company.contractScope !== dto.scope;
+
     if (dto.scope === 'CUSTOMER') {
       if (dto.start && dto.end) this.assertRange(new Date(dto.start), new Date(dto.end));
-      const coverageType = dto.coverageType ?? company.contractCoverageType;
+      if (switched && company.contractPoFileUrl) await this.deletePoFile(company.contractPoFileUrl);
+      const coverageType = dto.coverageType ?? (switched ? 'AMC' : company.contractCoverageType);
+      // The stored values a partial payload falls back to. After a switch there
+      // is nothing to fall back to, so they read as the blanks.
+      const baseUnlimited = switched ? false : company.contractHoursUnlimited;
+      const baseHours = switched ? null : company.contractHours;
       /**
        * A partial payload moves only what it carries: an absent field is left
        * alone, an explicit `null` clears it. That is what lets the Contract type
@@ -1134,6 +1228,7 @@ export class CustomerProductsService {
       const data: Prisma.CustomerCompanyUpdateInput = {
         contractScope: 'CUSTOMER',
         contractAlertSentAt: null, // re-arm the "running low" alert on any change
+        ...(switched ? BLANK_CONTRACT : {}),
       };
       if (dto.coverageType) data.contractCoverageType = dto.coverageType;
       if (dto.start !== undefined) data.contractStart = dto.start ? new Date(dto.start) : null;
@@ -1143,16 +1238,16 @@ export class CustomerProductsService {
       // Unlimited/Limited choice. A bare switch keeps the stored pool, and never
       // demands one from a client who has no customer contract yet.
       // Track the effective pool so the ledger step below sees the same figures.
-      let effUnlimited = company.contractHoursUnlimited;
-      let effHours = company.contractHours;
+      let effUnlimited = baseUnlimited;
+      let effHours = baseHours;
       if (dto.hoursUnlimited !== undefined || dto.hours !== undefined) {
         // Warranty is free support, so it defaults to Unlimited; AMC keeps
         // whatever the contract already had.
         const pool = this.resolveHoursPool(
           dto.hoursUnlimited,
           dto.hours ?? undefined,
-          coverageType === 'WARRANTY' ? true : company.contractHoursUnlimited,
-          company.contractHours,
+          coverageType === 'WARRANTY' ? true : baseUnlimited,
+          baseHours,
         );
         data.contractHours = pool.hours;
         data.contractHoursUnlimited = pool.unlimited;
@@ -1178,8 +1273,8 @@ export class CustomerProductsService {
       }
       await this.prisma.customerCompany.update({ where: { id: companyId }, data });
       // Keep the current month's ledger allocation in step with a MONTHLY figure.
-      const effPeriod = dto.hoursPeriod ?? company.contractHoursPeriod;
-      const effCarry = dto.carryForward ?? company.contractCarryForward;
+      const effPeriod = dto.hoursPeriod ?? (switched ? 'FULL_AMC' : company.contractHoursPeriod);
+      const effCarry = dto.carryForward ?? (switched ? false : company.contractCarryForward);
       if (effPeriod === 'MONTHLY' && !effUnlimited && effHours != null) {
         await this.refreshLedgerAllocation('CONTRACT', companyId, clientId, effHours, effCarry);
       }
@@ -1200,6 +1295,10 @@ export class CustomerProductsService {
       }
     } else {
       await this.prisma.customerCompany.update({ where: { id: companyId }, data: { contractScope: 'PRODUCT' } });
+      // Arriving at per-product scope, each product's own terms are what the
+      // admin now has to enter, so each starts blank. The purchases themselves
+      // stay — losing them would drop the client's coverage, not reset it.
+      if (switched) await this.resetProductTerms(companyId);
     }
     // Switching scope moves which pool governs, so the pools left behind stop
     // deciding anything. Their still-open questions are withdrawn — otherwise a

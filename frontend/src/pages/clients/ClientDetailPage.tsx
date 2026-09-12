@@ -123,12 +123,15 @@ export default function ClientDetailPage() {
     if (!pendingScope) return;
     setScope(pendingScope);
     setPendingScope(null);
-    // Confirming IS the change — both directions are written now. The payload
-    // carries the scope alone, and `setContract` leaves every term it doesn't
-    // carry untouched, so the switch no longer waits on a Save contract press.
+    // Confirming IS the change — both directions are written now, and the payload
+    // carries the scope alone. `setContract` blanks the terms of the contract
+    // being entered, so the refetch below re-hydrates this form empty and the
+    // admin fills it in fresh; consultants and covered products are untouched.
     run(
       api.put(`/api/customer-companies/${companyId}/product-contract`, { scope: pendingScope }),
-      pendingScope === 'PRODUCT' ? 'Switched to per-product contracts' : 'Switched to one customer contract',
+      pendingScope === 'PRODUCT'
+        ? 'Switched to per-product contracts — enter each product’s terms'
+        : 'Switched to one customer contract — enter the contract terms',
     );
   };
   /**
@@ -478,14 +481,16 @@ export default function ClientDetailPage() {
             {pendingScope === 'PRODUCT' ? (
               <>
                 {client?.name ?? 'This client'} is on one shared customer contract. Switching means every ticket hour and client
-                visit draws down that product's own warranty/AMC pool instead of the shared one. The contract terms stay saved,
-                so you can switch back.
+                visit draws down that product's own warranty/AMC pool instead of the shared one. <strong>Each product starts with
+                no terms</strong> — its dates, support hours, visits, purchase order and invoice have to be entered again. The
+                products themselves and every consultant assignment are kept.
               </>
             ) : (
               <>
                 {client?.name ?? 'This client'} is on per-product contracts. One shared contract covers every ticked product with
-                the same dates, support hours and visits, and all usage draws down that single pool. Each product's own terms stay
-                saved, and any shared terms already on file are kept — fill in the ones that are missing below.
+                the same dates, support hours and visits, and all usage draws down that single pool. <strong>The shared contract
+                starts empty</strong> — its terms, purchase order, invoice and support-hours settings have to be entered and
+                saved. The covered products and every consultant assignment are kept.
               </>
             )}
           </p>

@@ -17,6 +17,8 @@ import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { CreateWorklogDto } from './dto/worklog.dto';
 import { SETTLED_TASK_STATUSES } from '../tasks/task-status';
+import { exportSheet as buildSheet } from '../lib/spreadsheet';
+import { TICKET_COLUMNS, type TicketSheetRow } from './ticket-sheet';
 
 const FIELD_KEY_TO_DTO_PROP: Record<string, keyof CreateTicketDto> = {
   requestorName: 'requestorName',
@@ -344,32 +346,42 @@ export class TicketsService {
     }
   }
 
+  /**
+   * What this viewer is allowed to see of the tenant's tickets. Its own method
+   * because the export answers from the same rule — a customer downloading a
+   * spreadsheet must get exactly the rows their list shows, and a second copy of
+   * this clause would be the place that silently stops agreeing with it.
+   */
+  private visibleTicketWhere(clientId: string, viewer: TicketViewer): Prisma.TicketWhereInput {
+    return {
+      clientId,
+      ...(isCustomerAdmin(viewer)
+        ? // A customer company admin sees all of their company's tickets.
+          { customerCompanyId: viewer.customerCompanyId ?? '__none__' }
+        : isCustomerEmployee(viewer)
+        ? // An employee sees only the tickets they raised.
+          { customerCompanyId: viewer.customerCompanyId ?? '__none__', requestorUserId: viewer.id }
+        : isAdmin(viewer)
+        ? // Admin sees everything except tickets still inside the customer's
+          // own approval stage (not yet forwarded to us).
+          { approvalStatus: { not: 'PENDING_CUSTOMER' } }
+        : {
+            // Agents never see tickets still awaiting approval.
+            approvalStatus: { in: ['NONE', 'APPROVED'] },
+            OR: [
+              { technicians: { some: { userId: viewer.id } } },
+              { approvals: { some: { approverUserId: viewer.id } } },
+              // Tickets on which the viewer has an assigned task (possibly created by another agent).
+              { tasks: { some: { assigneeUserId: viewer.id } } },
+            ],
+          }),
+    };
+  }
+
   findAll(clientId: string, viewer: TicketViewer) {
     return this.prisma.ticket.findMany({
       // Non-admins see tickets assigned to them, plus any they've been asked to approve.
-      where: {
-        clientId,
-        ...(isCustomerAdmin(viewer)
-          ? // A customer company admin sees all of their company's tickets.
-            { customerCompanyId: viewer.customerCompanyId ?? '__none__' }
-          : isCustomerEmployee(viewer)
-          ? // An employee sees only the tickets they raised.
-            { customerCompanyId: viewer.customerCompanyId ?? '__none__', requestorUserId: viewer.id }
-          : isAdmin(viewer)
-          ? // Admin sees everything except tickets still inside the customer's
-            // own approval stage (not yet forwarded to us).
-            { approvalStatus: { not: 'PENDING_CUSTOMER' } }
-          : {
-              // Agents never see tickets still awaiting approval.
-              approvalStatus: { in: ['NONE', 'APPROVED'] },
-              OR: [
-                { technicians: { some: { userId: viewer.id } } },
-                { approvals: { some: { approverUserId: viewer.id } } },
-                // Tickets on which the viewer has an assigned task (possibly created by another agent).
-                { tasks: { some: { assigneeUserId: viewer.id } } },
-              ],
-            }),
-      },
+      where: this.visibleTicketWhere(clientId, viewer),
       orderBy: { createdAt: 'desc' },
       include: {
         template: { select: { id: true, name: true, category: true } },
@@ -379,6 +391,121 @@ export class TicketsService {
         customerCompany: { select: { id: true, name: true } },
       },
     });
+  }
+
+  /**
+   * The viewer's tickets as a spreadsheet.
+   *
+   * `ids` is what the list screen is currently showing — the month, view, filters
+   * and sort it has already applied client-side — so the download is the table
+   * the user is looking at rather than everything they could see. It is a filter,
+   * never a widening: the rows are still fetched through `visibleTicketWhere`,
+   * so an id the viewer may not see simply doesn't come back. Omitted, the export
+   * is everything visible to them.
+   *
+   * Export only: there is no ticket import. A ticket is built from a Template,
+   * passes the approval gate and is routed to a consultant on creation, and a
+   * spreadsheet row cannot stand in for any of that.
+   */
+  async exportSheet(clientId: string, viewer: TicketViewer, ids?: string[]) {
+    const where = this.visibleTicketWhere(clientId, viewer);
+    const tickets = await this.prisma.ticket.findMany({
+      where: ids?.length ? { AND: [where, { id: { in: ids } }] } : where,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        template: { select: { name: true } },
+        technicians: { include: { user: { select: { username: true } } } },
+        customerCompany: { select: { name: true } },
+      },
+    });
+
+    const ticketIds = tickets.map((t) => t.id);
+    const productIds = [...new Set(tickets.map((t) => t.productId).filter((x): x is string => !!x))];
+    const moduleIds = [...new Set(tickets.map((t) => t.moduleId).filter((x): x is string => !!x))];
+
+    // Ticket carries no relation to Product/ProductModule (findOne looks them up
+    // the same way), and the labels are the tenant's own picklist rows — so five
+    // batched reads, never one per row.
+    const [products, modules, statusOpts, priorityOpts, booked, openTasks] = await Promise.all([
+      productIds.length
+        ? this.prisma.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true } })
+        : [],
+      moduleIds.length
+        ? this.prisma.productModule.findMany({ where: { id: { in: moduleIds } }, select: { id: true, name: true } })
+        : [],
+      this.prisma.picklistOption.findMany({
+        where: { clientId, listKey: 'ticketStatus' },
+        select: { value: true, label: true },
+      }),
+      this.prisma.picklistOption.findMany({
+        where: { clientId, listKey: 'priority' },
+        select: { value: true, label: true },
+      }),
+      // The booked worklog total — the one figure every ticket screen quotes.
+      ticketIds.length
+        ? this.prisma.ticketWorklog.groupBy({
+            by: ['ticketId'],
+            where: { ticketId: { in: ticketIds } },
+            _sum: { hours: true },
+          })
+        : [],
+      ticketIds.length
+        ? this.prisma.ticketTask.groupBy({
+            by: ['ticketId'],
+            where: { ticketId: { in: ticketIds }, status: { notIn: SETTLED_TASK_STATUSES } },
+            _count: { _all: true },
+          })
+        : [],
+    ]);
+
+    const nameById = (rows: { id: string; name: string }[]) => new Map(rows.map((r) => [r.id, r.name]));
+    const labelOf = (rows: { value: string; label: string | null }[]) =>
+      new Map(rows.map((r) => [r.value, (r.label ?? r.value).trim()]));
+
+    const productNames = nameById(products);
+    const moduleNames = nameById(modules);
+    const statusLabels = labelOf(statusOpts);
+    const priorityLabels = labelOf(priorityOpts);
+    const hoursByTicket = new Map(booked.map((b) => [b.ticketId, Number(b._sum.hours ?? 0)]));
+    const openByTicket = new Map(openTasks.map((t) => [t.ticketId, t._count._all]));
+
+    const rows: TicketSheetRow[] = tickets.map((t) => ({
+      ticketNumber: t.ticketNumber,
+      subject: t.subject,
+      description: t.description,
+      // A status or priority whose picklist row was renamed or retired still
+      // reads as whatever the ticket stored, rather than coming back blank.
+      status: statusLabels.get(t.ticketStatus) ?? t.ticketStatus,
+      priority: t.priority ? priorityLabels.get(t.priority) ?? t.priority : '',
+      templateName: t.template?.name ?? '',
+      ticketCategory: t.ticketCategory,
+      subCategory: t.subCategory,
+      requestorName: t.requestorName,
+      requestorEmail: t.requestorEmail,
+      requestorContact: t.requestorContact,
+      department: t.department,
+      customerCompanyName: t.customerCompany?.name ?? t.customerName ?? '',
+      productName: t.productId ? productNames.get(t.productId) ?? '' : '',
+      moduleName: t.moduleId ? moduleNames.get(t.moduleId) ?? '' : '',
+      consultantType: t.consultantType,
+      // A ticket holds at most one agent; joined anyway so a legacy row that
+      // still carries two is reported rather than half-shown.
+      assignedTo: t.technicians.map((x) => x.user.username).join('; ') || 'Unassigned',
+      approvalStatus: t.approvalStatus,
+      hoursSpent: hoursByTicket.get(t.id) ?? 0,
+      openTaskCount: openByTicket.get(t.id) ?? 0,
+      reopenedCount: t.reopenedCount,
+      slaHours: t.slaHours,
+      createdAt: t.createdAt,
+      dueDate: t.dueDate,
+      firstResponseAt: t.firstResponseAt,
+      resolvedAt: t.resolvedAt,
+      acknowledgedAt: t.acknowledgedAt,
+      closedDate: t.closedDate,
+      resolution: t.resolution,
+    }));
+
+    return buildSheet('Tickets', TICKET_COLUMNS, rows);
   }
 
   async findOne(id: string, clientId: string, viewer?: TicketViewer) {

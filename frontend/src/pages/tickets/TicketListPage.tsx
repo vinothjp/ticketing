@@ -4,6 +4,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, ChevronDown, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
+import { downloadFilePost, blobErrorMessage } from '../../lib/download';
 import { useAuth } from '../../context/AuthContext';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -196,36 +197,19 @@ export default function TicketListPage() {
   // Customers only get their own ticket views — agent/task concepts are hidden.
   const views = isCustomer ? allViews.filter((v) => ['all', 'today', 'overdue', 'pending'].includes(v.key)) : allViews;
 
-  // Export the currently filtered/sorted tickets to CSV (client-side, no backend needed).
-  const exportCsv = () => {
-    const headers = ['Ticket #', 'Subject', 'Status', 'Priority', 'Requester', 'Customer', 'Category', 'Department', 'Assigned To', 'Due date', 'Created'];
-    const rows = sorted.map((t) => [
-      t.ticketNumber,
-      t.subject,
-      t.ticketStatus,
-      getPriorityMeta(t.priority).label,
-      t.requestorName ?? '',
-      t.customerCompany?.name ?? '',
-      t.ticketCategory ?? '',
-      t.department ?? '',
-      t.technicians.map((x) => x.user.username).join('; ') || 'Unassigned',
-      t.dueDate ? fmtDateTime(t.dueDate) : '',
-      fmtDateTime(t.createdAt),
-    ]);
-    const esc = (v: unknown) => {
-      const s = String(v ?? '');
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    const csv = [headers, ...rows].map((r) => r.map(esc).join(',')).join('\r\n');
-    // BOM so Excel reads UTF-8 correctly.
-    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `tickets-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+  // Export what the screen is showing, as a spreadsheet.
+  //
+  // The rows go to the server as ids rather than being written out here: a CSV
+  // built in the browser carries no column widths, so every date column opened
+  // as ######## in Excel, and the figures would have been the list payload's
+  // rather than the booked worklog hours every other ticket screen quotes. The
+  // month, view, filters and sort stay client-side — the server narrows the
+  // rows it would have returned anyway, so the download is this table.
+  const exportSheet = useMutation({
+    mutationFn: () =>
+      downloadFilePost('/api/tickets/export', { ids: sorted.map((t) => t.id) }, 'tickets.xlsx'),
+    onError: async (e) => toast.error(await blobErrorMessage(e, 'Export failed')),
+  });
 
   return (
     <div>
@@ -240,8 +224,12 @@ export default function TicketListPage() {
         </div>
         <div className="flex items-center gap-2">
           {view !== 'tasks' && (
-            <Button variant="outline" onClick={exportCsv} disabled={sorted.length === 0}>
-              <Download className="size-4" /> Export
+            <Button
+              variant="outline"
+              onClick={() => exportSheet.mutate()}
+              disabled={sorted.length === 0 || exportSheet.isPending}
+            >
+              <Download className="size-4" /> {exportSheet.isPending ? 'Exporting…' : 'Export'}
             </Button>
           )}
           <Button asChild>

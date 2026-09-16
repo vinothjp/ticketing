@@ -9,9 +9,18 @@ interface User {
   clientId: string | null;
 }
 
+interface OtpChallenge {
+  requiresOtp: true;
+  challengeId: string;
+  otpSentTo: string;
+}
+
+type LoginResult = { user: User } | OtpChallenge;
+
 interface AuthContextType {
   user: User | null;
-  login: (username: string, password: string) => Promise<User>;
+  login: (username: string, password: string) => Promise<LoginResult>;
+  verifyOtp: (challengeId: string, otp: string) => Promise<User>;
   logout: () => void;
   isAuthenticated: boolean;
 }
@@ -24,14 +33,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return stored ? JSON.parse(stored) : null;
   });
 
-  const login = useCallback(async (username: string, password: string) => {
-    const res = await api.post('/api/auth/login', { username, password });
-    localStorage.setItem('accessToken', res.data.accessToken);
-    localStorage.setItem('refreshToken', res.data.refreshToken);
-    localStorage.setItem('user', JSON.stringify(res.data.user));
-    setUser(res.data.user);
-    return res.data.user as User;
+  const storeSession = useCallback((data: { accessToken: string; refreshToken: string; user: User }) => {
+    localStorage.setItem('accessToken', data.accessToken);
+    localStorage.setItem('refreshToken', data.refreshToken);
+    localStorage.setItem('user', JSON.stringify(data.user));
+    setUser(data.user);
   }, []);
+
+  const login = useCallback(async (username: string, password: string): Promise<LoginResult> => {
+    const res = await api.post('/api/auth/login', { username, password });
+
+    // SuperAdmin 2FA: backend returns a challenge instead of tokens
+    if (res.data.requiresOtp) {
+      return {
+        requiresOtp: true,
+        challengeId: res.data.challengeId,
+        otpSentTo: res.data.otpSentTo,
+      };
+    }
+
+    storeSession(res.data);
+    return { user: res.data.user as User };
+  }, [storeSession]);
+
+  const verifyOtp = useCallback(async (challengeId: string, otp: string): Promise<User> => {
+    const res = await api.post('/api/auth/verify-otp', { challengeId, otp });
+    storeSession(res.data);
+    return res.data.user as User;
+  }, [storeSession]);
 
   const logout = useCallback(() => {
     localStorage.removeItem('accessToken');
@@ -41,7 +70,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, isAuthenticated: !!user }}>
+    <AuthContext.Provider value={{ user, login, verifyOtp, logout, isAuthenticated: !!user }}>
       {children}
     </AuthContext.Provider>
   );

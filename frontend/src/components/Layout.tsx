@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import NotificationBell from './NotificationBell';
 import {
@@ -31,6 +31,7 @@ import {
   PackagePlus,
   Megaphone,
   Images,
+  Plus,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { usePrefs } from '../context/PreferencesContext';
@@ -47,6 +48,22 @@ import {
 import ChangePasswordDialog from './ChangePasswordDialog';
 import PreferencesMenu from './PreferencesMenu';
 import GlobalSearch from './GlobalSearch';
+
+function LiveClock() {
+  const [now, setNow] = useState(new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const fmt = `${String(now.getDate()).padStart(2, '0')} ${months[now.getMonth()]} ${now.getFullYear()}`;
+  const time = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  return (
+    <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
+      {fmt} &bull; {time}
+    </span>
+  );
+}
 
 interface NavItem {
   to: string;
@@ -229,12 +246,9 @@ export default function Layout({ children }: { children: ReactNode }) {
             collapsed ? 'w-16' : 'w-60',
           )}
         >
-          <div className={cn('mb-6 flex items-center gap-2 px-2', collapsed && 'justify-center px-0')}>
-            <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-sidebar-primary text-sidebar-primary-foreground">
-              <LayoutDashboard className="size-4" />
-            </div>
+          <div className={cn('mb-6 flex items-center px-2', collapsed && 'justify-center px-0')}>
             {!collapsed && (
-              <span className="truncate text-base font-bold tracking-wide text-sidebar-foreground">Enterprise App</span>
+              <span className="truncate text-sm font-bold tracking-wide text-sidebar-foreground">Ticket Management System</span>
             )}
           </div>
 
@@ -301,14 +315,25 @@ export default function Layout({ children }: { children: ReactNode }) {
               </div>
             )}
             <span className="max-w-[160px] truncate text-sm font-semibold text-foreground">
-              {isSuperAdmin ? 'Platform Admin' : (myClient?.name ?? 'Enterprise App')}
+              {isSuperAdmin ? 'Platform Admin' : (myClient?.name ?? 'Ticket Management System')}
             </span>
           </div>
 
           <GlobalSearch />
 
+          {!isSuperAdmin && (
+            <Link
+              to="/tickets/new"
+              title="Create Ticket"
+              className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              <Plus className="size-4" />
+            </Link>
+          )}
+
           <div className="flex-1" />
 
+          <LiveClock />
           <NotificationBell />
 
           <DropdownMenu modal={false}>

@@ -1,9 +1,28 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, HeartPulse, FolderKanban, TrendingUp, AlertTriangle, ListChecks, Banknote, Wallet, Percent } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 import api from '../../lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+
+/**
+ * A column heading: its icon, then its label. Muted and small, so the headings
+ * read as chrome and the values below them carry the weight. Mirrors the
+ * Change Management list.
+ */
+function HeadLabel({ icon: Icon, children, className = '' }: {
+  icon: LucideIcon; children: ReactNode; className?: string;
+}) {
+  return (
+    <span className={`flex items-center gap-1.5 text-xs font-semibold text-muted-foreground ${className}`}>
+      <Icon className="size-3.5 shrink-0" />
+      {children}
+    </span>
+  );
+}
+
 
 interface ProjectRow {
   id: string; name: string; completed: number; inProgress: number; yetToStart: number; total: number;
@@ -122,35 +141,37 @@ export default function ProjectAnalyticsPage() {
 
         <Card className="lg:col-span-2">
           <CardHeader><CardTitle className="text-sm">Per-project rollup &amp; RAG health</CardTitle></CardHeader>
-          <CardContent className="overflow-x-auto pb-4">
+          <CardContent className="pb-4">
+            <div className="overflow-hidden rounded-lg border">
             <Table>
               <TableHeader>
-                <TableRow>
-                  <TableHead>Health</TableHead>
-                  <TableHead>Project</TableHead>
-                  <TableHead className="text-right">Progress</TableHead>
-                  <TableHead className="text-right">Overdue</TableHead>
-                  <TableHead className="text-right">Tasks</TableHead>
-                  <TableHead className="text-right">Revenue</TableHead>
-                  <TableHead className="text-right">Cost</TableHead>
-                  <TableHead className="text-right">Margin</TableHead>
+                <TableRow className="bg-muted/50 hover:bg-muted/50">
+                  <TableHead className="w-px border-r"><HeadLabel icon={HeartPulse}>Health</HeadLabel></TableHead>
+                  <TableHead className="border-r"><HeadLabel icon={FolderKanban}>Project</HeadLabel></TableHead>
+                  <TableHead className="border-r"><HeadLabel icon={TrendingUp} className="justify-end">Progress</HeadLabel></TableHead>
+                  <TableHead className="border-r"><HeadLabel icon={AlertTriangle} className="justify-end">Overdue</HeadLabel></TableHead>
+                  <TableHead className="border-r"><HeadLabel icon={ListChecks} className="justify-end">Tasks</HeadLabel></TableHead>
+                  <TableHead className="border-r"><HeadLabel icon={Banknote} className="justify-end">Revenue</HeadLabel></TableHead>
+                  <TableHead className="border-r"><HeadLabel icon={Wallet} className="justify-end">Cost</HeadLabel></TableHead>
+                  <TableHead><HeadLabel icon={Percent} className="justify-end">Margin</HeadLabel></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {data.perProject.map((p) => (
                   <TableRow key={p.id}>
-                    <TableCell><span className={`inline-block size-3 rounded-full ${RAG_COLOR[p.rag]}`} title={p.rag} /></TableCell>
-                    <TableCell className="font-medium">{p.name}</TableCell>
-                    <TableCell className="text-right tabular-nums">{p.progress}%</TableCell>
-                    <TableCell className={`text-right tabular-nums ${p.overdue ? 'text-destructive' : ''}`}>{p.overdue}</TableCell>
-                    <TableCell className="text-right tabular-nums">{p.completed}/{p.total}</TableCell>
-                    <TableCell className="text-right tabular-nums">{money(p.revenue)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{money(p.cost)}</TableCell>
+                    <TableCell className="border-r text-center"><span className={`inline-block size-3 rounded-full ${RAG_COLOR[p.rag]}`} title={p.rag} /></TableCell>
+                    <TableCell className="border-r font-medium">{p.name}</TableCell>
+                    <TableCell className="border-r text-right tabular-nums">{p.progress}%</TableCell>
+                    <TableCell className={`border-r text-right tabular-nums ${p.overdue ? 'text-destructive' : ''}`}>{p.overdue}</TableCell>
+                    <TableCell className="border-r text-right tabular-nums">{p.completed}/{p.total}</TableCell>
+                    <TableCell className="border-r text-right tabular-nums">{money(p.revenue)}</TableCell>
+                    <TableCell className="border-r text-right tabular-nums">{money(p.cost)}</TableCell>
                     <TableCell className={`text-right tabular-nums ${p.margin >= 0 ? '' : 'text-destructive'}`}>{p.margin}%</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
+            </div>
           </CardContent>
         </Card>
       </div>

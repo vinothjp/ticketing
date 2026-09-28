@@ -1,19 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
-import { Plus, Search, ArrowUp, ArrowDown, ArrowUpDown, ChevronLeft, ChevronRight, Trash2, BarChart3,
-  Hash, FolderKanban, CircleDot, Flag, AtSign } from 'lucide-react';
+import { Plus, Search, ArrowUp, ArrowDown, ArrowUpDown, ChevronLeft, ChevronRight, BarChart3,
+  Hash, FolderKanban, CircleDot, Flag, AtSign, ToggleRight } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
-import { DateField } from '@/components/ui/date-field';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -32,37 +27,23 @@ function HeadLabel({ icon: Icon, children }: { icon: LucideIcon; children: React
   );
 }
 
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
-import { CURRENCIES } from '@/lib/currencies';
+import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/hooks/useConfirm';
 import {
-  PROJECT_STATUSES, PRIORITIES, labelOf, projectStatusVariant, priorityVariant,
-  type ProjectSummary, type UserOption, type CustomerCompanyOption,
+  PROJECT_STATUSES, labelOf, projectStatusVariant, priorityVariant,
+  type ProjectSummary,
 } from './projectMeta';
 
-const NONE = '__none__';
-
-const createSchema = z.object({
-  name: z.string().min(1, 'Name is required'),
-  key: z.string().optional(),
-  description: z.string().optional(),
-  status: z.enum(PROJECT_STATUSES),
-  priority: z.string().optional(),
-  managerUserId: z.string().optional(),
-  customerCompanyId: z.string().optional(),
-  projectTemplateId: z.string().optional(),
-  budget: z.string().optional(),
-  currency: z.string().optional(),
-  startDate: z.string().optional(),
-  endDate: z.string().optional(),
-});
-type CreateValues = z.infer<typeof createSchema>;
-
 type StatusFilter = 'all' | (typeof PROJECT_STATUSES)[number];
+type ActiveFilter = 'all' | 'active' | 'inactive';
 type SortField = 'name' | 'status' | 'progress';
 type SortDir = 'asc' | 'desc';
 const PAGE_SIZE = 10;
+
+/** Green for an active project, grey for a deactivated one — the pill and the admin's dropdown share it. */
+const activePill = (active: boolean) => (active
+  ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+  : 'bg-muted text-muted-foreground');
 
 function SortableHead({
   label, field, sortField, sortDir, onSort, className, icon: Icon,
@@ -92,71 +73,31 @@ function SortableHead({
 
 export default function ProjectListPage() {
   const qc = useQueryClient();
-  const { confirm, ConfirmDialog } = useConfirm();
   const navigate = useNavigate();
-  const [createOpen, setCreateOpen] = useState(false);
+  const { user } = useAuth();
+  const { confirm, ConfirmDialog } = useConfirm();
+  const isAdmin = !!user?.roles.includes('Admin');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [activeFilter, setActiveFilter] = useState<ActiveFilter>('all');
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [page, setPage] = useState(1);
-
-  const form = useForm<CreateValues>({
-    resolver: zodResolver(createSchema),
-    defaultValues: {
-      name: '', key: '', description: '', status: 'OPEN',
-      priority: '', managerUserId: '', customerCompanyId: '', projectTemplateId: '', budget: '', currency: 'USD', startDate: '', endDate: '',
-    },
-  });
 
   const { data: projects = [], isLoading } = useQuery<ProjectSummary[]>({
     queryKey: ['projects', 'all'],
     queryFn: async () => (await api.get('/api/projects')).data,
   });
-  const { data: users = [] } = useQuery<UserOption[]>({
-    queryKey: ['users'],
-    queryFn: async () => (await api.get('/api/users')).data,
-  });
-  const { data: companies = [] } = useQuery<CustomerCompanyOption[]>({
-    queryKey: ['customer-companies'],
-    queryFn: async () => (await api.get('/api/customer-companies')).data,
-  });
-  const { data: projectTemplates = [] } = useQuery<{ id: string; name: string; isActive: boolean }[]>({
-    queryKey: ['project-templates'],
-    queryFn: async () => (await api.get('/api/project-templates')).data,
-  });
+  useEffect(() => { setPage(1); }, [search, statusFilter, activeFilter]);
 
-  useEffect(() => { setPage(1); }, [search, statusFilter]);
-
-  const createMutation = useMutation({
-    mutationFn: (values: CreateValues) => api.post('/api/projects', {
-      name: values.name,
-      key: values.key || undefined,
-      description: values.description || undefined,
-      status: values.status,
-      priority: values.priority || undefined,
-      managerUserId: values.managerUserId || undefined,
-      customerCompanyId: values.customerCompanyId || undefined,
-      projectTemplateId: values.projectTemplateId || undefined,
-      budget: values.budget ? Number(values.budget) : undefined,
-      currency: values.currency || undefined,
-      startDate: values.startDate || undefined,
-      endDate: values.endDate || undefined,
-    }),
-    onSuccess: (res) => {
+  // Projects are never deleted (like tickets) — an Admin deactivates one instead.
+  const toggleActive = useMutation({
+    mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) => api.patch(`/api/projects/${id}`, { isActive }),
+    onSuccess: (_res, v) => {
       qc.invalidateQueries({ queryKey: ['projects'] });
-      setCreateOpen(false);
-      form.reset();
-      toast.success('Project created');
-      navigate(`/projects/${res.data.id}`);
+      toast.success(v.isActive ? 'Project activated' : 'Project deactivated');
     },
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error creating project'),
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => api.delete(`/api/projects/${id}`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['projects'] }); toast.success('Project deleted'); },
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error deleting project'),
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error updating project'),
   });
 
   const handleSort = (field: SortField) => {
@@ -172,9 +113,10 @@ export default function ProjectListPage() {
         || p.projectNumber.toLowerCase().includes(term)
         || (p.key ?? '').toLowerCase().includes(term);
       const matchesStatus = statusFilter === 'all' || p.status === statusFilter;
-      return matchesSearch && matchesStatus;
+      const matchesActive = activeFilter === 'all' || (activeFilter === 'active' ? p.isActive : !p.isActive);
+      return matchesSearch && matchesStatus && matchesActive;
     });
-  }, [projects, search, statusFilter]);
+  }, [projects, search, statusFilter, activeFilter]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -199,150 +141,11 @@ export default function ProjectListPage() {
           <Button variant="outline" onClick={() => navigate('/projects/analytics')}>
             <BarChart3 className="size-4" /> Analytics
           </Button>
-          <Button onClick={() => setCreateOpen(true)}>
+          <Button onClick={() => navigate('/projects/new')}>
             <Plus className="size-4" /> New Project
           </Button>
         </div>
       </div>
-
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="flex max-h-[88vh] flex-col sm:max-w-lg">
-          <DialogHeader><DialogTitle>Create Project</DialogTitle></DialogHeader>
-          <Form {...form}>
-            <form onSubmit={form.handleSubmit((v) => createMutation.mutate(v))} className="flex min-h-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-              <FormField control={form.control} name="name" render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Name</FormLabel>
-                  <FormControl><Input {...field} /></FormControl>
-                  <FormMessage />
-                </FormItem>
-              )} />
-              <div className="grid grid-cols-2 gap-3">
-                <FormField control={form.control} name="key" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Key</FormLabel>
-                    <FormControl><Input placeholder="e.g. WEB" {...field} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={form.control} name="status" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Status</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl><SelectTrigger className="w-full"><SelectValue /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        {PROJECT_STATUSES.map((s) => <SelectItem key={s} value={s}>{labelOf(s)}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </FormItem>
-                )} />
-              </div>
-              <FormField control={form.control} name="description" render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Description</FormLabel>
-                  <FormControl><Textarea rows={3} {...field} /></FormControl>
-                  <FormMessage />
-                </FormItem>
-              )} />
-              <div className="grid grid-cols-2 gap-3">
-                <FormField control={form.control} name="priority" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Priority</FormLabel>
-                    <Select value={field.value || NONE} onValueChange={(v) => field.onChange(v === NONE ? '' : v)}>
-                      <FormControl><SelectTrigger className="w-full"><SelectValue placeholder="None" /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        <SelectItem value={NONE}>None</SelectItem>
-                        {PRIORITIES.map((p) => <SelectItem key={p} value={p}>{labelOf(p)}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </FormItem>
-                )} />
-                <FormField control={form.control} name="managerUserId" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Manager</FormLabel>
-                    <Select value={field.value || NONE} onValueChange={(v) => field.onChange(v === NONE ? '' : v)}>
-                      <FormControl><SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        <SelectItem value={NONE}>Unassigned</SelectItem>
-                        {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </FormItem>
-                )} />
-              </div>
-              <FormField control={form.control} name="customerCompanyId" render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Customer Company</FormLabel>
-                  <Select value={field.value || NONE} onValueChange={(v) => field.onChange(v === NONE ? '' : v)}>
-                    <FormControl><SelectTrigger className="w-full"><SelectValue placeholder="None" /></SelectTrigger></FormControl>
-                    <SelectContent>
-                      <SelectItem value={NONE}>None</SelectItem>
-                      {companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </FormItem>
-              )} />
-              <FormField control={form.control} name="projectTemplateId" render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Project template</FormLabel>
-                  <Select value={field.value || NONE} onValueChange={(v) => field.onChange(v === NONE ? '' : v)}>
-                    <FormControl><SelectTrigger className="w-full"><SelectValue placeholder="None (blank project)" /></SelectTrigger></FormControl>
-                    <SelectContent>
-                      <SelectItem value={NONE}>None (blank project)</SelectItem>
-                      {projectTemplates.filter((t) => t.isActive).map((t) => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground">Scaffolds the template's milestones and tasks into the new project.</p>
-                </FormItem>
-              )} />
-              <div className="grid grid-cols-2 gap-3">
-                <FormField control={form.control} name="budget" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Budget</FormLabel>
-                    <FormControl><Input type="number" min="0" placeholder="0" {...field} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={form.control} name="currency" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Currency</FormLabel>
-                    <Select value={field.value || 'USD'} onValueChange={field.onChange}>
-                      <FormControl><SelectTrigger className="w-full"><SelectValue placeholder="USD" /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        {CURRENCIES.map((c) => <SelectItem key={c.code} value={c.code}>{c.code} — {c.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <FormField control={form.control} name="startDate" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Start Date</FormLabel>
-                    <FormControl><DateField value={field.value} onChange={field.onChange} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={form.control} name="endDate" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>End Date</FormLabel>
-                    <FormControl><DateField value={field.value} onChange={field.onChange} min={form.watch('startDate') || undefined} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-              </div>
-              </div>
-              <DialogFooter className="pt-3">
-                <Button type="submit" disabled={createMutation.isPending}>
-                  {createMutation.isPending ? 'Creating...' : 'Create'}
-                </Button>
-              </DialogFooter>
-            </form>
-          </Form>
-        </DialogContent>
-      </Dialog>
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative w-full max-w-xs">
@@ -359,6 +162,14 @@ export default function ProjectListPage() {
           <SelectContent>
             <SelectItem value="all">All Statuses</SelectItem>
             {PROJECT_STATUSES.map((s) => <SelectItem key={s} value={s}>{labelOf(s)}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={activeFilter} onValueChange={(v) => setActiveFilter(v as ActiveFilter)}>
+          <SelectTrigger className="w-48"><SelectValue placeholder="Active & deactivated" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Active & deactivated</SelectItem>
+            <SelectItem value="active">Active</SelectItem>
+            <SelectItem value="inactive">Deactivated</SelectItem>
           </SelectContent>
         </Select>
         <span className="text-sm text-muted-foreground">
@@ -379,7 +190,7 @@ export default function ProjectListPage() {
                 <TableHead className="border-r"><HeadLabel icon={Flag}>Priority</HeadLabel></TableHead>
                 <TableHead className="border-r"><HeadLabel icon={AtSign}>Manager</HeadLabel></TableHead>
                 <SortableHead className="border-r" icon={BarChart3} label="Progress" field="progress" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <TableHead className="text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
+                <TableHead><HeadLabel icon={ToggleRight}>Active</HeadLabel></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -424,14 +235,38 @@ export default function ProjectListPage() {
                       <span className="text-xs tabular-nums text-muted-foreground">{p.progress}%</span>
                     </div>
                   </TableCell>
-                  <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      onClick={async () => { if (await confirm({ title: `Delete project "${p.name}"?`, description: 'This permanently removes the project and its data.', destructive: true, confirmText: 'Delete' })) deleteMutation.mutate(p.id); }}
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
+                  <TableCell onClick={isAdmin ? (e) => e.stopPropagation() : undefined}>
+                    {isAdmin ? (
+                      <Select
+                        value={p.isActive ? 'active' : 'inactive'}
+                        onValueChange={async (v) => {
+                          const next = v === 'active';
+                          if (!v || next === p.isActive) return; // ignore a re-pick / Radix's empty reset
+                          if (!next && !(await confirm({
+                            title: `Deactivate project "${p.name}"?`,
+                            description: 'The project and all its data stay; it is only marked as deactivated. You can activate it again at any time.',
+                            confirmText: 'Deactivate',
+                          }))) return;
+                          toggleActive.mutate({ id: p.id, isActive: next });
+                        }}
+                        disabled={toggleActive.isPending}
+                      >
+                        <SelectTrigger
+                          size="sm"
+                          className={`h-auto w-auto gap-1 rounded border-0 px-1.5 py-0.5 text-xs font-bold uppercase shadow-none data-[size=sm]:h-auto ${activePill(p.isActive)}`}
+                        >
+                          <SelectValue placeholder="Active" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="active">Active</SelectItem>
+                          <SelectItem value="inactive">Deactivated</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-bold uppercase ${activePill(p.isActive)}`}>
+                        {p.isActive ? 'Active' : 'Deactivated'}
+                      </span>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}

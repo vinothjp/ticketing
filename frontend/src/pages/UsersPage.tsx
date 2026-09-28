@@ -182,6 +182,7 @@ export default function UsersPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/api/users/${id}`),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['users'] }); toast.success('User deleted'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error deleting user'),
   });
 
   const toggleActive = useMutation({

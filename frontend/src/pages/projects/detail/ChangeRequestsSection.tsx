@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Trash2, Check, X } from 'lucide-react';
+import { Plus, Pencil, Trash2, Check, X, AlignLeft, User, CalendarClock, Banknote, CircleDot, ListPlus } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
@@ -12,6 +14,22 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { useConfirm } from '@/hooks/useConfirm';
 import { invalidateProject, type ProjectDetail } from '../projectMeta';
+
+/**
+ * A column heading: its icon, then its label. Muted and small, so the headings
+ * read as chrome and the values below them carry the weight. Mirrors the
+ * Change Management list.
+ */
+function HeadLabel({ icon: Icon, children, className = '' }: {
+  icon: LucideIcon; children: ReactNode; className?: string;
+}) {
+  return (
+    <span className={`flex items-center gap-1.5 text-xs font-semibold text-muted-foreground ${className}`}>
+      <Icon className="size-3.5 shrink-0" />
+      {children}
+    </span>
+  );
+}
 
 // A change request charges the customer for a NEW feature they requested. On approval it
 // creates the new WBS item and raises the budget by the charged amount.
@@ -107,14 +125,14 @@ export default function ChangeRequestsSection({ project }: { project: ProjectDet
       <div className="overflow-x-auto rounded-lg border">
         <Table>
           <TableHeader>
-            <TableRow>
-              <TableHead>Title</TableHead>
-              <TableHead>Requested by</TableHead>
-              <TableHead>Schedule</TableHead>
-              <TableHead className="text-right">Amount (charged)</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>New task</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
+            <TableRow className="bg-muted/50 hover:bg-muted/50">
+              <TableHead className="border-r"><HeadLabel icon={AlignLeft}>Title</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={User}>Requested by</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={CalendarClock}>Schedule</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={Banknote} className="justify-end">Amount (charged)</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={CircleDot}>Status</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={ListPlus}>New task</HeadLabel></TableHead>
+              <TableHead className="w-px text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -122,12 +140,12 @@ export default function ChangeRequestsSection({ project }: { project: ProjectDet
             {!isLoading && crs.length === 0 && <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground">No change requests yet.</TableCell></TableRow>}
             {crs.map((cr) => (
               <TableRow key={cr.id}>
-                <TableCell className="font-medium">{cr.title}</TableCell>
-                <TableCell className="text-sm text-muted-foreground">{cr.requestedBy || '—'}</TableCell>
-                <TableCell className="text-sm text-muted-foreground">{cr.scheduleImpact || '—'}</TableCell>
-                <TableCell className="text-right tabular-nums">{money(cr.amount)}</TableCell>
-                <TableCell><Badge variant={statusVariant(cr.status)}>{STATUS_LABEL[cr.status] ?? cr.status}</Badge></TableCell>
-                <TableCell className="text-sm text-muted-foreground">{cr.createdTask ? cr.createdTask.title : '—'}</TableCell>
+                <TableCell className="border-r font-medium">{cr.title}</TableCell>
+                <TableCell className="border-r text-sm text-muted-foreground">{cr.requestedBy || '—'}</TableCell>
+                <TableCell className="border-r text-sm text-muted-foreground">{cr.scheduleImpact || '—'}</TableCell>
+                <TableCell className="border-r text-right tabular-nums">{money(cr.amount)}</TableCell>
+                <TableCell className="border-r"><Badge variant={statusVariant(cr.status)}>{STATUS_LABEL[cr.status] ?? cr.status}</Badge></TableCell>
+                <TableCell className="border-r text-sm text-muted-foreground">{cr.createdTask ? cr.createdTask.title : '—'}</TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1">
                     {!isTerminal(cr.status) && (

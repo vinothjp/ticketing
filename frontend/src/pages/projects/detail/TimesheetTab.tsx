@@ -13,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { invalidateProject, type ProjectDetail, type UserOption } from '../projectMeta';
 
+
 const NONE = '__none__';
 const tsVariant = (s: string): 'success' | 'destructive' | 'secondary' =>
   s === 'APPROVED' ? 'success' : s === 'REJECTED' ? 'destructive' : 'secondary';

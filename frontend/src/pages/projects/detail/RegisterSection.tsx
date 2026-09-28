@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Trash2, Paperclip, Download } from 'lucide-react';
+import { Plus, Pencil, Trash2, Paperclip, Download, AlignLeft, CircleDot, Calendar, Banknote, Link2, Type } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
@@ -17,6 +19,22 @@ import Attachments from './Attachments';
 import { exportCsv } from '../../../lib/exportCsv';
 import { acceptAttr, uploadHint, MAX_UPLOAD_MB, splitAllowed } from '../../../lib/uploads';
 
+/**
+ * A column heading: its icon, then its label. Muted and small, so the headings
+ * read as chrome and the values below them carry the weight. Mirrors the
+ * Change Management list.
+ */
+function HeadLabel({ icon: Icon, children, className = '' }: {
+  icon: LucideIcon; children: ReactNode; className?: string;
+}) {
+  return (
+    <span className={`flex items-center gap-1.5 text-xs font-semibold text-muted-foreground ${className}`}>
+      <Icon className="size-3.5 shrink-0" />
+      {children}
+    </span>
+  );
+}
+
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'outline';
 
 // Shared coloring for register status/severity words.
@@ -32,6 +50,15 @@ export function regBadge(v?: string | null): BadgeVariant {
 
 export type FieldCfg = { key: string; label: string; type: 'text' | 'textarea' | 'number' | 'date' | 'select'; options?: string[]; };
 // `compute` derives the cell value from the whole row (e.g. an invoice's Pending/Paid status).
+/** A register column's heading icon, from what the column holds. */
+function colIcon(c: ColCfg, first: boolean): LucideIcon {
+  if (c.kind === 'badge') return CircleDot;
+  if (c.kind === 'date') return Calendar;
+  if (c.kind === 'money') return Banknote;
+  if (c.kind === 'link') return Link2;
+  return first ? AlignLeft : Type;
+}
+
 export type ColCfg = { key: string; label: string; kind?: 'badge' | 'date' | 'money' | 'text' | 'link'; align?: 'right'; compute?: (row: Record<string, any>) => any };
 
 const toDateInput = (v?: string | null) => (v ? new Date(v).toISOString().slice(0, 10) : '');
@@ -238,9 +265,13 @@ export default function RegisterSection({
       <div className="overflow-x-auto rounded-lg border">
         <Table>
           <TableHeader>
-            <TableRow>
-              {columns.map((c) => <TableHead key={c.key} className={c.align === 'right' ? 'text-right' : ''}>{c.label}</TableHead>)}
-              <TableHead className="text-right">Actions</TableHead>
+            <TableRow className="bg-muted/50 hover:bg-muted/50">
+              {columns.map((c, i) => (
+                <TableHead key={c.key} className="border-r">
+                  <HeadLabel icon={colIcon(c, i === 0)} className={c.align === 'right' ? 'justify-end' : ''}>{c.label}</HeadLabel>
+                </TableHead>
+              ))}
+              <TableHead className="w-px text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -248,7 +279,7 @@ export default function RegisterSection({
             {!isLoading && items.length === 0 && <TableRow><TableCell colSpan={columns.length + 1} className="text-center text-muted-foreground">No {singular.toLowerCase()}s yet.</TableCell></TableRow>}
             {items.map((row) => (
               <TableRow key={row.id}>
-                {columns.map((c) => <TableCell key={c.key} className={c.align === 'right' ? 'text-right tabular-nums' : c.key === columns[0].key ? 'font-medium' : ''}>{cell(row, c)}</TableCell>)}
+                {columns.map((c) => <TableCell key={c.key} className={`border-r ${c.align === 'right' ? 'text-right tabular-nums' : c.key === columns[0].key ? 'font-medium' : ''}`}>{cell(row, c)}</TableCell>)}
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-2">
                     <Button size="sm" variant="outline" onClick={() => { setEditing(row); setOpen(true); }}><Pencil className="size-4" /></Button>

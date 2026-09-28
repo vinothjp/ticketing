@@ -5,7 +5,6 @@ import {
   Body,
   Patch,
   Param,
-  Delete,
   UseGuards,
   Query,
   Request,
@@ -70,11 +69,5 @@ export class ClientVisitsController {
     @Body() updateDto: UpdateClientVisitDto,
   ) {
     return this.clientVisitsService.update(req.user.clientId, id, updateDto, req.user);
-  }
-
-  @Delete(':id')
-  @Roles('Admin')
-  remove(@Request() req: AuthedRequest, @Param('id') id: string) {
-    return this.clientVisitsService.remove(req.user.clientId, id);
   }
 }

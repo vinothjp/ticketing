@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcryptjs';
+import { assertUserDeletable } from './user-links';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { OPEN_ALLOCATION_STATUSES } from '../assets/allocation-status';
@@ -144,7 +145,8 @@ export class UsersService {
   }
 
   async remove(id: string, clientId: string) {
-    await this.findOne(id, clientId);
+    const user = await this.findOne(id, clientId);
+    await assertUserDeletable(this.prisma, id, user.name?.trim() || user.username);
     await this.prisma.user.delete({ where: { id } });
     return { message: 'User deleted' };
   }

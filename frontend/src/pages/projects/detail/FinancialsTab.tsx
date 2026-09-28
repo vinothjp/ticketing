@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Receipt, FileText } from 'lucide-react';
+import { Receipt, FileText, Activity, Clock, Wallet, Banknote, Percent } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -10,6 +12,22 @@ import RegisterSection, { type FieldCfg, type ColCfg } from './RegisterSection';
 import { type ProjectDetail } from '../projectMeta';
 import { attachmentTypesFor } from '../../../lib/uploads';
 import { useOptionValues } from '@/lib/optionLists';
+
+/**
+ * A column heading: its icon, then its label. Muted and small, so the headings
+ * read as chrome and the values below them carry the weight. Mirrors the
+ * Change Management list.
+ */
+function HeadLabel({ icon: Icon, children, className = '' }: {
+  icon: LucideIcon; children: ReactNode; className?: string;
+}) {
+  return (
+    <span className={`flex items-center gap-1.5 text-xs font-semibold text-muted-foreground ${className}`}>
+      <Icon className="size-3.5 shrink-0" />
+      {children}
+    </span>
+  );
+}
 
 interface Financials {
   revenue: number; collected: number; outstanding: number;
@@ -140,30 +158,32 @@ export default function FinancialsTab({ project }: { project: ProjectDetail }) {
 
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-sm">Activity costing</CardTitle></CardHeader>
-            <CardContent className="overflow-x-auto pb-4">
+            <CardContent className="pb-4">
+              <div className="overflow-hidden rounded-lg border">
               <Table>
                 <TableHeader>
-                  <TableRow>
-                    <TableHead>Activity</TableHead>
-                    <TableHead className="text-right">Hours</TableHead>
-                    <TableHead className="text-right">Cost</TableHead>
-                    <TableHead className="text-right">Revenue</TableHead>
-                    <TableHead className="text-right">Margin %</TableHead>
+                  <TableRow className="bg-muted/50 hover:bg-muted/50">
+                    <TableHead className="border-r"><HeadLabel icon={Activity}>Activity</HeadLabel></TableHead>
+                    <TableHead className="border-r"><HeadLabel icon={Clock} className="justify-end">Hours</HeadLabel></TableHead>
+                    <TableHead className="border-r"><HeadLabel icon={Wallet} className="justify-end">Cost</HeadLabel></TableHead>
+                    <TableHead className="border-r"><HeadLabel icon={Banknote} className="justify-end">Revenue</HeadLabel></TableHead>
+                    <TableHead><HeadLabel icon={Percent} className="justify-end">Margin %</HeadLabel></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {f.activityCosting.length === 0 && <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground">No time logged yet.</TableCell></TableRow>}
                   {f.activityCosting.map((a) => (
                     <TableRow key={a.activity}>
-                      <TableCell className="font-medium">{a.activity}</TableCell>
-                      <TableCell className="text-right tabular-nums">{a.hours}</TableCell>
-                      <TableCell className="text-right tabular-nums">{money(a.cost)}</TableCell>
-                      <TableCell className="text-right tabular-nums">{money(a.revenue)}</TableCell>
+                      <TableCell className="border-r font-medium">{a.activity}</TableCell>
+                      <TableCell className="border-r text-right tabular-nums">{a.hours}</TableCell>
+                      <TableCell className="border-r text-right tabular-nums">{money(a.cost)}</TableCell>
+                      <TableCell className="border-r text-right tabular-nums">{money(a.revenue)}</TableCell>
                       <TableCell className="text-right tabular-nums">{a.margin}%</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
+              </div>
             </CardContent>
           </Card>
         </>

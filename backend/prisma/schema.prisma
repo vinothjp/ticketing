@@ -1142,6 +1142,7 @@ model Project {
   projectCode       String?                              // Excel "Project Code"
   description       String?
   status            String   @default("OPEN")            // OPEN | IN_PROGRESS | ON_HOLD | COMPLETED | CANCELLED
+  isActive          Boolean  @default(true)              // projects are never deleted — deactivated instead
   priority          String?                              // LOW | MEDIUM | HIGH | URGENT
   managerUserId     String?
   managerName       String?

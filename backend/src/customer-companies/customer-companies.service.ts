@@ -8,6 +8,7 @@ import * as bcrypt from 'bcryptjs';
 import { unlink } from 'fs/promises';
 import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
+import { assertUserDeletable } from '../users/user-links';
 import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto } from './dto/customer-company.dto';
 import { CLIENT_COLUMNS, CLIENT_IMPORT_NOTES, CLIENT_STATUSES, CLIENT_STATUS_LABELS } from './client-sheet';
 import {
@@ -424,6 +425,7 @@ export class CustomerCompaniesService {
     await this.getOwned(companyId, clientId);
     const user = await this.prisma.user.findFirst({ where: { id: userId, customerCompanyId: companyId } });
     if (!user) throw new NotFoundException('Contact not found');
+    await assertUserDeletable(this.prisma, userId, user.name?.trim() || user.username);
     await this.prisma.user.delete({ where: { id: userId } });
     return { message: 'Contact removed' };
   }

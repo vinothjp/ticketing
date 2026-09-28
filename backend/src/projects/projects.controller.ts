@@ -1,10 +1,14 @@
 import {
   Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards, Request,
+  Res, UploadedFile, UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
+import { sendWorkbook, stamp } from '../lib/spreadsheet';
 import { ProjectsService } from './projects.service';
 import {
   CreateProjectDto, UpdateProjectDto,
-  CreateProjectTaskDto, UpdateProjectTaskDto, UpdateTaskStatusDto,
+  CreateProjectTaskDto, UpdateProjectTaskDto, UpdateTaskStatusDto, MoveToSprintDto,
   CreateMilestoneDto, UpdateMilestoneDto,
   CreateTaskCommentDto, AddWatcherDto, AddDependencyDto,
   CreateSprintDto, UpdateSprintDto,
@@ -78,11 +82,6 @@ export class ProjectsController {
     return this.projects.update(id, dto, req.user.clientId, req.user);
   }
 
-  @Delete(':id')
-  remove(@Param('id') id: string, @Request() req: AuthedRequest) {
-    return this.projects.remove(id, req.user.clientId);
-  }
-
 
   // ---- Tasks ----
   @Get(':id/tasks')
@@ -98,6 +97,11 @@ export class ProjectsController {
   @Patch('tasks/:taskId')
   updateTask(@Param('taskId') taskId: string, @Body() dto: UpdateProjectTaskDto, @Request() req: AuthedRequest) {
     return this.projects.updateTask(taskId, dto, req.user.clientId, req.user);
+  }
+
+  @Post('tasks/:taskId/sprint')
+  moveToSprint(@Param('taskId') taskId: string, @Body() dto: MoveToSprintDto, @Request() req: AuthedRequest) {
+    return this.projects.moveToSprint(taskId, dto, req.user.clientId, req.user);
   }
 
   @Patch('tasks/:taskId/status')
@@ -204,6 +208,25 @@ export class ProjectsController {
   }
 
   // ---- Resources plan ----
+  /** The blank import template — the plan's columns, with an Instructions sheet. */
+  @Get('resources/import-template')
+  resourceImportTemplate(@Res() res: Response) {
+    sendWorkbook(res, 'resource-import-template.xlsx', this.projects.resourceImportTemplate());
+  }
+
+  /** The project's resource plan as a spreadsheet, ready to be edited and posted back. */
+  @Get(':id/resources/export')
+  async exportResources(@Param('id') id: string, @Request() req: AuthedRequest, @Res() res: Response) {
+    sendWorkbook(res, `resources-${stamp()}.xlsx`, await this.projects.exportResources(id, req.user.clientId));
+  }
+
+  /** Bulk add/update of the plan from a spreadsheet — answers with a per-row account. */
+  @Post(':id/resources/import')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
+  importResources(@Param('id') id: string, @UploadedFile() file: Express.Multer.File, @Request() req: AuthedRequest) {
+    return this.projects.importResources(id, req.user.clientId, req.user, file);
+  }
+
   @Post(':id/resources')
   addResource(@Param('id') id: string, @Body() dto: CreateResourceDto, @Request() req: AuthedRequest) {
     return this.projects.addResource(id, dto, req.user.clientId, req.user);

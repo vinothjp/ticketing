@@ -118,11 +118,6 @@ export class ChangeRequestsController {
     return this.crs.update(id, dto, req.user.clientId, req.user);
   }
 
-  @Delete(':id')
-  remove(@Param('id') id: string, @Request() req: AuthedRequest) {
-    return this.crs.remove(id, req.user.clientId);
-  }
-
   // Provider sends the CR to its linked company's admin for approval.
   @Post(':id/send-approval')
   sendForApproval(@Param('id') id: string, @Request() req: AuthedRequest) {

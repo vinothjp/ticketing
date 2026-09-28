@@ -72,6 +72,7 @@ export interface ProjectSummary {
   name: string;
   key?: string | null;
   status: string;
+  isActive: boolean;
   priority?: string | null;
   managerUserId?: string | null;
   managerName?: string | null;
@@ -275,6 +276,30 @@ export interface ProjectDetail extends ProjectSummary {
 // Task key, e.g. "ERP-3". Falls back to "T" when the project has no key set.
 export const taskKey = (projectKey: string | null | undefined, taskNumber: number | null | undefined) =>
   taskNumber != null ? `${(projectKey || 'T').toUpperCase()}-${taskNumber}` : '';
+
+/**
+ * The WBS tree flattened in pre-order (1, 1.1, 1.1.1, 1.1.2, 1.2, 2 …) — the order WbsView renders.
+ * Siblings sort by sortOrder, then taskNumber, matching the backend numbering; a task whose parent
+ * is missing is treated as a root, as WbsView does.
+ */
+export function wbsOrder(tasks: ProjectTask[]): { task: ProjectTask; depth: number }[] {
+  const ids = new Set(tasks.map((t) => t.id));
+  const kids = new Map<string | null, ProjectTask[]>();
+  for (const t of tasks) {
+    const p = t.parentTaskId && ids.has(t.parentTaskId) ? t.parentTaskId : null;
+    if (!kids.has(p)) kids.set(p, []);
+    kids.get(p)!.push(t);
+  }
+  const out: { task: ProjectTask; depth: number }[] = [];
+  const walk = (parent: string | null, depth: number) => {
+    const list = (kids.get(parent) ?? []).sort(
+      (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || (a.taskNumber ?? 0) - (b.taskNumber ?? 0),
+    );
+    for (const t of list) { out.push({ task: t, depth }); walk(t.id, depth + 1); }
+  };
+  walk(null, 0);
+  return out;
+}
 
 export interface UserOption { id: string; username: string; }
 export interface CustomerCompanyOption { id: string; name: string; }

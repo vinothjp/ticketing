@@ -6,9 +6,15 @@ import {
   CreateProjectTaskDto, UpdateProjectTaskDto, UpdateTaskStatusDto,
   CreateMilestoneDto, UpdateMilestoneDto,
   CreateTaskCommentDto, AddWatcherDto, AddDependencyDto,
-  CreateSprintDto, UpdateSprintDto,
+  CreateSprintDto, UpdateSprintDto, MoveToSprintDto,
   CreateResourceDto, UpdateResourceDto, CreateTimesheetDto, UpdateTimesheetDto,
 } from './dto/project.dto';
+import {
+  exportSheet, importTemplate, readSheet, rowReader, asText, asDate, errorText,
+} from '../lib/spreadsheet';
+import type { ImportResult } from '../lib/spreadsheet';
+import { RESOURCE_COLUMNS, RESOURCE_IMPORT_NOTES } from './resource-sheet';
+import type { ResourceSheetRow } from './resource-sheet';
 
 type Actor = { id: string; username?: string; roles?: string[] };
 const isAdmin = (a: Actor) => !!a.roles?.includes('Admin');
@@ -389,6 +395,11 @@ export class ProjectsService {
     if (set(dto.key)) data.key = dto.key?.trim() || null;
     if (set(dto.description)) data.description = dto.description?.trim() || null;
     if (set(dto.status)) data.status = dto.status;
+    if (set(dto.isActive)) {
+      // A project is never deleted, like a ticket; deactivating it is the Admin's call.
+      if (!isAdmin(actor)) throw new ForbiddenException('Only an Admin can activate or deactivate a project');
+      data.isActive = dto.isActive;
+    }
     if (set(dto.priority)) data.priority = dto.priority || null;
     if (set(dto.customerCompanyId)) {
       data.customerCompany = dto.customerCompanyId
@@ -423,12 +434,6 @@ export class ProjectsService {
       await this.clampTasksToWindow(id, newStart, newEnd);
     }
     return this.findOne(id, clientId);
-  }
-
-  async remove(id: string, clientId: string) {
-    await this.getOwned(id, clientId);
-    await this.prisma.project.delete({ where: { id } });
-    return { message: 'Project deleted' };
   }
 
 
@@ -482,12 +487,15 @@ export class ProjectsService {
         ? new Date(dto.dueDate)
         : (effStart ? new Date(effStart.getTime() + (dto.durationDays ?? 2) * 86_400_000) : null);
       await this.assertDateWindow(tx, projectId, dto.parentTaskId || null, effStart, effEnd, clientId);
+      if (dto.sprintId) await this.assertSprintOfProject(tx, dto.sprintId, projectId);
+      // Only leaves sit in a sprint. Splitting a sprint item hands its sprint to the new child.
+      const inherited = dto.parentTaskId ? await this.releaseParentSprint(tx, dto.parentTaskId) : null;
       return tx.projectTask.create({
         data: {
           projectId,
           taskNumber: proj.taskSequence,
           milestoneId: dto.milestoneId || null,
-          sprintId: dto.sprintId || null,
+          sprintId: dto.sprintId || inherited || null,
           storyPoints: dto.storyPoints ?? null,
           wbsType: dto.wbsType ?? 'TASK',
           durationDays: dto.durationDays ?? null,
@@ -639,6 +647,13 @@ export class ProjectsService {
     if (set(dto.plannedEffort)) data.plannedEffort = dto.plannedEffort ?? null;
     if (set(dto.tags)) data.tags = (dto.tags ?? []).map((t) => t.trim()).filter(Boolean);
     if (set(dto.storyPoints)) data.storyPoints = dto.storyPoints ?? null;
+    if (set(dto.sprintId) && dto.sprintId) {
+      // Sprints hold leaf work only — a summary item's sprints are derived from its leaves.
+      if (await this.prisma.projectTask.count({ where: { parentTaskId: taskId } })) {
+        throw new BadRequestException("A summary item can't be in a sprint — add the tasks beneath it instead");
+      }
+      await this.assertSprintOfProject(this.prisma, dto.sprintId, existing.projectId);
+    }
     if (set(dto.sprintId)) {
       data.sprint = dto.sprintId ? { connect: { id: dto.sprintId } } : { disconnect: true };
     }
@@ -655,6 +670,12 @@ export class ProjectsService {
       if (dto.status === 'COMPLETED' && !set(dto.completionPct)) data.completionPct = 100;
     }
 
+    // Re-parenting under a sprint item makes that item a summary: its sprint passes to this one.
+    if (set(dto.parentTaskId) && dto.parentTaskId && dto.parentTaskId !== existing.parentTaskId) {
+      const inherited = await this.releaseParentSprint(this.prisma, dto.parentTaskId);
+      const ownSprint = set(dto.sprintId) ? dto.sprintId : existing.sprintId;
+      if (inherited && !ownSprint) data.sprint = { connect: { id: inherited } };
+    }
     const updated = await this.prisma.projectTask.update({ where: { id: taskId }, data });
     // Completing a parent completes everything beneath it (so the rollup reads 100%).
     if (dto.status === 'COMPLETED') await this.completeDescendants(existing.projectId, taskId, actor);
@@ -949,6 +970,58 @@ export class ProjectsService {
     return { message: 'Sprint deleted' };
   }
 
+  /**
+   * Sprint membership, Jira-style: only leaf work items sit in a sprint. Moving a leaf moves it;
+   * moving a summary item is a shortcut that moves every leaf beneath it currently in
+   * `fromSprintId` (null = the backlog) — the summary itself never stores a sprint.
+   */
+  async moveToSprint(taskId: string, dto: MoveToSprintDto, clientId: string, actor: Actor) {
+    const task = await this.getOwnedTask(taskId, clientId);
+    const to = dto.sprintId || null;
+    const from = dto.fromSprintId || null;
+    if (to) await this.assertSprintOfProject(this.prisma, to, task.projectId);
+    const tasks = await this.prisma.projectTask.findMany({
+      where: { projectId: task.projectId },
+      select: { id: true, parentTaskId: true, sprintId: true, wbsType: true, assigneeUserId: true },
+    });
+    const kids = new Map<string, string[]>();
+    for (const t of tasks) if (t.parentTaskId) (kids.get(t.parentTaskId) ?? kids.set(t.parentTaskId, []).get(t.parentTaskId)!).push(t.id);
+    if (!kids.has(taskId)) {
+      this.assertTaskEditable(task, actor);
+      await this.prisma.projectTask.update({ where: { id: taskId }, data: { sprintId: to, updatedBy: actor.id } });
+      return { moved: 1 };
+    }
+    if (!isAdmin(actor)) throw new ForbiddenException('Only admins can move a whole branch between sprints');
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    const leaves: string[] = [];
+    const walk = (id: string) => {
+      const c = kids.get(id);
+      if (c) { c.forEach(walk); return; }
+      const t = byId.get(id)!;
+      if (t.wbsType !== 'PHASE' && (t.sprintId ?? null) === from) leaves.push(id);
+    };
+    walk(taskId);
+    if (leaves.length) {
+      await this.prisma.projectTask.updateMany({ where: { id: { in: leaves } }, data: { sprintId: to, updatedBy: actor.id } });
+    }
+    return { moved: leaves.length };
+  }
+
+  // A sprint named on a task must belong to that task's project.
+  private async assertSprintOfProject(db: Prisma.TransactionClient | PrismaService, sprintId: string, projectId: string) {
+    const ok = await db.projectSprint.count({ where: { id: sprintId, projectId } });
+    if (!ok) throw new BadRequestException('Sprint not found in this project');
+  }
+
+  // An item gaining a child becomes a summary and stops holding a sprint; returns the sprint it
+  // held so the child can take it over (splitting sprint work keeps it in the sprint).
+  private async releaseParentSprint(db: Prisma.TransactionClient | PrismaService, parentId: string): Promise<string | null> {
+    const parent = await db.projectTask.findUnique({ where: { id: parentId }, select: { sprintId: true } });
+    if (!parent?.sprintId) return null;
+    await db.projectTask.update({ where: { id: parentId }, data: { sprintId: null } });
+    return parent.sprintId;
+  }
+
   private async getOwnedSprint(sprintId: string, clientId: string) {
     const sprint = await this.prisma.projectSprint.findFirst({
       where: { id: sprintId, project: { clientId } },
@@ -1048,6 +1121,136 @@ export class ProjectsService {
     await this.getOwnedResource(resourceId, clientId);
     await this.prisma.projectResource.delete({ where: { id: resourceId } });
     return { message: 'Resource removed' };
+  }
+
+  /** The project's resource plan as a spreadsheet, ready to be edited and posted back. */
+  async exportResources(projectId: string, clientId: string) {
+    await this.getOwned(projectId, clientId);
+    const rows = await this.prisma.projectResource.findMany({
+      where: { projectId },
+      include: { user: { select: { username: true, name: true, employeeId: true } }, category: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    return exportSheet('Resources', RESOURCE_COLUMNS, rows as unknown as ResourceSheetRow[]);
+  }
+
+  /** The blank template: the same columns, minus the ones an import cannot set. */
+  resourceImportTemplate() {
+    return importTemplate('Resources', RESOURCE_COLUMNS, RESOURCE_IMPORT_NOTES);
+  }
+
+  /**
+   * Bulk add/update of a project's resource plan, matched on the consultant.
+   *
+   * Every row goes through the ordinary `addResource` / `updateResource`, so an
+   * import is a fast way to type, not a second way in. Rows run **serially**:
+   * two rows naming the same new consultant must see each other, which a
+   * `Promise.all` would not. The consultant has to be a real staff user of the
+   * tenant — a name that matches nobody is refused, not stored as free text,
+   * or every typo would add a phantom member to the plan.
+   */
+  async importResources(projectId: string, clientId: string, actor: Actor, file?: Express.Multer.File): Promise<ImportResult> {
+    const project = await this.getOwned(projectId, clientId);
+    const records = readSheet(file);
+    const result: ImportResult = { created: 0, updated: 0, skipped: 0, errors: [] };
+
+    const column = (header: string) => RESOURCE_COLUMNS.find((c) => c.header === header)!;
+    const [CONSULTANT, ROLE, CATEGORY, ALLOC, HOURS, START, END, BILLABLE] = [
+      'Consultant', 'Role', 'Category', 'Allocation %', 'Daily hours', 'Start date', 'End date', 'Billable',
+    ].map(column);
+
+    const categories = await this.prisma.resourceCategory.findMany({ where: { clientId }, select: { id: true, name: true } });
+    const categoryByName = new Map(categories.map((c) => [c.name.trim().toLowerCase(), c.id]));
+
+    const wholeNumber = (v: unknown, label: string, min: number, max?: number) => {
+      const text = asText(v);
+      if (!text) return undefined;
+      const n = Number(text);
+      if (!Number.isInteger(n) || n < min || (max !== undefined && n > max)) {
+        throw new BadRequestException(`${label}: "${text}" must be a whole number ${max !== undefined ? `from ${min} to ${max}` : `of at least ${min}`}`);
+      }
+      return n;
+    };
+
+    for (const [i, record] of records.entries()) {
+      const line = i + 2; // the header is row 1, so a sheet row is its index + 2
+      try {
+        const read = rowReader(record);
+        const consultant = asText(read(CONSULTANT));
+        // A trailing blank row is the normal shape of a hand-edited sheet, not an error.
+        if (!consultant && !Object.values(record).some((v) => asText(v))) continue;
+        if (!consultant) throw new BadRequestException('Consultant is required');
+
+        // Username is unique; Employee ID is unique per tenant. Matching either
+        // could still reach two people (one's username is another's employee ID),
+        // so an ambiguous hit is refused and named rather than guessed.
+        const users = await this.prisma.user.findMany({
+          where: {
+            clientId, customerCompanyId: null,
+            OR: [{ username: { equals: consultant, mode: 'insensitive' } }, { employeeId: consultant }],
+          },
+          select: { id: true, username: true },
+        });
+        if (users.length === 0) throw new BadRequestException(`Consultant "${consultant}" is not a staff user`);
+        if (users.length > 1) {
+          throw new BadRequestException(`Consultant "${consultant}" matches ${users.map((u) => u.username).join(' and ')} — use the username`);
+        }
+        const user = users[0];
+
+        // A blank cell on an update means "leave it alone", so only the columns
+        // the sheet actually carries are sent.
+        const dto: UpdateResourceDto = {};
+        const role = asText(read(ROLE));
+        if (role) dto.role = role;
+        const category = asText(read(CATEGORY));
+        if (category) {
+          if (category.toLowerCase() === 'none') dto.categoryId = '';
+          else {
+            const id = categoryByName.get(category.toLowerCase());
+            if (!id) throw new BadRequestException(`Category "${category}" is not on the Resource Costs screen`);
+            dto.categoryId = id;
+          }
+        }
+        const alloc = wholeNumber(read(ALLOC), 'Allocation %', 0, 100);
+        if (alloc !== undefined) dto.allocationPct = alloc;
+        const hours = wholeNumber(read(HOURS), 'Daily hours', 1);
+        if (hours !== undefined) dto.dailyHours = hours;
+        const start = asDate(read(START), 'Start date');
+        if (start) dto.startDate = start;
+        const end = asDate(read(END), 'End date');
+        if (end) dto.endDate = end;
+        const billable = asText(read(BILLABLE)).toLowerCase();
+        if (billable) {
+          if (['yes', 'y', 'true', '1'].includes(billable)) dto.billable = true;
+          else if (['no', 'n', 'false', '0'].includes(billable)) dto.billable = false;
+          else throw new BadRequestException(`Billable: "${asText(read(BILLABLE))}" must be Yes or No`);
+        }
+
+        const existing = await this.prisma.projectResource.findMany({ where: { projectId, userId: user.id }, select: { id: true } });
+        if (existing.length > 1) {
+          throw new BadRequestException(`${user.username} is on this plan ${existing.length} times — edit those rows on the Resources tab`);
+        }
+        if (existing.length === 1) {
+          await this.updateResource(existing[0].id, dto, clientId);
+          result.updated += 1;
+        } else {
+          await this.addResource(projectId, {
+            ...dto,
+            userId: user.id,
+            consultantName: user.username,
+            // Same defaults the Add Member form opens with.
+            startDate: dto.startDate ?? project.startDate?.toISOString().slice(0, 10),
+            endDate: dto.endDate ?? project.endDate?.toISOString().slice(0, 10),
+          }, clientId, actor);
+          result.created += 1;
+        }
+      } catch (e) {
+        result.skipped += 1;
+        result.errors.push({ row: line, message: errorText(e) });
+      }
+    }
+
+    return result;
   }
 
   private async getOwnedResource(id: string, clientId: string) {

@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Search, Trash2, ChevronLeft, ChevronRight,
+import { useQuery } from '@tanstack/react-query';
+import { Plus, Search, ChevronLeft, ChevronRight,
   Hash, AlignLeft, User, Tag, Flag, Milestone, CircleDot } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { toast } from 'sonner';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -27,7 +26,6 @@ function HeadLabel({ icon: Icon, children }: { icon: LucideIcon; children: React
   );
 }
 
-import { useConfirm } from '@/hooks/useConfirm';
 import { cn } from '@/lib/utils';
 import {
   crStatusVariant, crPriorityVariant, crApprovalMeta, crOptionsQuery,
@@ -54,9 +52,7 @@ function StatCard({ label, value, active, onClick }: { label: string; value: num
 }
 
 export default function ChangeRequestListPage() {
-  const qc = useQueryClient();
   const navigate = useNavigate();
-  const { confirm, ConfirmDialog } = useConfirm();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [priorityFilter, setPriorityFilter] = useState('all');
@@ -70,12 +66,6 @@ export default function ChangeRequestListPage() {
   const { data: priorityOpts = [] } = useQuery<CrOption[]>(crOptionsQuery('priority'));
 
   useEffect(() => { setPage(1); }, [search, statusFilter, priorityFilter]);
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => api.delete(`/api/change-requests/${id}`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['change-requests'] }); toast.success('Change request deleted'); },
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error deleting change request'),
-  });
 
   // Counts by status across the whole dataset (independent of the active filters),
   // so the summary stays a stable overview.
@@ -105,7 +95,6 @@ export default function ChangeRequestListPage() {
 
   return (
     <div>
-      {ConfirmDialog}
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-bold text-foreground">Change Management</h1>
         <Button onClick={() => navigate('/change-requests/new')}>
@@ -171,13 +160,12 @@ export default function ChangeRequestListPage() {
                 <TableHead className="w-[9%] overflow-hidden border-r"><HeadLabel icon={Flag}>Priority</HeadLabel></TableHead>
                 <TableHead className="w-[12%] overflow-hidden border-r"><HeadLabel icon={Milestone}>Stage</HeadLabel></TableHead>
                 <TableHead className="w-[13%] overflow-hidden border-r"><HeadLabel icon={CircleDot}>Status</HeadLabel></TableHead>
-                <TableHead className="w-[6%] overflow-hidden text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {paged.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center text-muted-foreground">No change requests match your filters.</TableCell>
+                  <TableCell colSpan={7} className="text-center text-muted-foreground">No change requests match your filters.</TableCell>
                 </TableRow>
               )}
               {paged.map((c) => {
@@ -221,15 +209,6 @@ export default function ChangeRequestListPage() {
                     ) : (
                       <Badge variant={crStatusVariant(c.status)} className="max-w-full truncate" title={c.status}>{c.status}</Badge>
                     )}
-                  </TableCell>
-                  <TableCell className="overflow-hidden text-right" onClick={(e) => e.stopPropagation()}>
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      onClick={async () => { if (await confirm({ title: `Delete ${c.crNumber}?`, description: 'This permanently removes the change request.', destructive: true, confirmText: 'Delete' })) deleteMutation.mutate(c.id); }}
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
                   </TableCell>
                 </TableRow>
                 );

@@ -27,6 +27,7 @@ import TaskDetailDialog from './TaskDetailDialog';
 import WbsView from './WbsView';
 import PriorityMark from './PriorityMark';
 
+
 const NONE = '__none__';
 
 const taskSchema = z.object({
@@ -65,6 +66,14 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
   const myId = user?.id ?? null;
   // Agents may only edit tasks assigned to them; admins edit anything.
   const canEdit = (t: ProjectTask) => isAdmin || t.assigneeUserId === myId;
+  // A summary item's sprints, derived from the leaves beneath it, in sprint order.
+  const sprintsUnder = (id: string): string[] => {
+    const held = new Set<string>();
+    const walk = (pid: string) => project.tasks.filter((c) => c.parentTaskId === pid)
+      .forEach((c) => { if (c.sprintId) held.add(c.sprintId); walk(c.id); });
+    walk(id);
+    return project.sprints.filter((sp) => held.has(sp.id)).map((sp) => sp.name);
+  };
   // For the Gantt, agents see only their assigned tasks (plus ancestors to keep the WBS tree intact).
   const ganttProject = useMemo(() => {
     if (isAdmin) return project;
@@ -156,7 +165,8 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
       wbsType: v.wbsType,
       type: v.wbsType === 'MILESTONE' ? 'MILESTONE' : 'TASK',
       milestoneId: v.milestoneId || null,
-      sprintId: v.sprintId || null,
+      // A summary item never holds a sprint (its sprints are its leaves'), so it sends none.
+      ...(editing?.isParent ? {} : { sprintId: v.sprintId || null }),
       parentTaskId: v.parentTaskId || null,
       description: v.description || undefined,
       assigneeUserId: v.assigneeUserId || undefined,
@@ -411,6 +421,15 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
                     </Select>
                   </FormItem>
                 )} />
+                {editing?.isParent ? (
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">Sprints</div>
+                    <p className="text-sm text-muted-foreground">
+                      {sprintsUnder(editing.id).join(', ') || 'None yet'}
+                      <span className="block text-xs">From the tasks beneath it — add those to a sprint, not this item.</span>
+                    </p>
+                  </div>
+                ) : (
                 <FormField control={form.control} name="sprintId" render={({ field }) => (
                   <FormItem><FormLabel>Sprint</FormLabel>
                     <Select value={field.value || NONE} onValueChange={(v) => field.onChange(v === NONE ? '' : v)}>
@@ -422,6 +441,7 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
                     </Select>
                   </FormItem>
                 )} />
+                )}
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <FormField control={form.control} name="assigneeUserId" render={({ field }) => (
@@ -444,7 +464,7 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
                   </FormItem>
                 )} />
               </div>
-              <div className="grid grid-cols-4 gap-3">
+              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_5.5rem_4.5rem] gap-3">
                 <FormField control={form.control} name="startDate" render={({ field }) => (
                   <FormItem><FormLabel>Start *</FormLabel><FormControl><DateField value={field.value} onChange={field.onChange} min={dateFloor} max={earliest(wDue, dateCap)} /></FormControl><FormMessage /></FormItem>
                 )} />

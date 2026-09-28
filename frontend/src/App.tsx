@@ -32,6 +32,7 @@ import KbArticlePage from './pages/kb/KbArticlePage';
 import KbArticleEditorPage from './pages/kb/KbArticleEditorPage';
 import ProjectListPage from './pages/projects/ProjectListPage';
 import ProjectDetailPage from './pages/projects/ProjectDetailPage';
+import ProjectCreatePage from './pages/projects/ProjectCreatePage';
 import ProjectAnalyticsPage from './pages/projects/ProjectAnalyticsPage';
 import ResourceCostsPage from './pages/ResourceCostsPage';
 import EmployeeListPage from './pages/employees/EmployeeListPage';
@@ -118,6 +119,7 @@ export default function App() {
                           <Route path="/knowledge-base/:id" element={<KbArticlePage />} />
                           <Route path="/knowledge-base/:id/edit" element={<RoleGate allow={isStaff} redirectTo="/knowledge-base"><KbArticleEditorPage /></RoleGate>} />
                           <Route path="/projects" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectListPage /></RoleGate>} />
+                          <Route path="/projects/new" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectCreatePage /></RoleGate>} />
                           <Route path="/projects/analytics" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectAnalyticsPage /></RoleGate>} />
                           <Route path="/timesheet" element={<RoleGate allow={isStaff} redirectTo="/tickets"><TimesheetPage /></RoleGate>} />
                           <Route path="/client-visits" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ClientVisitsPage /></RoleGate>} />

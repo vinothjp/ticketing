@@ -70,6 +70,7 @@ export default function ProjectDetailPage() {
         <h1 className="text-xl font-bold text-foreground">{project.name}</h1>
         {project.key && <span className="text-xs text-muted-foreground">· {project.key}</span>}
         <Badge variant={projectStatusVariant(project.status)}>{labelOf(project.status)}</Badge>
+        {!project.isActive && <Badge variant="outline" className="text-muted-foreground">Deactivated</Badge>}
         {project.priority && <Badge variant={priorityVariant(project.priority)}>{labelOf(project.priority)}</Badge>}
       </div>
 

@@ -45,7 +45,6 @@ import {
 import ChangePasswordDialog from './ChangePasswordDialog';
 import PreferencesMenu from './PreferencesMenu';
 import GlobalSearch from './GlobalSearch';
-import CopilotWidget from './CopilotWidget';
 
 interface NavItem {
   to: string;
@@ -346,7 +345,6 @@ export default function Layout({ children }: { children: ReactNode }) {
       </main>
 
       <ChangePasswordDialog open={changePasswordOpen} onOpenChange={setChangePasswordOpen} />
-      {!isSuperAdmin && <CopilotWidget />}
     </div>
   );
 }

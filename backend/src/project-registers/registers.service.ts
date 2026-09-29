@@ -16,6 +16,11 @@ const REGISTERS: Record<string, {
   invoices: { model: 'projectInvoice', str: ['invoiceNumber', 'type', 'status'], dates: ['invoiceDate'], nums: ['amount', 'amountPaid'], json: [], order: 'invoiceDate' },
 };
 
+// How each numeric field reads in an error message.
+const NUM_LABELS: Record<string, string> = {
+  amount: 'Amount', amountPaid: 'Amount paid', budgetImpact: 'Change request amount',
+};
+
 @Injectable()
 export class RegistersService {
   constructor(private prisma: PrismaService) {}
@@ -35,9 +40,14 @@ export class RegistersService {
     for (const d of c.dates) if (body[d] !== undefined) data[d] = body[d] ? new Date(body[d]) : null;
     // Numerics: an explicit null clears a nullable column (e.g. costEstimate override);
     // '' is treated as "leave as-is" so column defaults apply (amount/amountPaid default 0).
+    // Every numeric here is money, so it must be a real, non-negative figure.
     for (const n of c.nums) {
       if (body[n] === undefined || body[n] === '') continue;
-      data[n] = body[n] === null ? null : Number(body[n]);
+      if (body[n] === null) { data[n] = null; continue; }
+      const v = Number(body[n]);
+      if (!Number.isFinite(v)) throw new BadRequestException(`${NUM_LABELS[n] ?? n} must be a number`);
+      if (v < 0) throw new BadRequestException(`${NUM_LABELS[n] ?? n} can't be negative`);
+      data[n] = v;
     }
     for (const j of c.json) if (body[j] !== undefined) data[j] = body[j];
     // Documents: accept a plain `url` and store it in filePath.

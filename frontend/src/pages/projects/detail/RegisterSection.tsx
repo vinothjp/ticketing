@@ -185,7 +185,7 @@ export default function RegisterSection({
                 ) : f.type === 'date' ? (
                   <DateField value={form[f.key] ?? ''} onChange={(v) => setForm((s) => ({ ...s, [f.key]: v }))} />
                 ) : (
-                  <Input type={f.type === 'number' ? 'number' : 'text'}
+                  <Input type={f.type === 'number' ? 'number' : 'text'} min={f.type === 'number' ? 0 : undefined}
                     value={form[f.key] ?? ''} onChange={(e) => setForm((s) => ({ ...s, [f.key]: e.target.value }))} />
                 )}
               </div>

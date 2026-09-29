@@ -1,12 +1,20 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import * as XLSX from 'xlsx';
 import { PrismaService } from '../prisma/prisma.service';
-import { SaveWeekDto, TIMESHEET_ACTIVITIES } from './dto/timesheet.dto';
+import { SaveWeekDto } from './dto/timesheet.dto';
+import { timesheetRates } from '../projects/timesheet-rate';
+import { assertCostedMember, costedProjectIds } from '../projects/timesheet-member';
+import { loggableTasks } from '../projects/timesheet-task';
 
 type Actor = { id: string; username?: string };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const iso = (d: Date) => d.toISOString().slice(0, 10);
+
+// A grid row is one project + one work item. Entries written before rows named a
+// task carry only their activity text, so those are keyed by it instead.
+const rowKey = (projectId: string, taskId: string | null | undefined, activity: string | null | undefined) =>
+  `${projectId}||${taskId ? `t:${taskId}` : `a:${activity ?? ''}`}`;
 
 // Normalise a yyyy-mm-dd string to a UTC-midnight Date (avoids TZ drift on the
 // day boundary — timesheet cells are whole days, not instants).
@@ -28,36 +36,34 @@ export class TimesheetService {
   }
 
   /**
-   * The tenant's Activity list, from the `timesheetActivity` option list managed
-   * on the Option List screen. Falls back to the seeded defaults if an admin has
-   * emptied or deactivated every value, so the grid is never left unusable.
+   * The projects a consultant may log time on: those whose Resources tab holds them
+   * with a cost category. `keep` adds projects the week already has entries on, so
+   * an older row still renders its project instead of being wiped by the Select.
+   * Each carries its loggable work items, which are the grid's Activity choices.
    */
-  private async activityList(clientId: string): Promise<string[]> {
-    const rows = await this.prisma.picklistOption.findMany({
-      where: { clientId, listKey: 'timesheetActivity', isActive: true },
-      orderBy: { sortOrder: 'asc' },
-      select: { value: true },
-    });
-    return rows.length ? rows.map((r) => r.value) : [...TIMESHEET_ACTIVITIES];
-  }
-
-  private async projectOptions(clientId: string) {
+  private async projectOptions(clientId: string, userId: string, keep: string[] = []) {
+    const member = await costedProjectIds(this.prisma, userId);
     const rows = await this.prisma.project.findMany({
-      where: { clientId },
+      where: { clientId, id: { in: [...new Set([...member, ...keep])] } },
       orderBy: { name: 'asc' },
-      select: { id: true, name: true, projectNumber: true, customerCompany: { select: { name: true } } },
+      select: { id: true, name: true, projectNumber: true, startDate: true, endDate: true, customerCompany: { select: { name: true } } },
     });
+    const tasks = await loggableTasks(this.prisma, rows.map((p) => p.id));
     return rows.map((p) => ({
       id: p.id,
       name: p.name,
       projectNumber: p.projectNumber,
       customerName: p.customerCompany?.name ?? null,
+      // The grid greys out the days a project doesn't run, as yyyy-mm-dd.
+      startDate: p.startDate ? iso(p.startDate) : null,
+      endDate: p.endDate ? iso(p.endDate) : null,
+      tasks: tasks.get(p.id) ?? [],
     }));
   }
 
   /**
    * The weekly grid for one consultant: existing entries collapsed into
-   * (project, activity) rows with a per-day hours map, plus the pick-lists and
+   * (project, work item) rows with a per-day hours map, plus the pick-lists and
    * the document header (number + date) the UI renders.
    */
   async getWeek(clientId: string, actor: Actor, weekStart: string, userId?: string) {
@@ -68,37 +74,39 @@ export class TimesheetService {
 
     const entries = await this.prisma.projectTimesheet.findMany({
       where: { userId: uid, date: { gte, lt }, project: { clientId } },
+      // A fixed order, so the note a row shows is the one `saveWeek` compares against.
+      orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
       select: {
-        projectId: true, activity: true, date: true, hours: true,
+        projectId: true, taskId: true, activity: true, date: true, hours: true,
         workPerformed: true, status: true, documentNumber: true,
       },
     });
 
-    // Collapse to one row per (project, activity).
+    // Collapse to one row per (project, work item).
     const rowMap = new Map<string, {
-      projectId: string; activity: string; workPerformed: string | null;
+      projectId: string; taskId: string | null; activity: string; workPerformed: string | null;
       status: string; days: Record<string, number>;
     }>();
     let documentNumber: string | null = null;
     for (const e of entries) {
       const activity = e.activity ?? '';
-      const key = `${e.projectId}||${activity}`;
+      const key = rowKey(e.projectId, e.taskId, activity);
       let row = rowMap.get(key);
       if (!row) {
-        row = { projectId: e.projectId, activity, workPerformed: null, status: 'DRAFT', days: {} };
+        row = { projectId: e.projectId, taskId: e.taskId, activity, workPerformed: null, status: 'DRAFT', days: {} };
         rowMap.set(key, row);
       }
-      row.days[iso(e.date)] = Number(e.hours);
+      // One entry per cell is the rule; summing keeps the figure honest if two ever meet.
+      row.days[iso(e.date)] = (row.days[iso(e.date)] ?? 0) + Number(e.hours);
       if (e.workPerformed) row.workPerformed = e.workPerformed;
       // Surface the "strongest" status so a partly-approved row reads as approved.
       if (statusRank(e.status) > statusRank(row.status)) row.status = e.status;
       if (e.documentNumber && !documentNumber) documentNumber = e.documentNumber;
     }
 
-    const [projects, consultantName, activities] = await Promise.all([
-      this.projectOptions(clientId),
+    const [projects, consultantName] = await Promise.all([
+      this.projectOptions(clientId, uid, entries.map((e) => e.projectId)),
       this.username(uid),
-      this.activityList(clientId),
     ]);
 
     return {
@@ -107,16 +115,18 @@ export class TimesheetService {
       consultant: { id: uid, username: consultantName },
       documentNumber: documentNumber ?? this.makeDocNumber(days[0], uid),
       documentDate: days[0],
-      activities,
       projects,
       rows: [...rowMap.values()],
     };
   }
 
   /**
-   * Replace the consultant's editable (non-approved) entries for the week with
-   * the submitted grid. One row is written per non-zero day cell. Approved cells
-   * are preserved and never overwritten.
+   * Reconcile the consultant's week with the grid, one cell — project · work item ·
+   * day — at a time. A cell holds at most one entry: grid rows naming the same task
+   * are summed into it (8h + 4h is one 12h entry), and two entries already sharing a
+   * cell are folded into the first. Only what changed is written: an unchanged cell
+   * keeps its status, note and frozen rate; Save never sends a submitted entry back
+   * to draft, and Save & Submit moves drafts forward. Approved cells are locked.
    */
   async saveWeek(clientId: string, actor: Actor, dto: SaveWeekDto) {
     const uid = dto.userId || actor.id;
@@ -124,7 +134,7 @@ export class TimesheetService {
     const weekStart = this.weekDays(dto.weekStart)[0];
     const gte = dayStart(weekStart);
     const lt = new Date(dayStart([...days][days.size - 1]).getTime() + DAY_MS);
-    const status = dto.submit ? 'SUBMITTED' : 'DRAFT';
+    const submit = !!dto.submit;
 
     // Tenant safety: every referenced project must belong to the caller's client.
     const projectIds = [...new Set(dto.rows.map((r) => r.projectId))];
@@ -137,61 +147,148 @@ export class TimesheetService {
       }
     }
 
-    // The tenant owns its Activity list, so membership is checked here rather
-    // than by a fixed @IsIn on the DTO.
-    const [consultantName, activities] = await Promise.all([
-      this.username(uid),
-      this.activityList(clientId),
-    ]);
-    const allowed = new Set(activities);
-    const unknown = [...new Set(dto.rows.map((r) => r.activity).filter((a) => a && !allowed.has(a)))];
-    if (unknown.length) {
-      throw new BadRequestException(
-        `Not an activity on this tenant's list: ${unknown.join(', ')}`,
-      );
-    }
-    const documentNumber = dto.documentNumber?.trim() || this.makeDocNumber(weekStart, uid);
-    const documentDate = dayStart(weekStart);
-
-    // Approved cells to protect (so we skip re-creating a colliding cell).
-    const approved = await this.prisma.projectTimesheet.findMany({
-      where: { userId: uid, date: { gte, lt }, status: 'APPROVED', project: { clientId } },
-      select: { projectId: true, activity: true, date: true },
-    });
-    const approvedKeys = new Set(approved.map((a) => `${a.projectId}||${a.activity ?? ''}||${iso(a.date)}`));
-
-    const creates: {
-      projectId: string; userId: string; consultantName: string | null; date: Date;
-      activity: string; hours: number; workPerformed: string | null;
-      status: string; documentNumber: string; documentDate: Date; createdBy: string;
-    }[] = [];
-    for (const row of dto.rows) {
-      for (const [dayKey, rawHours] of Object.entries(row.days)) {
-        if (!days.has(dayKey)) continue;                 // ignore cells outside the week
-        const hours = Number(rawHours);
-        if (!hours || hours <= 0) continue;              // skip blanks/zeros
-        if (approvedKeys.has(`${row.projectId}||${row.activity}||${dayKey}`)) continue;
-        creates.push({
-          projectId: row.projectId,
-          userId: uid,
-          consultantName,
-          date: dayStart(dayKey),
-          activity: row.activity,
-          hours,
-          workPerformed: row.workPerformed?.trim() || null,
-          status,
-          documentNumber,
-          documentDate,
-          createdBy: actor.id,
-        });
+    // 1. The grid as one figure per cell: rows naming the same work item are one row.
+    type Want = { projectId: string; taskId: string | null; activity: string | null; notes: string[]; days: Map<string, number> };
+    const wanted = new Map<string, Want>();
+    for (const r of dto.rows) {
+      const rk = rowKey(r.projectId, r.taskId, r.activity);
+      let w = wanted.get(rk);
+      if (!w) { w = { projectId: r.projectId, taskId: r.taskId || null, activity: r.activity ?? null, notes: [], days: new Map() }; wanted.set(rk, w); }
+      const note = r.workPerformed?.trim();
+      if (note && !w.notes.includes(note)) w.notes.push(note);
+      for (const [d, h] of Object.entries(r.days)) {
+        const n = Number(h);
+        if (days.has(d) && n > 0) w.days.set(d, (w.days.get(d) ?? 0) + n);
       }
     }
 
+    // 2. What the week holds now, per cell — read in getWeek's order, so the note a
+    //    row showed is known and an untouched one is left alone.
+    const stored = await this.prisma.projectTimesheet.findMany({
+      where: { userId: uid, date: { gte, lt }, project: { clientId } },
+      orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
+      select: { id: true, projectId: true, taskId: true, activity: true, date: true, hours: true, status: true, workPerformed: true },
+    });
+    type Stored = (typeof stored)[number];
+    const cells = new Map<string, Stored[]>();
+    const shownNote = new Map<string, string>();
+    for (const e of stored) {
+      const rk = rowKey(e.projectId, e.taskId, e.activity);
+      const ck = `${rk}||${iso(e.date)}`;
+      (cells.get(ck) ?? cells.set(ck, []).get(ck)!).push(e);
+      if (e.workPerformed) shownNote.set(rk, e.workPerformed);
+    }
+
+    // 3. The plan: what to create, update and delete.
+    const same = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+    const written: { rk: string; w: Want; day: string }[] = [];     // cells whose hours change or appear
+    const creates: { w: Want; day: string; hours: number; note: string | null }[] = [];
+    const updates: { id: string; data: Record<string, unknown> }[] = [];
+    const deletes: string[] = [];
+    const seen = new Set<string>();
+    for (const [rk, w] of wanted) {
+      const note = w.notes.join('; ') || null;
+      const noteChanged = note !== (shownNote.get(rk) ?? null);
+      for (const [day, hours] of w.days) {
+        const ck = `${rk}||${day}`;
+        seen.add(ck);
+        const have = cells.get(ck) ?? [];
+        if (have.some((e) => e.status === 'APPROVED')) continue;             // locked
+        if (!have.length) { creates.push({ w, day, hours, note }); written.push({ rk, w, day }); continue; }
+        const [keep, ...extra] = have;
+        const current = have.reduce((t, e) => t + Number(e.hours), 0);
+        const changed = !same(hours, current) || extra.length > 0;
+        const data: Record<string, unknown> = {};
+        if (changed) {
+          data.hours = hours;
+          // Editing moves a draft or a rejected entry per the button; a submitted one stays submitted.
+          data.status = submit || keep.status === 'SUBMITTED' ? 'SUBMITTED' : 'DRAFT';
+          if (!same(hours, current)) written.push({ rk, w, day });
+        } else if (submit && keep.status === 'DRAFT') {
+          data.status = 'SUBMITTED';
+        }
+        if (noteChanged) data.workPerformed = note;
+        if (Object.keys(data).length) updates.push({ id: keep.id, data });
+        deletes.push(...extra.map((e) => e.id));
+      }
+    }
+    // A cell the grid no longer carries is gone — unless it is approved.
+    for (const [ck, have] of cells) {
+      if (!seen.has(ck)) deletes.push(...have.filter((e) => e.status !== 'APPROVED').map((e) => e.id));
+    }
+
+    // 4. The rules, for the hours being written. Existing entries left as they
+    //    were are not re-judged, so an old row never blocks saving the rest.
+    const writtenProjects = [...new Set(written.map((c) => c.w.projectId))];
+    // Hours are costed at the consultant's rate on the project's Resources tab.
+    await assertCostedMember(this.prisma, uid, writtenProjects);
+    // The activity is one of the project's own leaf tasks, whose title is stored as
+    // the label; a row naming no task is accepted only where the week already held
+    // it under that text (entries from before rows named a task).
+    const tasksOf = await loggableTasks(this.prisma, writtenProjects);
+    const legacyKeys = new Set(stored.filter((e) => !e.taskId).map((e) => rowKey(e.projectId, null, e.activity)));
+    const titleOf = new Map<string, string>();
+    const bad = new Set<string>();
+    for (const { rk, w } of written) {
+      if (w.taskId) {
+        const t = tasksOf.get(w.projectId)?.find((x) => x.id === w.taskId);
+        if (t) titleOf.set(t.id, t.title); else bad.add(w.activity || w.taskId);
+      } else if (!legacyKeys.has(rk)) {
+        bad.add(w.activity || '(no task)');
+      }
+    }
+    if (bad.size) {
+      throw new BadRequestException(
+        `Every row needs one of its project's tasks or subtasks as its activity — not a phase or milestone: ${[...bad].join(', ')}`,
+      );
+    }
+    // Time is logged on a day the project runs — the window Log Time enforces too.
+    const windows = new Map((await this.prisma.project.findMany({
+      where: { id: { in: writtenProjects }, clientId },
+      select: { id: true, name: true, startDate: true, endDate: true },
+    })).map((p) => [p.id, p]));
+    const outside = new Map<string, string[]>();
+    for (const { w, day } of written) {
+      const p = windows.get(w.projectId);
+      const [a, b] = [p?.startDate && iso(p.startDate), p?.endDate && iso(p.endDate)];
+      if ((a && day < a) || (b && day > b)) outside.set(w.projectId, [...(outside.get(w.projectId) ?? []), day]);
+    }
+    if (outside.size) {
+      const lines = [...outside].map(([id, ds]) => {
+        const p = windows.get(id);
+        const run = `${p?.startDate ? iso(p.startDate) : '…'} to ${p?.endDate ? iso(p.endDate) : '…'}`;
+        return `${p?.name} runs ${run}, so ${[...new Set(ds)].sort().join(', ')} can't take hours`;
+      });
+      throw new BadRequestException(`Time can only be logged while a project runs: ${lines.join('; ')}.`);
+    }
+
+    // 5. Write. A new entry takes today's rate; an updated one keeps its frozen rate.
+    const [consultantName, currentRate] = await Promise.all([
+      this.username(uid),
+      timesheetRates(this.prisma, uid, [...new Set(creates.map((c) => c.w.projectId))]),
+    ]);
+    const documentNumber = dto.documentNumber?.trim() || this.makeDocNumber(weekStart, uid);
+    const documentDate = dayStart(weekStart);
     await this.prisma.$transaction([
-      this.prisma.projectTimesheet.deleteMany({
-        where: { userId: uid, date: { gte, lt }, status: { not: 'APPROVED' }, project: { clientId } },
-      }),
-      ...(creates.length ? [this.prisma.projectTimesheet.createMany({ data: creates })] : []),
+      ...(deletes.length ? [this.prisma.projectTimesheet.deleteMany({ where: { id: { in: deletes } } })] : []),
+      ...updates.map((u) => this.prisma.projectTimesheet.update({ where: { id: u.id }, data: u.data })),
+      ...(creates.length ? [this.prisma.projectTimesheet.createMany({
+        data: creates.map(({ w, day, hours, note }) => ({
+          projectId: w.projectId,
+          userId: uid,
+          ...currentRate(w.projectId),
+          consultantName,
+          date: dayStart(day),
+          taskId: w.taskId,
+          activity: w.taskId ? titleOf.get(w.taskId) ?? null : w.activity,
+          hours,
+          workPerformed: note,
+          status: submit ? 'SUBMITTED' : 'DRAFT',
+          documentNumber,
+          documentDate,
+          createdBy: actor.id,
+        })),
+      })] : []),
     ]);
 
     return this.getWeek(clientId, actor, weekStart, uid);
@@ -199,10 +296,11 @@ export class TimesheetService {
 
   /**
    * Parse an uploaded timesheet spreadsheet into grid rows (Project / Activity /
-   * Date / Hours / Work Performed). Nothing is saved — the client merges the
+   * Date / Hours / Work Performed). Activity names one of the project's work
+   * items, by title or WBS code. Nothing is saved — the client merges the
    * result into the grid and the user reviews before saving.
    */
-  async importWeek(clientId: string, file?: Express.Multer.File) {
+  async importWeek(clientId: string, userId: string, file?: Express.Multer.File) {
     if (!file?.buffer && !file?.path) throw new BadRequestException('No file uploaded');
     const wb = file.buffer
       ? XLSX.read(file.buffer, { type: 'buffer', cellDates: true })
@@ -211,14 +309,17 @@ export class TimesheetService {
     if (!sheet) throw new BadRequestException('Spreadsheet has no sheets');
     const json = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: null });
 
-    const projects = await this.projectOptions(clientId);
+    // Only the consultant's own projects match; a row for any other lands in `unmatched`.
+    const projects = await this.projectOptions(clientId, userId);
     const byName = new Map(projects.map((p) => [p.name.trim().toLowerCase(), p]));
     const byNumber = new Map(projects.map((p) => [p.projectNumber.trim().toLowerCase(), p]));
-    const activities = await this.activityList(clientId);
-    const activityMatch = (v: string) =>
-      activities.find((a) => a.toLowerCase() === v.trim().toLowerCase()) ?? null;
+    const tasksOf = await loggableTasks(this.prisma, projects.map((p) => p.id));
+    const taskMatch = (projectId: string, v: string) => {
+      const want = v.trim().toLowerCase();
+      return tasksOf.get(projectId)?.find((t) => t.title.trim().toLowerCase() === want || t.code === want) ?? null;
+    };
 
-    const rowMap = new Map<string, { projectId: string; activity: string; workPerformed: string | null; days: Record<string, number> }>();
+    const rowMap = new Map<string, { projectId: string; taskId: string; activity: string; workPerformed: string | null; days: Record<string, number> }>();
     const unmatched: string[] = [];
 
     for (const r of json) {
@@ -236,16 +337,16 @@ export class TimesheetService {
       if (!projectRaw || !hours) continue;
 
       const project = byName.get(projectRaw.toLowerCase()) || byNumber.get(projectRaw.toLowerCase());
-      const activity = activityMatch(activityRaw);
-      if (!project || !activity) { unmatched.push(projectRaw + (activityRaw ? ` / ${activityRaw}` : '')); continue; }
+      const task = project ? taskMatch(project.id, activityRaw) : null;
+      if (!project || !task) { unmatched.push(projectRaw + (activityRaw ? ` / ${activityRaw}` : '')); continue; }
 
       const date = dateRaw instanceof Date ? dateRaw : dateRaw ? new Date(String(dateRaw)) : null;
       if (!date || isNaN(date.getTime())) continue;
       const dayKey = iso(date);
 
-      const key = `${project.id}||${activity}`;
+      const key = rowKey(project.id, task.id, null);
       let row = rowMap.get(key);
-      if (!row) { row = { projectId: project.id, activity, workPerformed: null, days: {} }; rowMap.set(key, row); }
+      if (!row) { row = { projectId: project.id, taskId: task.id, activity: task.title, workPerformed: null, days: {} }; rowMap.set(key, row); }
       row.days[dayKey] = (row.days[dayKey] ?? 0) + hours;
       if (work) row.workPerformed = String(work);
     }

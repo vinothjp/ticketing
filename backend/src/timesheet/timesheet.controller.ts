@@ -46,7 +46,7 @@ export class TimesheetController {
       limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
     }),
   )
-  importWeek(@UploadedFile() file: Express.Multer.File, @Request() req: AuthedRequest) {
-    return this.timesheet.importWeek(req.user.clientId, file);
+  importWeek(@UploadedFile() file: Express.Multer.File, @Request() req: AuthedRequest, @Query('userId') userId?: string) {
+    return this.timesheet.importWeek(req.user.clientId, userId || req.user.id, file);
   }
 }

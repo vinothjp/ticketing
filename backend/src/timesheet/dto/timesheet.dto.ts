@@ -1,5 +1,5 @@
 import {
-  IsArray, IsBoolean, IsDateString, IsNotEmpty, IsObject, IsOptional, IsString, ValidateNested,
+  IsArray, IsBoolean, IsDateString, IsObject, IsOptional, IsString, ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -18,13 +18,15 @@ export const TIMESHEET_ACTIVITIES = [
   'Go-Live Support',
 ] as const;
 
-// One grid row: a (project, activity) pairing with a per-day hours map keyed by
+// One grid row: a (project, work item) pairing with a per-day hours map keyed by
 // ISO date (yyyy-mm-dd) → hours. Days outside the requested week are ignored.
 export class SaveRowDto {
   @IsString() projectId!: string;
-  // The activity list is the tenant's own `timesheetActivity` option list, so
-  // membership is checked in the service against that list, not by @IsIn here.
-  @IsString() @IsNotEmpty() activity!: string;
+  // The project's own leaf task or subtask the hours went on — checked in the
+  // service against that project's WBS. The stored activity is the task's title.
+  @IsOptional() @IsString() taskId?: string;
+  // Only for a row from before rows named a task, which keeps its activity text.
+  @IsOptional() @IsString() activity?: string;
   @IsOptional() @IsString() workPerformed?: string;
   @IsObject() days!: Record<string, number>;
 }

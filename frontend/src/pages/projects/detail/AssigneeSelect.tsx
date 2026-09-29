@@ -1,9 +1,7 @@
-import { useState } from 'react';
+import { useRef } from 'react';
 import { useConfirm } from '@/hooks/useConfirm';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Combobox } from '@/components/ui/combobox';
 import type { ProjectResource, UserOption } from '../projectMeta';
-
-const NONE = '__none__';
 
 /**
  * The assignee dropdown for a project's work items. Every staff user is offered,
@@ -11,6 +9,7 @@ const NONE = '__none__';
  * resource-cost row behind them, their time on the project bills at 0.
  * "No" discards the pick and reopens the list; "Yes" hands the user to
  * `onAddToResources`, which opens the Resources tab's Add Member form for them.
+ * Type-to-search, so a long staff list never runs the height of the screen.
  */
 export default function AssigneeSelect({
   value, onChange, users, resources, onAddToResources, disabled, size, className = 'w-full',
@@ -24,12 +23,11 @@ export default function AssigneeSelect({
   size?: 'sm' | 'default';
   className?: string;
 }) {
-  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
   const { confirm, ConfirmDialog } = useConfirm();
   const planned = new Set(resources.map((r) => r.userId).filter(Boolean));
 
-  const pick = async (v: string) => {
-    const userId = v === NONE ? '' : v;
+  const pick = async (userId: string) => {
     if (userId === value) return;
     if (!userId || planned.has(userId)) { onChange(userId); return; }
 
@@ -41,20 +39,23 @@ export default function AssigneeSelect({
       cancelText: 'No',
     });
     if (add) onAddToResources?.(userId);
-    // Let the confirm dialog finish closing (and hand focus back) before reopening the list.
-    else setTimeout(() => setOpen(true), 0);
+    // Let the confirm dialog finish closing (and hand focus back) before reopening
+    // the list — the combobox opens on focus.
+    else setTimeout(() => boxRef.current?.querySelector('input')?.focus(), 0);
   };
 
   return (
     <>
       {ConfirmDialog}
-      <Select open={open} onOpenChange={setOpen} value={value || NONE} onValueChange={pick} disabled={disabled}>
-        <SelectTrigger size={size} className={className}><SelectValue placeholder="Unassigned" /></SelectTrigger>
-        <SelectContent>
-          <SelectItem value={NONE}>Unassigned</SelectItem>
-          {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-        </SelectContent>
-      </Select>
+      <div ref={boxRef} className={className}>
+        <Combobox
+          size={size} placeholder="Unassigned" emptyText="No matching user"
+          value={value}
+          onChange={pick}
+          disabled={disabled}
+          options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.username }))]}
+        />
+      </div>
     </>
   );
 }

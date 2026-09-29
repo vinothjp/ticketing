@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -15,6 +15,9 @@ import {
 import type { ImportResult } from '../lib/spreadsheet';
 import { RESOURCE_COLUMNS, RESOURCE_IMPORT_NOTES } from './resource-sheet';
 import type { ResourceSheetRow } from './resource-sheet';
+import { assertCostedMember } from './timesheet-member';
+import { timesheetRates } from './timesheet-rate';
+import { assertLoggableTask } from './timesheet-task';
 
 type Actor = { id: string; username?: string; roles?: string[] };
 const isAdmin = (a: Actor) => !!a.roles?.includes('Admin');
@@ -59,7 +62,7 @@ export class ProjectsService {
 
   /** Tenant-wide project analytics + RAG health + portfolio financials (executive dashboard). */
   async analytics(clientId: string) {
-    const [projects, tasks, invoices, expenses, timesheets, resources] = await Promise.all([
+    const [projects, tasks, invoices, expenses, timesheets] = await Promise.all([
       this.prisma.project.findMany({ where: { clientId }, select: { id: true, name: true, budget: true } }),
       this.prisma.projectTask.findMany({
         where: { project: { clientId } },
@@ -67,8 +70,8 @@ export class ProjectsService {
       }),
       this.prisma.projectInvoice.findMany({ where: { project: { clientId } }, select: { amount: true, amountPaid: true, projectId: true } }),
       this.prisma.projectExpense.findMany({ where: { project: { clientId } }, select: { amount: true, projectId: true } }),
-      this.prisma.projectTimesheet.findMany({ where: { project: { clientId } }, select: { hours: true, userId: true, projectId: true } }),
-      this.prisma.projectResource.findMany({ where: { project: { clientId } }, select: { userId: true, projectId: true, category: { select: { hourlyCost: true } } } }),
+      // Only approved hours are cost — same rule as the per-project Financials tab.
+      this.prisma.projectTimesheet.findMany({ where: { project: { clientId }, status: 'APPROVED' }, select: { hours: true, costRate: true, projectId: true } }),
     ]);
     const num = (d: unknown) => Number(d ?? 0);
     const cat = (s: string) => (s === 'COMPLETED' ? 'completed' : s === 'IN_PROGRESS' || s === 'REVIEW' ? 'inProgress' : 'yetToStart');
@@ -92,12 +95,11 @@ export class ProjectsService {
         if (t.status !== 'COMPLETED' && t.dueDate && new Date(t.dueDate) < today) row.overdue++;
       }
     }
-    // Revenue + resource cost per project for the financial rollup.
-    const rateByUser = new Map<string, number>();
-    for (const r of resources) if (r.userId && r.category) rateByUser.set(r.userId, num(r.category.hourlyCost));
+    // Revenue + resource cost per project for the financial rollup. Hours cost at the
+    // rate frozen on each row when it was logged, never at today's rate.
     for (const i of invoices) { const row = rows.get(i.projectId); if (row) row.revenue += num(i.amount); }
     for (const e of expenses) { const row = rows.get(e.projectId); if (row) row.cost += num(e.amount); }
-    for (const t of timesheets) { const row = rows.get(t.projectId); if (row) row.cost += num(t.hours) * (t.userId ? rateByUser.get(t.userId) ?? 0 : 0); }
+    for (const t of timesheets) { const row = rows.get(t.projectId); if (row) row.cost += num(t.hours) * num(t.costRate); }
 
     const rag = (r: Row) => {
       if (r.overdue >= 3) return 'RED';
@@ -134,18 +136,15 @@ export class ProjectsService {
    * (baseline = Project.budget, revised = baseline + Σ approved change requests).
    */
   private async financialCore(projectId: string) {
-    const [project, invoices, expenses, timesheets, resources, changeRequests] = await Promise.all([
+    const [project, invoices, expenses, timesheets, changeRequests] = await Promise.all([
       this.prisma.project.findUnique({ where: { id: projectId }, select: { budget: true, currency: true } }),
       this.prisma.projectInvoice.findMany({ where: { projectId } }),
       this.prisma.projectExpense.findMany({ where: { projectId } }),
-      this.prisma.projectTimesheet.findMany({ where: { projectId } }),
-      this.prisma.projectResource.findMany({ where: { projectId }, include: { category: true } }),
+      // Hours become cost only once an Admin approves them; drafts and pending submissions don't count.
+      this.prisma.projectTimesheet.findMany({ where: { projectId, status: 'APPROVED' } }),
       this.prisma.projectChangeRequest.findMany({ where: { projectId } }),
     ]);
     const num = (d: unknown) => Number(d ?? 0);
-    // A consultant's cost/billing rate comes from their resource-plan category.
-    const rateByUser = new Map<string, { cost: number; billing: number }>();
-    for (const r of resources) if (r.userId && r.category) rateByUser.set(r.userId, { cost: num(r.category.hourlyCost), billing: num(r.category.billingRate) });
 
     const revenue = invoices.reduce((s, i) => s + num(i.amount), 0);
     const collected = invoices.reduce((s, i) => s + num(i.amountPaid), 0);
@@ -155,9 +154,10 @@ export class ProjectsService {
     const activityMap = new Map<string, { activity: string; hours: number; cost: number; revenue: number }>();
     for (const t of timesheets) {
       const hrs = num(t.hours);
-      const rate = t.userId ? rateByUser.get(t.userId) : undefined;
-      const cost = hrs * (rate?.cost ?? 0);
-      const rev = hrs * (rate?.billing ?? 0);
+      // The rates frozen on the row when it was logged — a later rate edit, category
+      // change or removal from Resources never reprices work already done.
+      const cost = hrs * num(t.costRate);
+      const rev = hrs * num(t.billingRate);
       resourceCost += cost;
       const act = t.activity || 'Unassigned';
       const a = activityMap.get(act) ?? { activity: act, hours: 0, cost: 0, revenue: 0 };
@@ -174,7 +174,7 @@ export class ProjectsService {
     const revisedBudget = baseline + approvedChanges;
 
     return {
-      project, num, rateByUser, invoices, expenses, changeRequests,
+      project, num, invoices, expenses, changeRequests,
       revenue, collected, expenseCost, resourceCost, vendorCost, totalCost, activityMap,
       baseline, approvedChanges, pendingChanges, revisedBudget, remaining: revisedBudget - totalCost,
     };
@@ -1299,32 +1299,89 @@ export class ProjectsService {
   // ---- Timesheets ---------------------------------------------------------
 
   async addTimesheet(projectId: string, dto: CreateTimesheetDto, clientId: string, actor: Actor) {
-    await this.getOwned(projectId, clientId);
+    const project = await this.getOwned(projectId, clientId);
+    this.assertTimesheetDate(project, dto.date);
+    const userId = dto.userId || actor.id;
+    await assertCostedMember(this.prisma, userId, [projectId]);
+    // The hours go on one of the project's own leaf tasks; its title is stored as the activity.
+    const task = await assertLoggableTask(this.prisma, projectId, dto.taskId);
+    // One entry per consultant · task · day — the weekly Timesheet page keeps the
+    // same rule. More hours on a day that already has an entry are added to it
+    // (2h + 3h is one 5h entry) and its note gains the new one; it stays that
+    // entry, with the rate it was first logged at.
+    const day = new Date(`${dto.date.slice(0, 10)}T00:00:00.000Z`);
+    const note = dto.workPerformed?.trim() || null;
+    const sameCell = await this.prisma.projectTimesheet.findMany({
+      where: { projectId, userId, taskId: task.id, date: day },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (sameCell.some((e) => e.status === 'APPROVED')) {
+      throw new ConflictException(`${task.title} on ${dto.date.slice(0, 10)} is already approved for this consultant — an Admin has to reopen it before more hours go on it`);
+    }
+    if (sameCell.length) {
+      const [keep, ...extra] = sameCell;
+      const notes = [...new Set([...sameCell.map((e) => e.workPerformed), note].filter((n): n is string => !!n))];
+      const [merged] = await this.prisma.$transaction([
+        this.prisma.projectTimesheet.update({
+          where: { id: keep.id },
+          data: {
+            hours: sameCell.reduce((t, e) => t + Number(e.hours), 0) + dto.hours,
+            workPerformed: notes.join('; ') || null,
+            status: 'SUBMITTED',                     // what a Log Time entry is
+          },
+          include: { user: { select: { id: true, username: true } } },
+        }),
+        ...(extra.length ? [this.prisma.projectTimesheet.deleteMany({ where: { id: { in: extra.map((e) => e.id) } } })] : []),
+      ]);
+      return merged;
+    }
+    const rateOf = await timesheetRates(this.prisma, userId, [projectId]);
     return this.prisma.projectTimesheet.create({
       data: {
         projectId,
-        userId: dto.userId || actor.id,
+        userId,
+        ...rateOf(projectId),
         consultantName: dto.consultantName?.trim() || null,
-        date: new Date(dto.date),
-        taskId: dto.taskId || null,
-        activity: dto.activity?.trim() || null,
+        date: day,
+        taskId: task.id,
+        activity: task.title,
         hours: dto.hours,
-        workPerformed: dto.workPerformed?.trim() || null,
+        workPerformed: note,
         createdBy: actor.id,
       },
       include: { user: { select: { id: true, username: true } } },
     });
   }
 
-  async updateTimesheet(timesheetId: string, dto: UpdateTimesheetDto, clientId: string) {
-    await this.getOwnedTimesheet(timesheetId, clientId);
+  async updateTimesheet(timesheetId: string, dto: UpdateTimesheetDto, clientId: string, actor: Actor) {
+    const existing = await this.getOwnedTimesheet(timesheetId, clientId);
+    // Approval is what turns hours into project cost, so only an Admin may grant it —
+    // or take it back, else an agent could un-approve an entry and re-shape it.
+    const touchesApproval = dto.status !== undefined && dto.status !== existing.status
+      && (dto.status === 'APPROVED' || existing.status === 'APPROVED');
+    if (touchesApproval && !isAdmin(actor)) throw new ForbiddenException('Only an Admin can approve a timesheet or change an approved one');
+    // Only a re-dated entry is checked, so approving one logged before the project was re-dated still works.
+    if (dto.date !== undefined) this.assertTimesheetDate(await this.getOwned(existing.projectId, clientId), dto.date);
+    const retask = dto.taskId !== undefined ? await assertLoggableTask(this.prisma, existing.projectId, dto.taskId) : null;
+    // Moving an entry to another day or task must not land it on a cell that already has one.
+    if (dto.date !== undefined || retask) {
+      const taken = await this.prisma.projectTimesheet.findFirst({
+        where: {
+          id: { not: timesheetId }, projectId: existing.projectId, userId: existing.userId,
+          taskId: retask?.id ?? existing.taskId,
+          date: dto.date !== undefined ? new Date(`${dto.date.slice(0, 10)}T00:00:00.000Z`) : existing.date,
+        },
+        select: { id: true },
+      });
+      if (taken) throw new ConflictException('That consultant already has an entry for this task on that day — add the hours to it instead');
+    }
     return this.prisma.projectTimesheet.update({
       where: { id: timesheetId },
       data: {
         ...(dto.date !== undefined ? { date: new Date(dto.date) } : {}),
         ...(dto.hours !== undefined ? { hours: dto.hours } : {}),
-        ...(dto.taskId !== undefined ? { taskId: dto.taskId || null } : {}),
-        ...(dto.activity !== undefined ? { activity: dto.activity?.trim() || null } : {}),
+        // A re-pointed entry takes its new task's title; the activity is never free text.
+        ...(retask ? { taskId: retask.id, activity: retask.title } : {}),
         ...(dto.workPerformed !== undefined ? { workPerformed: dto.workPerformed?.trim() || null } : {}),
         ...(dto.status !== undefined ? { status: dto.status } : {}),
       },
@@ -1336,6 +1393,14 @@ export class ProjectsService {
     await this.getOwnedTimesheet(timesheetId, clientId);
     await this.prisma.projectTimesheet.delete({ where: { id: timesheetId } });
     return { message: 'Timesheet entry removed' };
+  }
+
+  /** Time is logged on a day the project runs — not before it starts, not after it ends. */
+  private assertTimesheetDate(project: { startDate: Date | null; endDate: Date | null }, date: string | Date) {
+    const day = (v: string | Date) => new Date(v).toISOString().slice(0, 10);
+    const d = day(date);
+    if (project.startDate && d < day(project.startDate)) throw new BadRequestException(`Date cannot be before the project starts (${day(project.startDate)})`);
+    if (project.endDate && d > day(project.endDate)) throw new BadRequestException(`Date cannot be after the project ends (${day(project.endDate)})`);
   }
 
   private async getOwnedTimesheet(id: string, clientId: string) {

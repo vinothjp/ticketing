@@ -1384,6 +1384,10 @@ model ProjectTimesheet {
   taskId         String?
   activity       String?
   hours          Decimal  @default(0)
+  // The consultant's category rates when the hours were written, frozen: a later
+  // rate edit, category change or removal from Resources never reprices past work.
+  costRate       Decimal?
+  billingRate    Decimal?
   workPerformed  String?
   status         String   @default("SUBMITTED")       // DRAFT | SUBMITTED | APPROVED | REJECTED
   documentNumber String?                                // Excel "Document Number" (per consultant/week sheet)

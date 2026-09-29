@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight } from 'lucide-react';
 
 // A controlled date picker whose out-of-range days are greyed out and un-clickable.
@@ -7,6 +8,8 @@ import { Calendar as CalendarIcon, ChevronLeft, ChevronRight } from 'lucide-reac
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const parse = (v?: string) => { if (!v) return null; const [y, m, d] = v.split('-').map(Number); return new Date(y, m - 1, d); };
 const WEEK = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+const PANEL_W = 256;   // w-64
+const PANEL_H = 330;   // rough calendar height, used only to decide whether to flip up
 
 export function DateField({
   value, onChange, min, max, disabled, placeholder = 'Pick a date', className = '',
@@ -20,36 +23,50 @@ export function DateField({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const [dropUp, setDropUp] = useState(false);   // open the calendar above the field when there's no room below
+  const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
   const [cursor, setCursor] = useState(() => parse(value) ?? parse(min) ?? new Date());
   const ref = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
+  // The calendar is portalled to <body> with fixed positioning, like `CellPopover`:
+  // a dialog scrolls its own body, so an absolutely-placed calendar was clipped by
+  // it — in a short dialog there is room neither above nor below the field. It
+  // flips above the field only when the viewport has no room below, stays inside
+  // the viewport sideways, and follows the field on scroll and resize.
+  useLayoutEffect(() => {
+    if (!open) { setPos(null); return; }
     setCursor(parse(value) ?? parse(min) ?? new Date());
-    // Flip up if the ~330px calendar would overflow the bottom of whatever
-    // actually clips it. That is the viewport, or — for a field inside a dialog,
-    // which is capped to the viewport and scrolls its own body — the dialog box,
-    // whose bottom edge can sit well above the viewport's.
-    const r = ref.current?.getBoundingClientRect();
-    if (r) {
-      const host = ref.current?.closest('[data-slot="dialog-content"]');
-      const limit = host
-        ? Math.min(window.innerHeight, host.getBoundingClientRect().bottom)
-        : window.innerHeight;
-      setDropUp(r.bottom + 330 > limit);
-    }
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Close on outside-click / Escape.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const reposition = () => {
+      const r = ref.current?.getBoundingClientRect();
+      if (!r) return;
+      const below = window.innerHeight - r.bottom;
+      const left = Math.max(8, Math.min(r.left, window.innerWidth - PANEL_W - 8));
+      setPos(below < PANEL_H + 8 && r.top > below
+        ? { left, bottom: window.innerHeight - r.top + 4 }
+        : { left, top: r.bottom + 4 });
+    };
+    reposition();
+
+    // The panel lives outside the field's DOM subtree, so an outside click has to
+    // miss both — testing the field alone would close it before a day registers.
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (ref.current?.contains(t) || panelRef.current?.contains(t)) return;
+      setOpen(false);
+    };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('scroll', reposition, true);
+    window.addEventListener('resize', reposition);
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
-  }, [open]);
+    return () => {
+      window.removeEventListener('scroll', reposition, true);
+      window.removeEventListener('resize', reposition);
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cells = useMemo(() => {
     const first = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
@@ -73,8 +90,18 @@ export function DateField({
         <span className={`min-w-0 truncate whitespace-nowrap ${label ? '' : 'text-muted-foreground'}`}>{label || placeholder}</span>
       </button>
 
-      {open && (
-        <div className={`absolute left-0 z-50 w-64 rounded-md border bg-popover p-2 text-popover-foreground shadow-md ${dropUp ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
+      {open && pos && createPortal(
+        <div
+          ref={panelRef}
+          // `data-floating-panel` tells a surrounding Dialog that a click here is not
+          // "outside" it; pointer-events is restored because a modal Radix dialog
+          // switches it off on <body>; mousedown is cancelled so a day button never
+          // takes focus away from the dialog's focus trap.
+          data-floating-panel=""
+          onMouseDown={(e) => e.preventDefault()}
+          style={{ position: 'fixed', left: pos.left, top: pos.top, bottom: pos.bottom, width: PANEL_W, zIndex: 60, pointerEvents: 'auto' }}
+          className="rounded-md border bg-popover p-2 text-popover-foreground shadow-md"
+        >
           <div className="mb-1 flex items-center justify-between">
             <button type="button" className="rounded p-1 hover:bg-accent" onClick={() => setCursor((c) => new Date(c.getFullYear(), c.getMonth() - 1, 1))}><ChevronLeft className="size-4" /></button>
             <span className="text-sm font-medium">{cursor.toLocaleString(undefined, { month: 'long', year: 'numeric' })}</span>
@@ -103,7 +130,8 @@ export function DateField({
               );
             })}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Combobox } from '@/components/ui/combobox';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   PROJECT_STATUSES, PRIORITIES, labelOf, projectStatusVariant, priorityVariant,
@@ -136,16 +137,12 @@ export default function ProjectDetailPage() {
               </div>
               <div>
                 <div className="mb-1 text-xs text-muted-foreground">Manager</div>
-                <Select
-                  value={project.managerUserId ?? NONE}
-                  onValueChange={(v) => updateMutation.mutate({ managerUserId: v === NONE ? null : v })}
-                >
-                  <SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={NONE}>Unassigned</SelectItem>
-                    {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <Combobox
+                  placeholder="Unassigned" emptyText="No matching user"
+                  value={project.managerUserId ?? ''}
+                  onChange={(v) => { if (v !== (project.managerUserId ?? '')) updateMutation.mutate({ managerUserId: v || null }); }}
+                  options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.username }))]}
+                />
               </div>
             </CardContent>
           </Card>

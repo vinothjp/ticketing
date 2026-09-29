@@ -10,7 +10,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Combobox } from '@/components/ui/combobox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuCheckboxItem, DropdownMenuLabel, DropdownMenuSeparator,
@@ -22,7 +22,6 @@ interface ActionItem { text: string; owner?: string; done?: boolean }
 interface Meeting { id: string; title: string; date?: string | null; attendees?: string | null; notes?: string | null; actionItems: ActionItem[] }
 interface CustomerContact { id: string; username: string; email: string; role: 'admin' | 'employee' }
 
-const NONE = '__none__';
 const toDate = (v?: string | null) => (v ? new Date(v).toISOString().slice(0, 10) : '');
 const splitAttendees = (v?: string | null) => (v ? v.split(',').map((s) => s.trim()).filter(Boolean) : []);
 
@@ -209,13 +208,12 @@ export default function MeetingsTab({ project, users }: { project: ProjectDetail
                   <div key={i} className="flex items-center gap-2">
                     <Checkbox checked={!!a.done} onCheckedChange={(v) => updateRow(i, { done: !!v })} />
                     <Input className="flex-1" value={a.text} onChange={(e) => updateRow(i, { text: e.target.value })} placeholder="Action item…" />
-                    <Select value={a.owner || NONE} onValueChange={(v) => updateRow(i, { owner: v === NONE ? '' : v })}>
-                      <SelectTrigger className="w-40"><SelectValue placeholder="Owner" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NONE}>No owner</SelectItem>
-                        {users.map((u) => <SelectItem key={u.id} value={u.username}>{u.username}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
+                    <Combobox
+                      className="w-40" placeholder="Owner" emptyText="No matching user"
+                      value={a.owner || ''}
+                      onChange={(v) => updateRow(i, { owner: v })}
+                      options={[{ value: '', label: 'No owner' }, ...users.map((u) => ({ value: u.username, label: u.username }))]}
+                    />
                     <Button type="button" size="icon" variant="ghost" className="size-8 text-destructive hover:text-destructive" onClick={() => removeRow(i)}><X className="size-4" /></Button>
                   </div>
                 ))}

@@ -250,7 +250,7 @@ export class ProjectsController {
 
   @Patch('timesheets/:timesheetId')
   updateTimesheet(@Param('timesheetId') timesheetId: string, @Body() dto: UpdateTimesheetDto, @Request() req: AuthedRequest) {
-    return this.projects.updateTimesheet(timesheetId, dto, req.user.clientId);
+    return this.projects.updateTimesheet(timesheetId, dto, req.user.clientId, req.user);
   }
 
   @Delete('timesheets/:timesheetId')

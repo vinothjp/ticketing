@@ -118,7 +118,7 @@ export default function FinancialsTab({ project }: { project: ProjectDetail }) {
             <div>
               <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Profitability</div>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <Kpi label="Total cost" value={money(f.totalCost)} hint="Resource cost + Expenses" />
+                <Kpi label="Total cost" value={money(f.totalCost)} hint="Resource cost (approved hours) + Expenses" />
                 <Kpi label="Gross profit" value={money(f.grossProfit)} tone={f.grossProfit >= 0 ? 'good' : 'bad'} hint="Revenue − Total cost" />
                 <Kpi label="Gross margin" value={`${f.grossMargin}%`} tone={f.grossMargin >= 0 ? 'good' : 'bad'} hint="Gross profit ÷ Revenue" />
               </div>
@@ -139,7 +139,7 @@ export default function FinancialsTab({ project }: { project: ProjectDetail }) {
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-sm">Cost breakdown</CardTitle></CardHeader>
               <CardContent className="space-y-1.5 pb-4 text-sm">
-                <div className="flex justify-between"><span className="text-muted-foreground">Resource cost (timesheets)</span><span className="tabular-nums">{money(f.resourceCost)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Resource cost (approved timesheets)</span><span className="tabular-nums">{money(f.resourceCost)}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">Expenses</span><span className="tabular-nums">{money(f.expenseCost)}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">Vendor cost</span><span className="tabular-nums">{money(f.vendorCost)}</span></div>
                 <div className="flex justify-between border-t pt-1.5 font-medium"><span>Total cost</span><span className="tabular-nums">{money(f.totalCost)}</span></div>
@@ -171,7 +171,7 @@ export default function FinancialsTab({ project }: { project: ProjectDetail }) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {f.activityCosting.length === 0 && <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground">No time logged yet.</TableCell></TableRow>}
+                  {f.activityCosting.length === 0 && <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground">No approved time yet.</TableCell></TableRow>}
                   {f.activityCosting.map((a) => (
                     <TableRow key={a.activity}>
                       <TableCell className="border-r font-medium">{a.activity}</TableCell>

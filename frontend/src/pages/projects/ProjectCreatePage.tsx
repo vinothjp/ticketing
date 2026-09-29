@@ -11,6 +11,7 @@ import { DateField } from '@/components/ui/date-field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Combobox } from '@/components/ui/combobox';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { CURRENCIES } from '@/lib/currencies';
 import {
@@ -149,13 +150,12 @@ export default function ProjectCreatePage() {
             <FormField control={form.control} name="managerUserId" render={({ field }) => (
               <FormItem>
                 <FormLabel>Manager</FormLabel>
-                <Select value={field.value || NONE} onValueChange={(v) => field.onChange(v === NONE ? '' : v)}>
-                  <FormControl><SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger></FormControl>
-                  <SelectContent>
-                    <SelectItem value={NONE}>Unassigned</SelectItem>
-                    {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <Combobox
+                  placeholder="Unassigned" emptyText="No matching user"
+                  value={field.value || ''}
+                  onChange={field.onChange}
+                  options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.username }))]}
+                />
               </FormItem>
             )} />
             <FormField control={form.control} name="customerCompanyId" render={({ field }) => (

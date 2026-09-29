@@ -10,6 +10,7 @@ import { DateField } from '@/components/ui/date-field';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Combobox } from '@/components/ui/combobox';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { useConfirm } from '@/hooks/useConfirm';
@@ -169,12 +170,12 @@ export default function ResourcesTab({ project, users, prefillUserId, onPrefillU
           <div className="space-y-3">
             <div>
               <div className="mb-1 text-sm">Member <span className="text-destructive">*</span></div>
-              <Select value={form.userId || undefined} onValueChange={(v) => { if (v) setForm((f) => ({ ...f, userId: v })); }}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="Select member" /></SelectTrigger>
-                <SelectContent>
-                  {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <Combobox
+                placeholder="Select member" emptyText="No matching user"
+                value={form.userId}
+                onChange={(v) => { if (v) setForm((f) => ({ ...f, userId: v })); }}
+                options={users.map((u) => ({ value: u.id, label: u.username }))}
+              />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

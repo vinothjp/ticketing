@@ -2,6 +2,11 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronDown } from 'lucide-react';
 
+// `maxRows` rows (32px each) plus the list's padding and border: a long list
+// scrolls rather than running the full height of the screen.
+const listMaxH = (rows: number) => rows * 32 + 10;
+const LIST_MIN_W = 288;
+
 export interface ComboboxOption {
   value: string;
   label: string;
@@ -27,6 +32,9 @@ export function Combobox({
   placeholder = 'Select…',
   emptyText = 'No matches',
   disabled = false,
+  size = 'default',
+  maxRows = 6,
+  placement = 'auto',
   className = '',
 }: {
   value: string;
@@ -35,6 +43,12 @@ export function Combobox({
   placeholder?: string;
   emptyText?: string;
   disabled?: boolean;
+  /** `sm` matches a `size="sm"` Select, for grid cells. */
+  size?: 'sm' | 'default';
+  /** How many rows show before the list scrolls. */
+  maxRows?: number;
+  /** `below` always drops the list under the field; `auto` flips it up when there is no room below. */
+  placement?: 'auto' | 'below';
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -56,12 +70,15 @@ export function Combobox({
     const el = inputRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    const DROP_H = 240;
+    const DROP_H = listMaxH(maxRows);
     const below = window.innerHeight - r.bottom;
-    const openUp = below < DROP_H + 8 && r.top > below;
+    const openUp = placement === 'auto' && below < DROP_H + 8 && r.top > below;
+    // A narrow field still gets a list wide enough to read, kept on-screen.
+    const width = Math.min(Math.max(r.width, LIST_MIN_W), window.innerWidth - 16);
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
     setPos(openUp
-      ? { left: r.left, width: r.width, bottom: window.innerHeight - r.top + 4 }
-      : { left: r.left, width: r.width, top: r.bottom + 4 });
+      ? { left, width, bottom: window.innerHeight - r.top + 4 }
+      : { left, width, top: r.bottom + 4 });
   };
   useLayoutEffect(() => {
     if (!open) return;
@@ -88,6 +105,8 @@ export function Combobox({
         // Closed, it reads as the current selection; open, it is the search box.
         value={open ? query : selected?.label ?? ''}
         placeholder={selected ? selected.label : placeholder}
+        // A long label is clipped in the box, so the whole of it is a hover away.
+        title={selected?.label}
         disabled={disabled}
         onChange={(e) => { setQuery(e.target.value); setActive(0); setOpen(true); }}
         onFocus={show}
@@ -109,7 +128,7 @@ export function Combobox({
             if (open) { e.preventDefault(); close(); }
           }
         }}
-        className="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 pr-8 text-sm shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50"
+        className={`${size === 'sm' ? 'h-8' : 'h-9'} w-full truncate rounded-md border border-input bg-transparent px-3 py-1 pr-8 text-sm shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50`}
       />
       <ChevronDown
         className={`pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`}
@@ -126,7 +145,7 @@ export function Combobox({
           // dialog as "dismiss" and closes the whole thing under the cursor.
           style={{
             position: 'fixed', left: pos.left, top: pos.top, bottom: pos.bottom,
-            width: pos.width, zIndex: 60, pointerEvents: 'auto',
+            width: pos.width, maxHeight: listMaxH(maxRows), zIndex: 60, pointerEvents: 'auto',
           }}
           onPointerDown={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.preventDefault()}
@@ -137,13 +156,14 @@ export function Combobox({
           // delegates portal events on <body>, one hop below.
           onWheel={(e) => e.stopPropagation()}
           onTouchMove={(e) => e.stopPropagation()}
-          className="max-h-60 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+          className="overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
         >
           {matches.length === 0 ? (
             <div className="px-2 py-1.5 text-sm text-muted-foreground">{emptyText}</div>
           ) : matches.map((o, i) => (
             <button
               key={o.value}
+              title={o.hint ? `${o.label} · ${o.hint}` : o.label}
               type="button"
               ref={i === active ? activeRef : undefined}
               onMouseEnter={() => setActive(i)}
@@ -152,8 +172,9 @@ export function Combobox({
                 i === active ? 'bg-accent text-accent-foreground' : ''
               } ${o.value === value ? 'font-medium' : ''}`}
             >
-              <span className="truncate">{o.label}</span>
-              {o.hint && <span className="ml-auto shrink-0 text-xs text-muted-foreground">{o.hint}</span>}
+              {/* The label keeps the room; a long hint is the part that shortens. */}
+              <span className="min-w-0 flex-1 truncate">{o.label}</span>
+              {o.hint && <span className="max-w-[40%] shrink-0 truncate text-xs text-muted-foreground">{o.hint}</span>}
             </button>
           ))}
         </div>,

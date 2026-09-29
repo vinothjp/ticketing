@@ -11,6 +11,7 @@ import { DateField } from '@/components/ui/date-field';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Combobox } from '@/components/ui/combobox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import {
   TASK_STATUSES, PRIORITIES, invalidateProject, labelOf, taskStatusVariant, taskKey,
@@ -217,12 +218,12 @@ export default function TaskDetailDialog({
             ))}
             {task.watchers.length === 0 && <span className="text-xs text-muted-foreground">None</span>}
             {canEdit && (
-              <Select value="" onValueChange={(v) => addWatcher.mutate(v)}>
-                <SelectTrigger size="sm" className="w-40"><SelectValue placeholder="Add watcher" /></SelectTrigger>
-                <SelectContent>
-                  {users.filter((u) => !watcherIds.has(u.id)).map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <Combobox
+                size="sm" className="w-40" placeholder="Add watcher" emptyText="No matching user"
+                value=""
+                onChange={(v) => { if (v) addWatcher.mutate(v); }}
+                options={users.filter((u) => !watcherIds.has(u.id)).map((u) => ({ value: u.id, label: u.username }))}
+              />
             )}
           </div>
         </Section>

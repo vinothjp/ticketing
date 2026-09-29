@@ -1083,6 +1083,8 @@ export class ProjectsService {
 
   async addResource(projectId: string, dto: CreateResourceDto, clientId: string, actor: Actor) {
     const project = await this.getOwned(projectId, clientId);
+    // The category carries the daily rate; a member without one plans and bills at 0.
+    if (!dto.categoryId) throw new BadRequestException(`Category is required — it sets the member's daily cost and billing rate`);
     this.assertResourceWindow(project, dto.startDate, dto.endDate);
     return this.prisma.projectResource.create({
       data: {
@@ -1104,6 +1106,9 @@ export class ProjectsService {
 
   async updateResource(resourceId: string, dto: UpdateResourceDto, clientId: string) {
     const existing = await this.getOwnedResource(resourceId, clientId);
+    if (dto.categoryId !== undefined && !dto.categoryId) {
+      throw new BadRequestException(`Category is required — it sets the member's daily cost and billing rate`);
+    }
     // Only a write that touches the dates is checked, so editing the role or rate of a
     // member planned before the project was re-dated is not refused for it.
     if (dto.startDate !== undefined || dto.endDate !== undefined) {
@@ -1218,12 +1223,9 @@ export class ProjectsService {
         if (role) dto.role = role;
         const category = asText(read(CATEGORY));
         if (category) {
-          if (category.toLowerCase() === 'none') dto.categoryId = '';
-          else {
-            const id = categoryByName.get(category.toLowerCase());
-            if (!id) throw new BadRequestException(`Category "${category}" is not on the Resource Costs screen`);
-            dto.categoryId = id;
-          }
+          const id = categoryByName.get(category.toLowerCase());
+          if (!id) throw new BadRequestException(`Category "${category}" is not on the Resource Costs screen`);
+          dto.categoryId = id;
         }
         const alloc = wholeNumber(read(ALLOC), 'Allocation %', 0, 100);
         if (alloc !== undefined) dto.allocationPct = alloc;

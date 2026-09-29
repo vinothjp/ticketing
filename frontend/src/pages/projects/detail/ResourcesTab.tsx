@@ -180,11 +180,10 @@ export default function ResourcesTab({ project, users, prefillUserId, onPrefillU
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <div className="mb-1 text-sm">Category (rate)</div>
-                <Select value={form.categoryId || NONE} onValueChange={(v) => setForm((f) => ({ ...f, categoryId: v === NONE ? '' : v }))}>
-                  <SelectTrigger className="w-full"><SelectValue placeholder="None" /></SelectTrigger>
+                <div className="mb-1 text-sm">Category (rate) <span className="text-destructive">*</span></div>
+                <Select value={form.categoryId || undefined} onValueChange={(v) => { if (v) setForm((f) => ({ ...f, categoryId: v })); }}>
+                  <SelectTrigger className="w-full"><SelectValue placeholder="Select category" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={NONE}>None</SelectItem>
                     {categories.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
@@ -214,7 +213,11 @@ export default function ResourcesTab({ project, users, prefillUserId, onPrefillU
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button disabled={save.isPending} onClick={() => save.mutate(form)}><UserPlus className="size-4" /> {form.id ? 'Save changes' : 'Add member'}</Button>
+            <Button disabled={save.isPending} onClick={() => {
+              // No category means no rate: the member would plan and bill at 0.
+              if (!form.categoryId) { toast.error(`Select a category — it sets the member's daily cost and billing rate`); return; }
+              save.mutate(form);
+            }}><UserPlus className="size-4" /> {form.id ? 'Save changes' : 'Add member'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

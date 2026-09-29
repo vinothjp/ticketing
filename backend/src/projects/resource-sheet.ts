@@ -31,7 +31,7 @@ export const RESOURCE_COLUMNS: SheetColumn<ResourceSheetRow>[] = [
   { header: 'Consultant name', aliases: ['name', 'full name'], value: (r) => r.user?.name ?? '', width: 24, exportOnly: true },
   { header: 'Role', value: (r) => r.role ?? '', width: 22, note: 'Free text, e.g. "Lead Developer".' },
   { header: 'Category', aliases: ['resource category', 'rate category'], value: (r) => r.category?.name ?? '', width: 20,
-    note: 'The name of a category on the Resource Costs screen — it supplies the cost and billing rates. Use "none" to clear it.' },
+    note: 'The name of a category on the Resource Costs screen — it supplies the cost and billing rates. Required for a new member; blank leaves an existing one unchanged.' },
   { header: 'Allocation %', aliases: ['allocation', 'alloc %', 'alloc'], value: (r) => r.allocationPct, width: 13,
     note: 'Whole number 0–100. Blank means 100 on a new row.' },
   { header: 'Daily hours', aliases: ['hours per day'], value: (r) => r.dailyHours, width: 12,

@@ -332,6 +332,8 @@ export class ProjectsService {
           currency: dto.currency?.trim() || null,
           startDate: dto.startDate ? new Date(dto.startDate) : null,
           endDate: dto.endDate ? new Date(dto.endDate) : null,
+          // A new project shows its Timesheet tab; Settings → "Show timesheet" turns it off.
+          features: { timeTracking: true, ...(dto.features ?? {}) } as Prisma.InputJsonValue,
           createdBy: actor.id,
           createdByName: actor.username ?? null,
           updatedBy: actor.id,
@@ -1389,8 +1391,20 @@ export class ProjectsService {
     });
   }
 
-  async removeTimesheet(timesheetId: string, clientId: string) {
-    await this.getOwnedTimesheet(timesheetId, clientId);
+  /**
+   * Logged time is deleted by the consultant who logged it, the project's manager or an
+   * Admin. Approved time is project cost, so only the manager or an Admin may remove it.
+   */
+  async removeTimesheet(timesheetId: string, clientId: string, actor: Actor) {
+    const existing = await this.getOwnedTimesheet(timesheetId, clientId);
+    const project = await this.getOwned(existing.projectId, clientId);
+    const manages = isAdmin(actor) || project.managerUserId === actor.id;
+    if (!manages && existing.userId !== actor.id) {
+      throw new ForbiddenException('Only the consultant who logged this time, the project manager or an Admin can delete it');
+    }
+    if (!manages && existing.status === 'APPROVED') {
+      throw new ForbiddenException('This time is approved — only the project manager or an Admin can delete it');
+    }
     await this.prisma.projectTimesheet.delete({ where: { id: timesheetId } });
     return { message: 'Timesheet entry removed' };
   }

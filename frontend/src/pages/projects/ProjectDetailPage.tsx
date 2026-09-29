@@ -61,7 +61,7 @@ export default function ProjectDetailPage() {
   if (isLoading || !project) return <p className="text-muted-foreground">Loading...</p>;
 
   const sprintsEnabled = project.features?.sprints !== false; // default on; Settings can disable
-  const timeTrackingEnabled = project.features?.timeTracking === true; // opt-in via Settings
+  const timeTrackingEnabled = project.features?.timeTracking === true; // on for new projects; Settings → "Show timesheet"
 
   return (
     <div>

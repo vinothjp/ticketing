@@ -80,7 +80,7 @@ function Kpi({ label, value, tone, hint }: { label: string; value: string; tone?
 }
 
 export default function FinancialsTab({ project }: { project: ProjectDetail }) {
-  const [view, setView] = useState<'expenses' | 'invoices'>('expenses');
+  const [view, setView] = useState<'expenses' | 'invoices' | 'activity'>('expenses');
   const expenseCats = useOptionValues('expenseCategory', EXPENSE_CATS);
   const invoiceTypes = useOptionValues('projectInvoiceType', INVOICE_TYPES);
   const invoiceFields = useMemo<FieldCfg[]>(() => [
@@ -156,10 +156,21 @@ export default function FinancialsTab({ project }: { project: ProjectDetail }) {
             </Card>
           </div>
 
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm">Activity costing</CardTitle></CardHeader>
-            <CardContent className="pb-4">
-              <div className="overflow-hidden rounded-lg border">
+        </>
+      )}
+
+      <div>
+        <div className="mb-3 flex rounded-md border p-0.5 w-fit">
+          <Button size="sm" variant={view === 'expenses' ? 'secondary' : 'ghost'} className="h-7 px-2" onClick={() => setView('expenses')}><Receipt className="size-4" /> Expenses</Button>
+          <Button size="sm" variant={view === 'invoices' ? 'secondary' : 'ghost'} className="h-7 px-2" onClick={() => setView('invoices')}><FileText className="size-4" /> Invoices</Button>
+          <Button size="sm" variant={view === 'activity' ? 'secondary' : 'ghost'} className="h-7 px-2" onClick={() => setView('activity')}><Activity className="size-4" /> Activity costing</Button>
+        </div>
+        {view === 'activity'
+          ? <div className="space-y-3">
+            <span className="text-sm text-muted-foreground">
+              {f ? `${f.activityCosting.length} activit${f.activityCosting.length === 1 ? 'y' : 'ies'} · costed from approved timesheet hours` : 'Loading...'}
+            </span>
+            <div className="overflow-hidden rounded-lg border">
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/50 hover:bg-muted/50">
@@ -171,8 +182,8 @@ export default function FinancialsTab({ project }: { project: ProjectDetail }) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {f.activityCosting.length === 0 && <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground">No approved time yet.</TableCell></TableRow>}
-                  {f.activityCosting.map((a) => (
+                  {f && f.activityCosting.length === 0 && <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground">No approved time yet.</TableCell></TableRow>}
+                  {f?.activityCosting.map((a) => (
                     <TableRow key={a.activity}>
                       <TableCell className="border-r font-medium">{a.activity}</TableCell>
                       <TableCell className="border-r text-right tabular-nums">{a.hours}</TableCell>
@@ -183,18 +194,9 @@ export default function FinancialsTab({ project }: { project: ProjectDetail }) {
                   ))}
                 </TableBody>
               </Table>
-              </div>
-            </CardContent>
-          </Card>
-        </>
-      )}
-
-      <div>
-        <div className="mb-3 flex rounded-md border p-0.5 w-fit">
-          <Button size="sm" variant={view === 'expenses' ? 'secondary' : 'ghost'} className="h-7 px-2" onClick={() => setView('expenses')}><Receipt className="size-4" /> Expenses</Button>
-          <Button size="sm" variant={view === 'invoices' ? 'secondary' : 'ghost'} className="h-7 px-2" onClick={() => setView('invoices')}><FileText className="size-4" /> Invoices</Button>
-        </div>
-        {view === 'expenses'
+            </div>
+          </div>
+          : view === 'expenses'
           ? <RegisterSection projectId={project.id} type="expenses" singular="Expense" fields={expenseFields} columns={expenseCols} attachEntityType="expense" acceptTypes={attachmentTypesFor(project.features, 'expense')} exportable />
           : <div className="space-y-3">
             {f && (

@@ -255,7 +255,7 @@ export class ProjectsController {
 
   @Delete('timesheets/:timesheetId')
   removeTimesheet(@Param('timesheetId') timesheetId: string, @Request() req: AuthedRequest) {
-    return this.projects.removeTimesheet(timesheetId, req.user.clientId);
+    return this.projects.removeTimesheet(timesheetId, req.user.clientId, req.user);
   }
 
   // ---- Ticket linking ----

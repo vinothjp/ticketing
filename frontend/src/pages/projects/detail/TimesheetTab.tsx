@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2, CheckCircle2 } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
@@ -9,6 +9,8 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Combobox } from '@/components/ui/combobox';
+import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select';
+import { useConfirm } from '@/hooks/useConfirm';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { invalidateProject, wbsOrder, type ProjectDetail, type UserOption } from '../projectMeta';
@@ -16,11 +18,19 @@ import { useAuth } from '../../../context/AuthContext';
 
 const tsVariant = (s: string): 'success' | 'destructive' | 'secondary' =>
   s === 'APPROVED' ? 'success' : s === 'REJECTED' ? 'destructive' : 'secondary';
+const TS_LABEL: Record<string, string> = { DRAFT: 'Draft', SUBMITTED: 'Submitted', APPROVED: 'Approved', REJECTED: 'Rejected' };
+// What an approver can move an entry to; a Draft keeps its own option so the dropdown can show it.
+const DECISIONS = ['SUBMITTED', 'APPROVED', 'REJECTED'];
 
 export default function TimesheetTab({ project }: { project: ProjectDetail; users: UserOption[] }) {
   const qc = useQueryClient();
   const { user } = useAuth();
   const isAdmin = !!user?.roles.includes('Admin');
+  const { confirm, ConfirmDialog } = useConfirm();
+  // Mirrors removeTimesheet: the project manager or an Admin deletes any entry; the
+  // consultant who logged it deletes their own until it is approved.
+  const manages = isAdmin || (!!user?.id && project.managerUserId === user.id);
+  const canDelete = (t: ProjectDetail['timesheets'][number]) => manages || (t.userId === user?.id && t.status !== 'APPROVED');
   // Only a Resources member with a cost category may log time — their hours are costed at that rate.
   const members = project.resources
     .filter((r) => r.userId && r.categoryId)
@@ -64,7 +74,7 @@ export default function TimesheetTab({ project }: { project: ProjectDetail; user
   });
   const del = useMutation({
     mutationFn: (id: string) => api.delete(`/api/projects/timesheets/${id}`),
-    onSuccess: () => { invalidate(); toast.success('Removed'); },
+    onSuccess: () => { invalidate(); toast.success('Time entry deleted'); },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error'),
   });
 
@@ -72,6 +82,7 @@ export default function TimesheetTab({ project }: { project: ProjectDetail; user
 
   return (
     <div className="space-y-4">
+      {ConfirmDialog}
       <div className="flex items-center justify-between">
         <span className="text-sm text-muted-foreground">{project.timesheets.length} entr{project.timesheets.length === 1 ? 'y' : 'ies'} · {total} hours logged</span>
         <Button size="sm" onClick={() => setOpen(true)}><Plus className="size-4" /> Log Time</Button>
@@ -147,16 +158,40 @@ export default function TimesheetTab({ project }: { project: ProjectDetail; user
                 <TableCell>{t.activity || '—'}</TableCell>
                 <TableCell className="text-right tabular-nums">{Number(t.hours)}</TableCell>
                 <TableCell className="max-w-xs truncate text-muted-foreground">{t.workPerformed || '—'}</TableCell>
-                <TableCell><Badge variant={tsVariant(t.status)}>{t.status}</Badge></TableCell>
+                <TableCell>
+                  {/* Approval is an Admin's call (the server enforces it), made from the status itself. */}
+                  {isAdmin ? (
+                    <Select
+                      value={t.status}
+                      onValueChange={(v) => { if (v && v !== t.status) setStatus.mutate({ id: t.id, status: v }); }}
+                      disabled={setStatus.isPending}
+                    >
+                      <SelectTrigger size="sm" className="w-32"><Badge variant={tsVariant(t.status)}>{TS_LABEL[t.status] ?? t.status}</Badge></SelectTrigger>
+                      <SelectContent>
+                        {(DECISIONS.includes(t.status) ? DECISIONS : [t.status, ...DECISIONS]).map((s) => (
+                          <SelectItem key={s} value={s}>{TS_LABEL[s] ?? s}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Badge variant={tsVariant(t.status)}>{TS_LABEL[t.status] ?? t.status}</Badge>
+                  )}
+                </TableCell>
                 <TableCell className="text-right">
-                  <div className="flex justify-end gap-1">
-                    {isAdmin && t.status !== 'APPROVED' && (
-                      <Button size="sm" variant="outline" className="h-8" onClick={() => setStatus.mutate({ id: t.id, status: 'APPROVED' })} title="Approve">
-                        <CheckCircle2 className="size-4" />
-                      </Button>
-                    )}
-                    <Button size="sm" variant="destructive" onClick={() => del.mutate(t.id)}><Trash2 className="size-4" /></Button>
-                  </div>
+                  {canDelete(t) && (
+                    <Button
+                      size="icon" variant="ghost" className="size-8 text-destructive hover:text-destructive" title="Delete"
+                      onClick={async () => {
+                        if (await confirm({
+                          title: 'Delete this time entry?',
+                          description: t.status === 'APPROVED' ? 'It is approved, so deleting it also removes its cost from the project.' : undefined,
+                          destructive: true, confirmText: 'Delete',
+                        })) del.mutate(t.id);
+                      }}
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  )}
                 </TableCell>
               </TableRow>
             ))}

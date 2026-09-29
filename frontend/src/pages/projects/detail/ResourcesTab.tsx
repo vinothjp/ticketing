@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Trash2, UserPlus, Pencil, Check, User, BadgeCheck, Tag, Percent, Wallet, Banknote, Receipt } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -62,7 +62,13 @@ const emptyForm = (project: ProjectDetail): MemberForm => ({
   startDate: toDate(project.startDate), endDate: toDate(project.endDate),
 });
 
-export default function ResourcesTab({ project, users }: { project: ProjectDetail; users: UserOption[] }) {
+export default function ResourcesTab({ project, users, prefillUserId, onPrefillUsed }: {
+  project: ProjectDetail;
+  users: UserOption[];
+  /** Open Add Member with this user already picked — sent here from an assignee picker. */
+  prefillUserId?: string | null;
+  onPrefillUsed?: () => void;
+}) {
   const qc = useQueryClient();
   const { confirm, ConfirmDialog } = useConfirm();
   const [open, setOpen] = useState(false);
@@ -100,6 +106,19 @@ export default function ResourcesTab({ project, users }: { project: ProjectDetai
   });
 
   const openNew = () => { setForm(emptyForm(project)); setOpen(true); };
+  useEffect(() => {
+    if (!prefillUserId) return;
+    setForm({ ...emptyForm(project), userId: prefillUserId });
+    setOpen(true);
+    onPrefillUsed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillUserId]);
+
+  // A member is planned inside the project's window; the pickers block every day outside it.
+  const projStart = toDate(project.startDate) || undefined;
+  const projEnd = toDate(project.endDate) || undefined;
+  const latest = (...ds: (string | undefined)[]) => ds.filter(Boolean).sort().slice(-1)[0] as string | undefined;
+  const earliest = (...ds: (string | undefined)[]) => ds.filter(Boolean).sort()[0] as string | undefined;
   const openEdit = (r: ProjectDetail['resources'][number]) => {
     setForm({
       id: r.id, userId: r.userId ?? '', categoryId: r.categoryId ?? '', role: r.role ?? '',
@@ -182,11 +201,11 @@ export default function ResourcesTab({ project, users }: { project: ProjectDetai
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <div className="mb-1 text-sm">Start date</div>
-                <DateField value={form.startDate} onChange={(v) => setForm((f) => ({ ...f, startDate: v }))} />
+                <DateField value={form.startDate} min={projStart} max={earliest(form.endDate || undefined, projEnd)} onChange={(v) => setForm((f) => ({ ...f, startDate: v }))} />
               </div>
               <div>
                 <div className="mb-1 text-sm">End date</div>
-                <DateField value={form.endDate} onChange={(v) => setForm((f) => ({ ...f, endDate: v }))} />
+                <DateField value={form.endDate} min={latest(form.startDate || undefined, projStart)} max={projEnd} onChange={(v) => setForm((f) => ({ ...f, endDate: v }))} />
               </div>
             </div>
             <label className="flex items-center gap-2 text-sm">

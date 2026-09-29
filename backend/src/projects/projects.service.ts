@@ -1082,7 +1082,8 @@ export class ProjectsService {
   // ---- Resources plan -----------------------------------------------------
 
   async addResource(projectId: string, dto: CreateResourceDto, clientId: string, actor: Actor) {
-    await this.getOwned(projectId, clientId);
+    const project = await this.getOwned(projectId, clientId);
+    this.assertResourceWindow(project, dto.startDate, dto.endDate);
     return this.prisma.projectResource.create({
       data: {
         projectId,
@@ -1102,7 +1103,17 @@ export class ProjectsService {
   }
 
   async updateResource(resourceId: string, dto: UpdateResourceDto, clientId: string) {
-    await this.getOwnedResource(resourceId, clientId);
+    const existing = await this.getOwnedResource(resourceId, clientId);
+    // Only a write that touches the dates is checked, so editing the role or rate of a
+    // member planned before the project was re-dated is not refused for it.
+    if (dto.startDate !== undefined || dto.endDate !== undefined) {
+      const project = await this.getOwned(existing.projectId, clientId);
+      this.assertResourceWindow(
+        project,
+        dto.startDate !== undefined ? dto.startDate : existing.startDate,
+        dto.endDate !== undefined ? dto.endDate : existing.endDate,
+      );
+    }
     return this.prisma.projectResource.update({
       where: { id: resourceId },
       data: {
@@ -1254,6 +1265,25 @@ export class ProjectsService {
     }
 
     return result;
+  }
+
+  /**
+   * A member is planned inside the project's own window: never starting before the
+   * project starts, never ending after it ends, and never ending before starting.
+   * Compared as calendar days, so the stored midnight-UTC stamps can't tip a boundary.
+   */
+  private assertResourceWindow(
+    project: { startDate: Date | null; endDate: Date | null },
+    start?: string | Date | null,
+    end?: string | Date | null,
+  ) {
+    const day = (v?: string | Date | null) => (v ? new Date(v).toISOString().slice(0, 10) : undefined);
+    const [s, e, ps, pe] = [day(start), day(end), day(project.startDate), day(project.endDate)];
+    if (s && ps && s < ps) throw new BadRequestException(`Start date cannot be before the project starts (${ps})`);
+    if (e && pe && e > pe) throw new BadRequestException(`End date cannot be after the project ends (${pe})`);
+    if (s && pe && s > pe) throw new BadRequestException(`Start date cannot be after the project ends (${pe})`);
+    if (e && ps && e < ps) throw new BadRequestException(`End date cannot be before the project starts (${ps})`);
+    if (s && e && e < s) throw new BadRequestException('End date cannot be before the start date');
   }
 
   private async getOwnedResource(id: string, clientId: string) {

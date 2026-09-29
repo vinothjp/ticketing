@@ -26,6 +26,7 @@ import TaskGantt from './TaskGantt';
 import TaskDetailDialog from './TaskDetailDialog';
 import WbsView from './WbsView';
 import PriorityMark from './PriorityMark';
+import AssigneeSelect from './AssigneeSelect';
 
 
 const NONE = '__none__';
@@ -58,7 +59,12 @@ const nextLevel = (t: string) =>
 
 type View = 'wbs' | 'list' | 'group' | 'board' | 'timeline';
 
-export default function TasksTab({ project, users }: { project: ProjectDetail; users: UserOption[] }) {
+export default function TasksTab({ project, users, onAddToResources }: {
+  project: ProjectDetail;
+  users: UserOption[];
+  /** Opens the Resources tab's Add Member form with this user picked. */
+  onAddToResources: (userId: string) => void;
+}) {
   const qc = useQueryClient();
   const { user } = useAuth();
   const isAdmin = !!user?.roles.includes('Admin');
@@ -365,6 +371,8 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
       <TaskDetailDialog
         taskId={detailId} projectId={project.id} projectKey={project.key ?? null}
         users={users} tasks={project.tasks} projectStart={projMin} projectEnd={projMax} onClose={() => setDetailId(null)}
+        resources={project.resources}
+        onAddToResources={(uid) => { setDetailId(null); onAddToResources(uid); }}
       />
 
       <Dialog open={dialogOpen} onOpenChange={(o) => { setDialogOpen(o); if (!o) setEditing(null); }}>
@@ -443,13 +451,10 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
               <div className="grid grid-cols-2 gap-3">
                 <FormField control={form.control} name="assigneeUserId" render={({ field }) => (
                   <FormItem><FormLabel>Assignee</FormLabel>
-                    <Select value={field.value || NONE} onValueChange={(v) => field.onChange(v === NONE ? '' : v)}>
-                      <FormControl><SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        <SelectItem value={NONE}>Unassigned</SelectItem>
-                        {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
+                    <AssigneeSelect
+                      value={field.value ?? ''} onChange={field.onChange} users={users} resources={project.resources}
+                      onAddToResources={(uid) => { setDialogOpen(false); setEditing(null); onAddToResources(uid); }}
+                    />
                   </FormItem>
                 )} />
                 <FormField control={form.control} name="status" render={({ field }) => (

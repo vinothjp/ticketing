@@ -14,8 +14,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import {
   TASK_STATUSES, PRIORITIES, invalidateProject, labelOf, taskStatusVariant, taskKey,
-  type TaskDetail, type ProjectTask, type UserOption,
+  type TaskDetail, type ProjectTask, type ProjectResource, type UserOption,
 } from '../projectMeta';
+import AssigneeSelect from './AssigneeSelect';
 
 const NONE = '__none__';
 const toDateInput = (v?: string | null) => (v ? new Date(v).toISOString().slice(0, 10) : '');
@@ -35,7 +36,7 @@ function Section({ icon: Icon, title, count, children }: {
 }
 
 export default function TaskDetailDialog({
-  taskId, projectId, projectKey, users, tasks, projectStart, projectEnd, onClose,
+  taskId, projectId, projectKey, users, tasks, projectStart, projectEnd, onClose, resources, onAddToResources,
 }: {
   taskId: string | null;
   projectId: string;
@@ -45,6 +46,8 @@ export default function TaskDetailDialog({
   projectStart?: string;
   projectEnd?: string;
   onClose: () => void;
+  resources: ProjectResource[];
+  onAddToResources: (userId: string) => void;
 }) {
   const qc = useQueryClient();
   const { user } = useAuth();
@@ -148,13 +151,10 @@ export default function TaskDetailDialog({
           </div>
           <div>
             <div className="mb-1 text-xs text-muted-foreground">Assignee</div>
-            <Select value={task.assigneeUserId ?? NONE} onValueChange={(v) => patchTask.mutate({ assigneeUserId: v === NONE ? null : v })} disabled={!canEdit}>
-              <SelectTrigger size="sm" className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NONE}>Unassigned</SelectItem>
-                {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            <AssigneeSelect
+              size="sm" disabled={!canEdit} users={users} resources={resources} onAddToResources={onAddToResources}
+              value={task.assigneeUserId ?? ''} onChange={(uid) => patchTask.mutate({ assigneeUserId: uid || null })}
+            />
           </div>
           <div>
             <div className="mb-1 text-xs text-muted-foreground">Start date</div>

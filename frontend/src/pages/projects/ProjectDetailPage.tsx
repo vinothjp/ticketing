@@ -34,6 +34,9 @@ export default function ProjectDetailPage() {
   const [searchParams] = useSearchParams();
   const qc = useQueryClient();
   const [tab, setTab] = useState(searchParams.get('tab') ?? 'overview');
+  // A user picked as an assignee who is not on the resource plan, waiting for the Add Member form.
+  const [addMemberFor, setAddMemberFor] = useState<string | null>(null);
+  const addToResources = (userId: string) => { setAddMemberFor(userId); setTab('resources'); };
 
   const { data: project, isLoading } = useQuery<ProjectDetail>({
     queryKey: ['projects', id],
@@ -92,9 +95,9 @@ export default function ProjectDetailPage() {
           <div className={`grid grid-cols-1 gap-6 ${tab === 'overview' ? 'lg:grid-cols-[minmax(0,1fr)_300px]' : ''}`}>
           <div className="min-w-0">
           <TabsContent value="overview" className="pt-4"><OverviewTab project={project} /></TabsContent>
-          <TabsContent value="tasks" className="pt-4"><TasksTab project={project} users={users} /></TabsContent>
+          <TabsContent value="tasks" className="pt-4"><TasksTab project={project} users={users} onAddToResources={addToResources} /></TabsContent>
           {sprintsEnabled && <TabsContent value="sprints" className="pt-4"><SprintsTab project={project} /></TabsContent>}
-          <TabsContent value="resources" className="pt-4"><ResourcesTab project={project} users={users} /></TabsContent>
+          <TabsContent value="resources" className="pt-4"><ResourcesTab project={project} users={users} prefillUserId={addMemberFor} onPrefillUsed={() => setAddMemberFor(null)} /></TabsContent>
           {timeTrackingEnabled && <TabsContent value="timesheet" className="pt-4"><TimesheetTab project={project} users={users} /></TabsContent>}
           <TabsContent value="financials" className="pt-4"><FinancialsTab project={project} /></TabsContent>
           <TabsContent value="calendar" className="pt-4"><CalendarTab project={project} /></TabsContent>

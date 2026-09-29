@@ -34,7 +34,6 @@ type Node = {
   priority?: 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
   durationDays?: number;
   start?: number;       // day offset (leaf)
-  completionPct?: number;
   dep?: string;         // predecessor node key
   critical?: boolean;
   children?: Node[];
@@ -91,20 +90,20 @@ async function main() {
       wbs: [
         { key: 'p1', title: 'Requirement Gathering', wbsType: 'PHASE', milestone: 'Requirement Complete', children: [
           { key: 'p1t1', title: 'Business Meetings', wbsType: 'TASK', milestone: 'Requirement Complete', children: [
-            { key: 'p1t1a', title: 'Stakeholder interviews', wbsType: 'SUBTASK', assignee: 'agent2', status: 'COMPLETED', completionPct: 100, durationDays: 2, start: -25 },
-            { key: 'p1t1b', title: 'Process mapping', wbsType: 'SUBTASK', assignee: 'agent2', status: 'COMPLETED', completionPct: 100, durationDays: 3, start: -23, dep: 'p1t1a' },
+            { key: 'p1t1a', title: 'Stakeholder interviews', wbsType: 'SUBTASK', assignee: 'agent2', status: 'COMPLETED', durationDays: 2, start: -25 },
+            { key: 'p1t1b', title: 'Process mapping', wbsType: 'SUBTASK', assignee: 'agent2', status: 'COMPLETED', durationDays: 3, start: -23, dep: 'p1t1a' },
           ]},
           { key: 'p1t2', title: 'Requirement Document', wbsType: 'TASK', milestone: 'Requirement Complete', children: [
-            { key: 'p1t2a', title: 'Draft requirements', wbsType: 'SUBTASK', assignee: 'agent3', status: 'COMPLETED', completionPct: 100, durationDays: 2, start: -20, dep: 'p1t1b' },
-            { key: 'p1t2b', title: 'Review & sign-off', wbsType: 'SUBTASK', assignee: 'agent1', status: 'COMPLETED', completionPct: 100, durationDays: 1, start: -18, dep: 'p1t2a' },
+            { key: 'p1t2a', title: 'Draft requirements', wbsType: 'SUBTASK', assignee: 'agent3', status: 'COMPLETED', durationDays: 2, start: -20, dep: 'p1t1b' },
+            { key: 'p1t2b', title: 'Review & sign-off', wbsType: 'SUBTASK', assignee: 'agent1', status: 'COMPLETED', durationDays: 1, start: -18, dep: 'p1t2a' },
           ]},
         ]},
         { key: 'p2', title: 'Blueprint', wbsType: 'PHASE', milestone: 'Blueprint', children: [
           { key: 'p2t1', title: 'Prepare Blueprint', wbsType: 'TASK', milestone: 'Blueprint', children: [
-            { key: 'p2t1a', title: 'Solution design', wbsType: 'SUBTASK', assignee: 'agent3', status: 'IN_PROGRESS', completionPct: 60, durationDays: 4, start: -16, priority: 'HIGH', critical: true },
-            { key: 'p2t1b', title: 'Data model', wbsType: 'SUBTASK', assignee: 'agent4', status: 'IN_PROGRESS', completionPct: 40, durationDays: 3, start: -12, dep: 'p2t1a' },
+            { key: 'p2t1a', title: 'Solution design', wbsType: 'SUBTASK', assignee: 'agent3', status: 'IN_PROGRESS', durationDays: 4, start: -16, priority: 'HIGH', critical: true },
+            { key: 'p2t1b', title: 'Data model', wbsType: 'SUBTASK', assignee: 'agent4', status: 'IN_PROGRESS', durationDays: 3, start: -12, dep: 'p2t1a' },
           ]},
-          { key: 'p2t2', title: 'Review Blueprint', wbsType: 'TASK', milestone: 'Blueprint', assignee: 'agent1', status: 'REVIEW', completionPct: 50, durationDays: 2, start: -8, dep: 'p2t1b' },
+          { key: 'p2t2', title: 'Review Blueprint', wbsType: 'TASK', milestone: 'Blueprint', assignee: 'agent1', status: 'REVIEW', durationDays: 2, start: -8, dep: 'p2t1b' },
           { key: 'p2m', title: 'Blueprint Approval', wbsType: 'MILESTONE', milestone: 'Blueprint', status: 'TODO', durationDays: 0, start: -6 },
         ]},
         { key: 'p3', title: 'Development', wbsType: 'PHASE', milestone: 'Development', children: [
@@ -135,8 +134,8 @@ async function main() {
       members: [{ u: 'agent2', role: 'MANAGER' }, { u: 'agent5' }],
       wbs: [
         { key: 'w1', title: 'Design', wbsType: 'PHASE', milestone: 'Blueprint', children: [
-          { key: 'w1a', title: 'Wireframes', wbsType: 'TASK', milestone: 'Blueprint', assignee: 'agent5', status: 'COMPLETED', completionPct: 100, durationDays: 3, start: -10 },
-          { key: 'w1b', title: 'Visual design', wbsType: 'TASK', milestone: 'Blueprint', assignee: 'agent2', status: 'IN_PROGRESS', completionPct: 50, durationDays: 5, start: -6, dep: 'w1a' },
+          { key: 'w1a', title: 'Wireframes', wbsType: 'TASK', milestone: 'Blueprint', assignee: 'agent5', status: 'COMPLETED', durationDays: 3, start: -10 },
+          { key: 'w1b', title: 'Visual design', wbsType: 'TASK', milestone: 'Blueprint', assignee: 'agent2', status: 'IN_PROGRESS', durationDays: 5, start: -6, dep: 'w1a' },
         ]},
         { key: 'w2', title: 'Build', wbsType: 'PHASE', milestone: 'Development', children: [
           { key: 'w2a', title: 'Frontend', wbsType: 'TASK', milestone: 'Development', assignee: 'agent5', status: 'TODO', durationDays: 8, start: 2, dep: 'w1b' },
@@ -184,7 +183,7 @@ async function main() {
           title: node.title,
           description: `${node.title} — ${node.wbsType.toLowerCase()} under the ${spec.name} plan.`,
           status: node.status ?? 'TODO',
-          completionPct: node.status === 'COMPLETED' ? 100 : (node.completionPct ?? 0),
+          completionPct: ({ IN_PROGRESS: 50, REVIEW: 80, COMPLETED: 100 } as Record<string, number>)[node.status ?? 'TODO'] ?? 0, // same status → % rule as ProjectsService
           priority: node.priority ?? null,
           durationDays: node.children?.length ? null : (node.durationDays ?? null),
           startDate: node.start != null ? day(node.start) : null,

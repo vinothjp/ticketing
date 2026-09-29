@@ -25,6 +25,11 @@ const DEFAULT_MILESTONES = [
   'Training', 'Go Live', 'Hypercare', 'Closure',
 ];
 
+// A task's % complete is read off its status, never typed — so reopening a task takes its %
+// (and every rollup above it) back down with it. Parents still roll up from their children.
+const STATUS_COMPLETION: Record<string, number> = { TODO: 0, IN_PROGRESS: 50, REVIEW: 80, COMPLETED: 100 };
+const completionFor = (status: string) => STATUS_COMPLETION[status] ?? 0;
+
 @Injectable()
 export class ProjectsService {
   constructor(private prisma: PrismaService) {}
@@ -452,7 +457,7 @@ export class ProjectsService {
     if (!isAdmin(actor)) throw new ForbiddenException('Only admins can create WBS items');
     const assigneeName = await this.userName(clientId, dto.assigneeUserId);
     const status = dto.status ?? 'TODO';
-    const completionPct = status === 'COMPLETED' ? 100 : (dto.completionPct ?? 0);
+    const completionPct = completionFor(status);
     return this.prisma.$transaction(async (tx) => {
       // Per-project sequential task number → key = project.key + '-' + taskNumber.
       const proj = await tx.project.update({
@@ -662,12 +667,10 @@ export class ProjectsService {
       data.assigneeUserId = dto.assigneeUserId || null;
       data.assigneeName = await this.userName(clientId, dto.assigneeUserId);
     }
-    // completionPct: explicit value wins; a COMPLETED status forces 100.
-    if (set(dto.completionPct)) data.completionPct = Math.max(0, Math.min(100, dto.completionPct!));
     if (set(dto.status)) {
       data.status = dto.status;
       data.completedAt = dto.status === 'COMPLETED' ? (existing.completedAt ?? new Date()) : null;
-      if (dto.status === 'COMPLETED' && !set(dto.completionPct)) data.completionPct = 100;
+      data.completionPct = completionFor(dto.status!);
     }
 
     // Re-parenting under a sprint item makes that item a summary: its sprint passes to this one.
@@ -780,7 +783,7 @@ export class ProjectsService {
         status: dto.status,
         sortOrder: dto.sortOrder ?? existing.sortOrder,
         completedAt: dto.status === 'COMPLETED' ? (existing.completedAt ?? new Date()) : null,
-        completionPct: dto.status === 'COMPLETED' ? 100 : existing.completionPct,
+        completionPct: completionFor(dto.status),
         updatedBy: actor.id,
       },
     });

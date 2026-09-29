@@ -75,7 +75,6 @@ class BaseTaskDto {
   @IsOptional() @IsDateString() actualStart?: string;
   @IsOptional() @IsDateString() actualFinish?: string;
   @IsOptional() @IsInt() @Min(0) durationDays?: number;
-  @IsOptional() @IsInt() @Min(0) @Max(100) completionPct?: number;
   @IsOptional() @IsInt() @Min(0) estimatedHours?: number;
   @IsOptional() @IsInt() @Min(0) actualHours?: number;
   @IsOptional() @IsInt() @Min(0) plannedEffort?: number;

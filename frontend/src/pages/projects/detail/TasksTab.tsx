@@ -43,7 +43,6 @@ const taskSchema = z.object({
   startDate: z.string().min(1, 'Start date is required'),
   dueDate: z.string().min(1, 'End date is required'),
   durationDays: z.string().optional(),
-  completionPct: z.string().optional(),
   estimatedHours: z.string().optional(),
   position: z.string().optional(),   // 1-based insert position among siblings (create only)
 });
@@ -51,7 +50,7 @@ type TaskValues = z.infer<typeof taskSchema>;
 
 const emptyTask = (): TaskValues => ({
   title: '', wbsType: 'TASK', milestoneId: '', sprintId: '', parentTaskId: '', description: '',
-  assigneeUserId: '', status: 'TODO', priority: '', startDate: '', dueDate: '', durationDays: '', completionPct: '', estimatedHours: '', position: '',
+  assigneeUserId: '', status: 'TODO', priority: '', startDate: '', dueDate: '', durationDays: '', estimatedHours: '', position: '',
 });
 const toDateInput = (v?: string | null) => (v ? new Date(v).toISOString().slice(0, 10) : '');
 const nextLevel = (t: string) =>
@@ -142,7 +141,6 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
         startDate: toDateInput(editing.startDate),
         dueDate: toDateInput(editing.dueDate),
         durationDays: editing.durationDays != null ? String(editing.durationDays) : '',
-        completionPct: editing.completionPct != null ? String(editing.completionPct) : '',
         estimatedHours: editing.estimatedHours != null ? String(editing.estimatedHours) : '',
       });
     }
@@ -175,7 +173,6 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
       startDate: start,
       dueDate: due,
       durationDays: dur,
-      completionPct: v.completionPct ? Number(v.completionPct) : undefined,
       estimatedHours: v.estimatedHours ? Number(v.estimatedHours) : undefined,
     };
   };
@@ -464,7 +461,7 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
                   </FormItem>
                 )} />
               </div>
-              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_5.5rem_4.5rem] gap-3">
+              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_5.5rem] gap-3">
                 <FormField control={form.control} name="startDate" render={({ field }) => (
                   <FormItem><FormLabel>Start *</FormLabel><FormControl><DateField value={field.value} onChange={field.onChange} min={dateFloor} max={earliest(wDue, dateCap)} /></FormControl><FormMessage /></FormItem>
                 )} />
@@ -473,11 +470,7 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
                 )} />
                 <FormField control={form.control} name="durationDays" render={({ field }) => (
                   <FormItem><FormLabel>Duration (d)</FormLabel><FormControl><Input type="number" min={0} {...field} /></FormControl></FormItem>
-                )} />
-                <FormField control={form.control} name="completionPct" render={({ field }) => (
-                  <FormItem><FormLabel>%</FormLabel><FormControl><Input type="number" min={0} max={100} {...field} /></FormControl></FormItem>
-                )} />
-              </div>
+                )} />              </div>
               <div className="grid grid-cols-2 gap-3">
                 <FormField control={form.control} name="priority" render={({ field }) => (
                   <FormItem><FormLabel>Priority</FormLabel>

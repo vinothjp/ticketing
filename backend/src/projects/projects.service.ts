@@ -1083,6 +1083,7 @@ export class ProjectsService {
 
   async addResource(projectId: string, dto: CreateResourceDto, clientId: string, actor: Actor) {
     const project = await this.getOwned(projectId, clientId);
+    if (!dto.userId) throw new BadRequestException('Member is required');
     // The category carries the daily rate; a member without one plans and bills at 0.
     if (!dto.categoryId) throw new BadRequestException(`Category is required — it sets the member's daily cost and billing rate`);
     this.assertResourceWindow(project, dto.startDate, dto.endDate);
@@ -1106,6 +1107,7 @@ export class ProjectsService {
 
   async updateResource(resourceId: string, dto: UpdateResourceDto, clientId: string) {
     const existing = await this.getOwnedResource(resourceId, clientId);
+    if (dto.userId !== undefined && !dto.userId) throw new BadRequestException('Member is required');
     if (dto.categoryId !== undefined && !dto.categoryId) {
       throw new BadRequestException(`Category is required — it sets the member's daily cost and billing rate`);
     }

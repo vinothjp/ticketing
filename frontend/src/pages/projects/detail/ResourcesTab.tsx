@@ -32,7 +32,6 @@ function HeadLabel({ icon: Icon, children, className = '' }: {
   );
 }
 
-const NONE = '__none__';
 const money = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 const toDate = (v?: string | null) => (v ? new Date(v).toISOString().slice(0, 10) : '');
 const HEAD = 'text-xs font-semibold text-muted-foreground';
@@ -169,11 +168,10 @@ export default function ResourcesTab({ project, users, prefillUserId, onPrefillU
           <DialogHeader><DialogTitle>{form.id ? 'Edit member' : 'Add member to plan'}</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div>
-              <div className="mb-1 text-sm">Member</div>
-              <Select value={form.userId || NONE} onValueChange={(v) => setForm((f) => ({ ...f, userId: v === NONE ? '' : v }))}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="Select user" /></SelectTrigger>
+              <div className="mb-1 text-sm">Member <span className="text-destructive">*</span></div>
+              <Select value={form.userId || undefined} onValueChange={(v) => { if (v) setForm((f) => ({ ...f, userId: v })); }}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="Select member" /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={NONE}>—</SelectItem>
                   {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
                 </SelectContent>
               </Select>
@@ -214,6 +212,7 @@ export default function ResourcesTab({ project, users, prefillUserId, onPrefillU
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
             <Button disabled={save.isPending} onClick={() => {
+              if (!form.userId) { toast.error('Select a member'); return; }
               // No category means no rate: the member would plan and bill at 0.
               if (!form.categoryId) { toast.error(`Select a category — it sets the member's daily cost and billing rate`); return; }
               save.mutate(form);

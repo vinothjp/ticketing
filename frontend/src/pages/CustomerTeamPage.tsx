@@ -3,12 +3,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { UserPlus, ShieldCheck, User as UserIcon } from 'lucide-react';
 import api from '../lib/api';
+import { useAuth } from '../context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 
 interface TeamMember {
@@ -23,8 +23,9 @@ interface TeamMember {
 
 export default function CustomerTeamPage() {
   const qc = useQueryClient();
+  const { logout } = useAuth();
   const [addOpen, setAddOpen] = useState(false);
-  const [form, setForm] = useState({ username: '', email: '', password: '', role: 'employee' as 'employee' | 'admin' });
+  const [form, setForm] = useState({ username: '', email: '', password: '' });
 
   const { data: members = [], isLoading } = useQuery<TeamMember[]>({
     queryKey: ['my-team'],
@@ -38,14 +39,24 @@ export default function CustomerTeamPage() {
     onSuccess: () => {
       invalidate();
       setAddOpen(false);
-      setForm({ username: '', email: '', password: '', role: 'employee' });
+      setForm({ username: '', email: '', password: '' });
       toast.success('Team member added');
     },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Could not add member'),
   });
   const updateMut = useMutation({
     mutationFn: (v: { id: string; body: Record<string, unknown> }) => api.patch(`/api/my-team/${v.id}`, v.body),
-    onSuccess: () => { invalidate(); toast.success('Team member updated'); },
+    onSuccess: (res) => {
+      // After a hand-over this login is an employee, but its token still says
+      // admin until it signs in again — so it signs out now.
+      if (res.data?.handedOver) {
+        toast.success('Admin handed over — please sign in again');
+        logout();
+        return;
+      }
+      invalidate();
+      toast.success('Team member updated');
+    },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Could not update member'),
   });
   const removeMut = useMutation({
@@ -60,7 +71,7 @@ export default function CustomerTeamPage() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">Team</h1>
           <p className="text-sm text-muted-foreground">
-            Manage your company’s people. Admins see all tickets; employees see only their own.
+            Manage your company’s people. You see all company tickets; employees see only their own.
           </p>
         </div>
         <Button onClick={() => setAddOpen(true)}><UserPlus className="size-4" /> Add member</Button>
@@ -102,10 +113,24 @@ export default function CustomerTeamPage() {
                       <span className="text-xs text-muted-foreground">—</span>
                     ) : (
                       <div className="flex justify-end gap-2">
-                        <Button variant="outline" size="sm"
-                          onClick={() => updateMut.mutate({ id: m.id, body: { role: m.role === 'admin' ? 'employee' : 'admin' } })}>
-                          {m.role === 'admin' ? 'Make employee' : 'Make admin'}
-                        </Button>
+                        {/* One admin per client: "Make admin" hands your role over
+                            (you become an employee); "Make employee" demotes another admin. */}
+                        {m.role === 'admin' ? (
+                          <Button variant="outline" size="sm" disabled={updateMut.isPending}
+                            onClick={() => updateMut.mutate({ id: m.id, body: { role: 'employee' } })}>
+                            Make employee
+                          </Button>
+                        ) : (
+                          <Button variant="outline" size="sm" disabled={updateMut.isPending || !m.isActive}
+                            title={m.isActive ? undefined : 'Reactivate them first'}
+                            onClick={() => {
+                              if (confirm(`Make ${m.username} the admin? Your company has one admin, so you will become an employee and be signed out.`)) {
+                                updateMut.mutate({ id: m.id, body: { role: 'admin' } });
+                              }
+                            }}>
+                            Make admin
+                          </Button>
+                        )}
                         {m.isActive ? (
                           <Button variant="outline" size="sm" onClick={() => removeMut.mutate(m.id)}>Deactivate</Button>
                         ) : (
@@ -137,16 +162,9 @@ export default function CustomerTeamPage() {
               <label className="mb-1 block text-sm font-medium">Temporary password</label>
               <Input type="text" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="At least 6 characters" />
             </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium">Role</label>
-              <Select value={form.role} onValueChange={(v) => setForm({ ...form, role: v as 'employee' | 'admin' })}>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="employee">Employee — sees only their own tickets</SelectItem>
-                  <SelectItem value="admin">Admin — sees all company tickets & manages the team</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {/* No role choice: a client has one admin, set by the provider, so
+                everyone added here is an employee. */}
+            <p className="text-xs text-muted-foreground">They join as an employee and see only their own tickets.</p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>

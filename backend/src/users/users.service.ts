@@ -7,6 +7,9 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcryptjs';
 import { assertUserDeletable } from './user-links';
+import {
+  CUSTOMER_ADMIN_ROLE, assertProviderManaged, assertProviderRoleSet,
+} from '../customer-companies/customer-admin';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { OPEN_ALLOCATION_STATUSES } from '../assets/allocation-status';
@@ -36,6 +39,9 @@ const USER_SELECT = {
   phone: true,
   managerId: true,
   manager: { select: { id: true, name: true, username: true } },
+  // Set only for a client's customer admin on the Users screen — names the client they act for.
+  customerCompanyId: true,
+  customerCompany: { select: { id: true, name: true } },
   userRoles: { include: { role: true } },
 };
 
@@ -43,11 +49,21 @@ const USER_SELECT = {
 export class UsersService {
   constructor(private prisma: PrismaService) {}
 
-  // Customer contacts (customerCompanyId set) are excluded unless explicitly requested,
-  // so assignee/owner pickers only ever show staff. The Users admin page opts in.
-  async findAll(clientId: string, includeCustomers = false) {
+  // Staff only by default, so assignee/owner pickers never show a client's people.
+  // The Users admin page opts in to the provider's other logins — every customer
+  // admin, linked or not. A client's employees are never listed here: their own
+  // admin manages them in My Team.
+  async findAll(clientId: string, includeCustomerAdmins = false) {
     return this.prisma.user.findMany({
-      where: { clientId, ...(includeCustomers ? {} : { customerCompanyId: null }) },
+      where: includeCustomerAdmins
+        ? {
+            clientId,
+            OR: [
+              { customerCompanyId: null },
+              { userRoles: { some: { role: { name: CUSTOMER_ADMIN_ROLE } } } },
+            ],
+          }
+        : { clientId, customerCompanyId: null },
       select: USER_SELECT,
     });
   }
@@ -83,6 +99,9 @@ export class UsersService {
     const employeeId = dto.employeeId?.trim() || null;
     if (employeeId) await this.assertEmployeeIdFree(clientId, employeeId);
     if (dto.managerId) await this.assertManager(dto.managerId, clientId);
+    // Checked before the user is written, so a bad role set never leaves a role-less login.
+    const roleIds = dto.roleIds ?? [];
+    if (roleIds.length) await this.assertRoleSet({ id: '', customerCompanyId: null }, roleIds, clientId);
 
     const passwordHash = await bcrypt.hash(dto.password, 12);
     const user = await this.prisma.user.create({
@@ -99,13 +118,16 @@ export class UsersService {
         managerId: dto.managerId || null,
         createdBy: actorId,
         updatedBy: actorId,
+        ...(roleIds.length
+          ? { userRoles: { create: roleIds.map((roleId) => ({ roleId, createdBy: actorId })) } }
+          : {}),
       },
     });
     return { id: user.id, username: user.username, name: user.name, email: user.email };
   }
 
   async update(id: string, dto: UpdateUserDto, clientId: string, actorId: string) {
-    await this.findOne(id, clientId);
+    await assertProviderManaged(this.prisma, id, clientId);
     // Guard the unique username/email so a clash returns 409, not a raw 500.
     if (dto.username || dto.email) {
       const conflict = await this.prisma.user.findFirst({
@@ -145,6 +167,7 @@ export class UsersService {
   }
 
   async remove(id: string, clientId: string) {
+    await assertProviderManaged(this.prisma, id, clientId);
     const user = await this.findOne(id, clientId);
     await assertUserDeletable(this.prisma, id, user.name?.trim() || user.username);
     await this.prisma.user.delete({ where: { id } });
@@ -373,14 +396,30 @@ export class UsersService {
     if (!manager) throw new BadRequestException('Manager must be a staff user with the Manager role');
   }
 
-  async assignRoles(userId: string, roleIds: string[], clientId: string, actorId: string) {
-    await this.findOne(userId, clientId);
-    const ownedRoles = await this.prisma.role.count({
+  /**
+   * Every role set written to a user passes here: the roles must be this
+   * tenant's, and the provider/client split holds (no staff role for a client's
+   * person, a linked admin's role fixed, one admin per client) — see
+   * `customer-companies/customer-admin.ts`.
+   */
+  private async assertRoleSet(
+    user: { id: string; customerCompanyId: string | null },
+    roleIds: string[],
+    clientId: string,
+  ) {
+    const owned = await this.prisma.role.findMany({
       where: { id: { in: roleIds }, clientId },
+      select: { name: true },
     });
-    if (ownedRoles !== roleIds.length) {
+    if (owned.length !== new Set(roleIds).size) {
       throw new BadRequestException('One or more roles do not belong to your organization');
     }
+    await assertProviderRoleSet(this.prisma, user, owned.map((r) => r.name));
+  }
+
+  async assignRoles(userId: string, roleIds: string[], clientId: string, actorId: string) {
+    const target = await assertProviderManaged(this.prisma, userId, clientId);
+    await this.assertRoleSet(target, roleIds, clientId);
     // Remove existing roles and reassign
     await this.prisma.userRole.deleteMany({ where: { userId } });
     await this.prisma.userRole.createMany({

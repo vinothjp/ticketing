@@ -27,8 +27,10 @@ export class UsersController {
   // external customers out, so the internal staff roster isn't disclosed to them.
   @Get()
   @UseGuards(StaffGuard)
-  findAll(@Request() req: AuthedRequest, @Query('includeCustomers') includeCustomers?: string) {
-    return this.usersService.findAll(req.user.clientId, includeCustomers === 'true');
+  // `includeCustomerAdmins` is the Users screen's view: staff plus every client's
+  // admin. A client's employees are never listed — they are managed in My Team.
+  findAll(@Request() req: AuthedRequest, @Query('includeCustomerAdmins') includeCustomerAdmins?: string) {
+    return this.usersService.findAll(req.user.clientId, includeCustomerAdmins === 'true');
   }
 
   // ---- Employee Master import / export ----

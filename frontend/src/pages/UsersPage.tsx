@@ -6,7 +6,6 @@ import { z } from 'zod';
 import { Plus, Pencil, Search, ArrowUp, ArrowDown, ArrowUpDown, ChevronLeft, ChevronRight,
   AtSign, Mail, Shield, CircleDot } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 import api from '../lib/api';
 import { Button } from '@/components/ui/button';
@@ -28,6 +27,8 @@ interface User {
   isActive: boolean;
   createdAt: string;
   userRoles: { role: Role }[];
+  // Set only for a customer admin linked to a client — the client they act for.
+  customerCompany?: { id: string; name: string } | null;
 }
 
 const createUserSchema = z.object({
@@ -35,6 +36,7 @@ const createUserSchema = z.object({
   name: z.string().optional(),
   email: z.string().email('Enter a valid email'),
   password: z.string().min(8, 'Min 8 characters'),
+  roleIds: z.array(z.string()),
 });
 type CreateUserValues = z.infer<typeof createUserSchema>;
 
@@ -52,24 +54,17 @@ const editUserSchema = z.object({
 type EditUserValues = z.infer<typeof editUserSchema>;
 
 type StatusFilter = 'all' | 'active' | 'inactive';
-type SortField = 'username' | 'email' | 'status';
+type SortField = 'username' | 'email' | 'role' | 'status';
+
+/** A user's roles as one sortable string — names sorted, so the row's badge order doesn't matter. */
+const roleKey = (u: { userRoles: { role: { name: string } }[] }) =>
+  u.userRoles.map((r) => r.role.name).sort().join(', ');
 type SortDir = 'asc' | 'desc';
 
 const PAGE_SIZE = 10;
 
-/**
- * A column heading: its icon, then its label. Muted and small, so the headings
- * read as chrome and the values below them carry the weight. Mirrors the task
- * grid on the ticket detail screen.
- */
-function HeadLabel({ icon: Icon, children }: { icon: LucideIcon; children: ReactNode }) {
-  return (
-    <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
-      <Icon className="size-3.5 shrink-0" />
-      {children}
-    </span>
-  );
-}
+/** Role-filter sentinel for users holding no role at all (Radix can't hold an empty value). */
+const NO_ROLE = '__none__';
 
 /**
  * A sortable heading. The column's own icon leads, the sort indicator trails —
@@ -102,6 +97,40 @@ function SortableHead({
   );
 }
 
+/**
+ * The role checklist both the Create and Edit dialogs carry. `Customer` is left
+ * out — an employee login only exists inside a client, so it is added by that
+ * client's admin. `CustomerAdmin` is offered: such a user is then linked to a
+ * client from the client's own dialog.
+ */
+function RoleChecklist({ roles, value, onChange }: {
+  roles: Role[]; value: string[]; onChange: (ids: string[]) => void;
+}) {
+  const offered = roles.filter((role) => role.name !== 'Customer');
+  const customerAdmin = offered.find((r) => r.name === 'CustomerAdmin');
+  return (
+    <div className="space-y-2 rounded-lg border p-3">
+      {offered.length === 0 && <p className="text-sm text-muted-foreground">No roles available yet.</p>}
+      {offered.map((role) => (
+        <div key={role.id} className="flex items-center gap-2">
+          <Checkbox
+            checked={value.includes(role.id)}
+            onCheckedChange={(checked) =>
+              onChange(checked ? [...value, role.id] : value.filter((id) => id !== role.id))
+            }
+          />
+          <span className="text-sm text-foreground">{role.name}</span>
+        </div>
+      ))}
+      {customerAdmin && value.includes(customerAdmin.id) && (
+        <p className="text-xs text-muted-foreground">
+          A client login — it can’t be combined with a staff role. Link it to a client from Clients → New / Edit Client.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function UsersPage() {
   const qc = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
@@ -109,13 +138,15 @@ export default function UsersPage() {
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  // 'all', NO_ROLE, or a role id — a user with several roles matches any of them.
+  const [roleFilter, setRoleFilter] = useState<string>('all');
   const [sortField, setSortField] = useState<SortField>('username');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [page, setPage] = useState(1);
 
   const createForm = useForm<CreateUserValues>({
     resolver: zodResolver(createUserSchema),
-    defaultValues: { username: '', name: '', email: '', password: '' },
+    defaultValues: { username: '', name: '', email: '', password: '', roleIds: [] },
   });
 
   const editForm = useForm<EditUserValues>({
@@ -125,7 +156,8 @@ export default function UsersPage() {
 
   const { data: users = [], isLoading } = useQuery<User[]>({
     queryKey: ['users', 'all'],
-    queryFn: async () => (await api.get('/api/users', { params: { includeCustomers: true } })).data,
+    // Staff plus every client's admin; a client's employees live in their own My Team.
+    queryFn: async () => (await api.get('/api/users', { params: { includeCustomerAdmins: true } })).data,
   });
   const { data: roles = [] } = useQuery<Role[]>({
     queryKey: ['roles'],
@@ -146,7 +178,7 @@ export default function UsersPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [search, statusFilter]);
+  }, [search, statusFilter, roleFilter]);
 
   const createMutation = useMutation({
     mutationFn: (data: CreateUserValues) => api.post('/api/users', data),
@@ -169,7 +201,10 @@ export default function UsersPage() {
         isActive: values.isActive,
         password: values.password || undefined,
       });
-      await api.post(`/api/users/${editingUser.id}/roles`, { roleIds: values.roleIds });
+      // A linked customer admin's role is fixed while linked — the server refuses any change.
+      if (!editingUser.customerCompany) {
+        await api.post(`/api/users/${editingUser.id}/roles`, { roleIds: values.roleIds });
+      }
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['users'] });
@@ -205,15 +240,19 @@ export default function UsersPage() {
     return users.filter((u) => {
       const matchesSearch = !term || u.username.toLowerCase().includes(term) || (u.name?.toLowerCase().includes(term) ?? false) || u.email.toLowerCase().includes(term);
       const matchesStatus = statusFilter === 'all' || (statusFilter === 'active' ? u.isActive : !u.isActive);
-      return matchesSearch && matchesStatus;
+      const matchesRole = roleFilter === 'all'
+        || (roleFilter === NO_ROLE ? u.userRoles.length === 0 : u.userRoles.some((r) => r.role.id === roleFilter));
+      return matchesSearch && matchesStatus && matchesRole;
     });
-  }, [users, search, statusFilter]);
+  }, [users, search, statusFilter, roleFilter]);
 
   const sortedUsers = useMemo(() => {
     const sorted = [...filteredUsers].sort((a, b) => {
       let cmp = 0;
       if (sortField === 'username') cmp = a.username.localeCompare(b.username);
       else if (sortField === 'email') cmp = a.email.localeCompare(b.email);
+      // By role set, then name, so each role reads as one alphabetised group.
+      else if (sortField === 'role') cmp = roleKey(a).localeCompare(roleKey(b)) || a.username.localeCompare(b.username);
       else cmp = Number(a.isActive) - Number(b.isActive);
       return sortDir === 'asc' ? cmp : -cmp;
     });
@@ -283,6 +322,17 @@ export default function UsersPage() {
                   <FormItem>
                     <FormLabel>Password</FormLabel>
                     <FormControl><Input type="password" placeholder="Min 8 characters" {...field} /></FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={createForm.control}
+                name="roleIds"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Roles</FormLabel>
+                    <RoleChecklist roles={roles} value={field.value} onChange={field.onChange} />
                     <FormMessage />
                   </FormItem>
                 )}
@@ -369,25 +419,14 @@ export default function UsersPage() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Roles</FormLabel>
-                    <div className="space-y-2 rounded-lg border p-3">
-                      {roles.length === 0 && <p className="text-sm text-muted-foreground">No roles available yet.</p>}
-                      {/* Customer logins are managed via Customer Companies → contacts (which sets their company). */}
-                      {roles.filter((role) => role.name !== 'Customer').map((role) => (
-                        <div key={role.id} className="flex items-center gap-2">
-                          <Checkbox
-                            checked={field.value.includes(role.id)}
-                            onCheckedChange={(checked) =>
-                              field.onChange(
-                                checked
-                                  ? [...field.value, role.id]
-                                  : field.value.filter((id) => id !== role.id),
-                              )
-                            }
-                          />
-                          <span className="text-sm text-foreground">{role.name}</span>
-                        </div>
-                      ))}
-                    </div>
+                    {editingUser?.customerCompany ? (
+                      <p className="rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
+                        CustomerAdmin of <span className="font-medium text-foreground">{editingUser.customerCompany.name}</span>.
+                        The role is fixed while linked — unlink them from Clients → Edit Client to change it.
+                      </p>
+                    ) : (
+                      <RoleChecklist roles={roles} value={field.value} onChange={field.onChange} />
+                    )}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -420,6 +459,17 @@ export default function UsersPage() {
             <SelectItem value="inactive">Inactive</SelectItem>
           </SelectContent>
         </Select>
+        {/* `Customer` is left out: a client's employees are never listed on this screen. */}
+        <Select value={roleFilter} onValueChange={(v) => { if (v) setRoleFilter(v); }}>
+          <SelectTrigger className="w-44"><SelectValue placeholder="All Roles" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Roles</SelectItem>
+            {roles.filter((r) => r.name !== 'Customer').map((r) => (
+              <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>
+            ))}
+            <SelectItem value={NO_ROLE}>No role</SelectItem>
+          </SelectContent>
+        </Select>
         <span className="text-sm text-muted-foreground">
           {sortedUsers.length} user{sortedUsers.length === 1 ? '' : 's'}
         </span>
@@ -434,7 +484,7 @@ export default function UsersPage() {
               <TableRow className="bg-muted/50 hover:bg-muted/50">
                 <SortableHead icon={AtSign} label="Name" field="username" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead icon={Mail} label="Email" field="email" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <TableHead className="border-r"><HeadLabel icon={Shield}>Roles</HeadLabel></TableHead>
+                <SortableHead icon={Shield} label="Roles" field="role" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead icon={CircleDot} label="Status" field="status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <TableHead className="text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
               </TableRow>
@@ -473,6 +523,12 @@ export default function UsersPage() {
                         {u.userRoles.map((r) => (
                           <Badge key={r.role.name} variant="secondary">{r.role.name}</Badge>
                         ))}
+                        {/* A customer admin names the client they act for; an unlinked one says so. */}
+                        {u.userRoles.some((r) => r.role.name === 'CustomerAdmin') && (
+                          <span className="truncate text-xs text-muted-foreground" title={u.customerCompany?.name}>
+                            {u.customerCompany ? `· ${u.customerCompany.name}` : '· not linked'}
+                          </span>
+                        )}
                       </span>
                     )}
                   </TableCell>

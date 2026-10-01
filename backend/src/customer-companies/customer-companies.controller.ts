@@ -9,7 +9,7 @@ import { extname, join } from 'path';
 import { CustomerCompaniesService } from './customer-companies.service';
 import { SupportHoursService } from './support-hours.service';
 import { CustomerProductsService } from './customer-products.service';
-import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto } from './dto/customer-company.dto';
+import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto, CustomerAdminDto } from './dto/customer-company.dto';
 import {
   AssignProductDto, UpdateProductTermsDto, RenewAmcDto, GrantRequestDto, DeclineRequestDto, SetContractDto,
   RenewContractDto, AddCustomerConsultantDto, LogUsageDto, DecideExcessDto, SetPoNumberDto,
@@ -324,6 +324,13 @@ export class CustomerCompaniesController {
     return this.service.importSheet(req.user.clientId, req.user.id, file);
   }
 
+  /** Customer admins no client holds yet — the New/Edit Client "link existing" picker. */
+  @Get('available-admins')
+  @Roles('Admin')
+  availableAdmins(@Request() req: AuthedRequest) {
+    return this.service.availableAdmins(req.user.clientId);
+  }
+
   // One client's core details (declared last so it doesn't shadow static routes).
   @Get(':id')
   @Roles('Admin', 'Viewer')
@@ -343,7 +350,9 @@ export class CustomerCompaniesController {
   @Post()
   @Roles('Admin')
   create(@Body() dto: CreateCompanyDto, @Request() req: AuthedRequest) {
-    return this.service.create(dto, req.user.clientId, req.user.id);
+    // The form must hand over a customer admin; the import (which also creates)
+    // goes through `importSheet` and is exempt.
+    return this.service.create(dto, req.user.clientId, req.user.id, { requireAdmin: true });
   }
 
   @Patch(':id')
@@ -375,6 +384,20 @@ export class CustomerCompaniesController {
   @Roles('Admin')
   listContacts(@Param('id') id: string, @Request() req: AuthedRequest) {
     return this.service.listContacts(id, req.user.clientId);
+  }
+
+  /** Gives an admin-less client its one customer admin — link an existing one or create a new login. */
+  @Post(':id/admin')
+  @Roles('Admin')
+  setAdmin(@Param('id') id: string, @Body() dto: CustomerAdminDto, @Request() req: AuthedRequest) {
+    return this.service.setAdmin(id, dto, req.user.clientId, req.user.id);
+  }
+
+  /** Unlinks the client's admin (the user is kept) so another can take the seat. */
+  @Delete(':id/admin')
+  @Roles('Admin')
+  unlinkAdmin(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.service.unlinkAdmin(id, req.user.clientId, req.user.id);
   }
 
   @Post(':id/contacts')

@@ -9,7 +9,8 @@ import { unlink } from 'fs/promises';
 import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { assertUserDeletable } from '../users/user-links';
-import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto } from './dto/customer-company.dto';
+import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto, CustomerAdminDto } from './dto/customer-company.dto';
+import { CUSTOMER_ADMIN_ROLE, assertNoCustomerAdmin } from './customer-admin';
 import { CLIENT_COLUMNS, CLIENT_IMPORT_NOTES, CLIENT_STATUSES, CLIENT_STATUS_LABELS } from './client-sheet';
 import {
   exportSheet, importTemplate, readSheet, rowReader, asText, asEnum, errorText,
@@ -17,7 +18,7 @@ import {
 import type { ImportResult } from '../lib/spreadsheet';
 
 export const CUSTOMER_ROLE = 'Customer';
-export const CUSTOMER_ADMIN_ROLE = 'CustomerAdmin';
+export { CUSTOMER_ADMIN_ROLE };
 
 @Injectable()
 export class CustomerCompaniesService {
@@ -261,21 +262,24 @@ export class CustomerCompaniesService {
     });
   }
 
-  async create(dto: CreateCompanyDto, clientId: string, actorId: string) {
+  /**
+   * `requireAdmin` is set by the New Client form's route alone: a client created
+   * there must come with its customer admin, or nobody can ever log in for it.
+   * The spreadsheet import calls this without it — a sheet row has no login to
+   * give — and such a client gets its admin from the Edit dialog afterwards.
+   */
+  async create(dto: CreateCompanyDto, clientId: string, actorId: string, { requireAdmin = false } = {}) {
     const dup = await this.prisma.customerCompany.findFirst({ where: { clientId, name: dto.name } });
     if (dup) throw new ConflictException('A customer company with this name already exists');
 
-    // If a bootstrap admin is supplied, all three fields are required and the
-    // login must not clash with an existing user.
-    const wantsAdmin = !!(dto.adminUsername || dto.adminEmail || dto.adminPassword);
-    if (wantsAdmin && !(dto.adminUsername && dto.adminEmail && dto.adminPassword)) {
-      throw new BadRequestException('Provide username, email and password for the first admin');
-    }
-    if (wantsAdmin) {
-      const clash = await this.prisma.user.findFirst({
-        where: { OR: [{ username: dto.adminUsername! }, { email: dto.adminEmail! }] },
-      });
-      if (clash) throw new ConflictException('Admin username or email already exists');
+    // Everything about the admin is checked before the company is written, so a
+    // bad admin never leaves an admin-less client behind.
+    const admin = await this.resolveAdminInput(
+      { userId: dto.adminUserId, username: dto.adminUsername, email: dto.adminEmail, password: dto.adminPassword },
+      clientId,
+    );
+    if (!admin && requireAdmin) {
+      throw new BadRequestException('A client needs a customer admin — create a new one or link an existing one');
     }
 
     const company = await this.prisma.customerCompany.create({
@@ -297,25 +301,136 @@ export class CustomerCompaniesService {
       },
     });
 
-    if (wantsAdmin) {
-      const roleId = await this.customerAdminRoleId(clientId);
-      const passwordHash = await bcrypt.hash(dto.adminPassword!, 12);
-      await this.prisma.user.create({
-        data: {
-          username: dto.adminUsername!,
-          email: dto.adminEmail!,
-          passwordHash,
-          clientId,
-          customerCompanyId: company.id,
-          createdBy: actorId,
-          updatedBy: actorId,
-          userRoles: { create: [{ roleId, createdBy: actorId }] },
-        },
-      });
-    }
+    if (admin) await this.attachAdmin(company.id, admin, clientId, actorId);
 
     if (dto.productIds) await this.setProducts(company.id, dto.productIds, clientId);
     return company;
+  }
+
+  // ---- Customer admin (one per client) ----------------------------------------
+
+  /**
+   * Validates an admin hand-off without writing anything: either an existing
+   * user to link (`userId`) or a new login to create (username + email +
+   * password), never both. Returns null when nothing was asked for.
+   */
+  private async resolveAdminInput(input: CustomerAdminDto, clientId: string) {
+    const wantsNew = !!(input.username || input.email || input.password);
+    if (input.userId && wantsNew) {
+      throw new BadRequestException('Either link an existing customer admin or create a new one — not both');
+    }
+    if (input.userId) {
+      await this.linkableAdmin(input.userId, clientId);
+      return { userId: input.userId } as const;
+    }
+    if (!wantsNew) return null;
+    if (!(input.username && input.email && input.password)) {
+      throw new BadRequestException('Provide username, email and password for the customer admin');
+    }
+    const clash = await this.prisma.user.findFirst({
+      where: { OR: [{ username: input.username }, { email: input.email }] },
+    });
+    if (clash) throw new ConflictException('Admin username or email already exists');
+    return { username: input.username, email: input.email, password: input.password } as const;
+  }
+
+  /**
+   * A user who may be linked: an active `CustomerAdmin` of this tenant that no
+   * client holds yet. One already linked elsewhere is refused rather than moved,
+   * since moving them would silently leave that client with no admin.
+   */
+  private async linkableAdmin(userId: string, clientId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: {
+        id: userId,
+        clientId,
+        isActive: true,
+        customerCompanyId: null,
+        userRoles: { some: { role: { name: CUSTOMER_ADMIN_ROLE } } },
+      },
+      select: { id: true },
+    });
+    if (!user) {
+      throw new BadRequestException('Pick an active customer admin who is not linked to a client yet');
+    }
+    return user;
+  }
+
+  /** Writes a validated admin onto a client — links the existing user or creates the new login. */
+  private async attachAdmin(
+    companyId: string,
+    admin: NonNullable<Awaited<ReturnType<CustomerCompaniesService['resolveAdminInput']>>>,
+    clientId: string,
+    actorId: string,
+  ) {
+    if ('userId' in admin) {
+      await this.prisma.user.update({
+        where: { id: admin.userId },
+        data: { customerCompanyId: companyId, updatedBy: actorId },
+      });
+      return;
+    }
+    const roleId = await this.customerAdminRoleId(clientId);
+    const passwordHash = await bcrypt.hash(admin.password, 12);
+    await this.prisma.user.create({
+      data: {
+        username: admin.username,
+        email: admin.email,
+        passwordHash,
+        clientId,
+        customerCompanyId: companyId,
+        createdBy: actorId,
+        updatedBy: actorId,
+        userRoles: { create: [{ roleId, createdBy: actorId }] },
+      },
+    });
+  }
+
+  /** The tenant's customer admins not yet linked to any client — the Link picker's options. */
+  async availableAdmins(clientId: string) {
+    return this.prisma.user.findMany({
+      where: {
+        clientId,
+        isActive: true,
+        customerCompanyId: null,
+        userRoles: { some: { role: { name: CUSTOMER_ADMIN_ROLE } } },
+      },
+      select: { id: true, username: true, name: true, email: true },
+      orderBy: { username: 'asc' },
+    });
+  }
+
+  /** Gives an admin-less client its admin, linked or newly created. */
+  async setAdmin(companyId: string, dto: CustomerAdminDto, clientId: string, actorId: string) {
+    const company = await this.getOwned(companyId, clientId);
+    await assertNoCustomerAdmin(this.prisma, companyId);
+    const admin = await this.resolveAdminInput(dto, clientId);
+    if (!admin) throw new BadRequestException('Create a new customer admin or link an existing one');
+    const count = await this.prisma.user.count({ where: { customerCompanyId: companyId } });
+    if (count >= company.maxContacts) {
+      throw new BadRequestException(`This company has reached its limit of ${company.maxContacts} contact users`);
+    }
+    await this.attachAdmin(companyId, admin, clientId, actorId);
+    return { message: 'Customer admin set' };
+  }
+
+  /**
+   * Detaches the client's admin so another can take the seat. The user is kept,
+   * unlinked, and can be linked again; tickets they raised keep their own
+   * `customerCompanyId`, so the client's history stays with the client.
+   */
+  async unlinkAdmin(companyId: string, clientId: string, actorId: string) {
+    await this.getOwned(companyId, clientId);
+    const admin = await this.prisma.user.findFirst({
+      where: { customerCompanyId: companyId, userRoles: { some: { role: { name: CUSTOMER_ADMIN_ROLE } } } },
+      select: { id: true },
+    });
+    if (!admin) throw new NotFoundException('This client has no customer admin');
+    await this.prisma.user.update({
+      where: { id: admin.id },
+      data: { customerCompanyId: null, updatedBy: actorId },
+    });
+    return { message: 'Customer admin unlinked' };
   }
 
   async update(id: string, dto: UpdateCompanyDto, clientId: string, actorId: string) {
@@ -384,11 +499,19 @@ export class CustomerCompaniesService {
 
   async listContacts(companyId: string, clientId: string) {
     await this.getOwned(companyId, clientId);
-    return this.prisma.user.findMany({
+    const users = await this.prisma.user.findMany({
       where: { customerCompanyId: companyId },
-      select: { id: true, username: true, email: true, isActive: true, createdAt: true },
+      select: {
+        id: true, username: true, name: true, email: true, isActive: true, createdAt: true,
+        userRoles: { select: { role: { select: { name: true } } } },
+      },
       orderBy: { username: 'asc' },
     });
+    // The admin is flagged so the Edit dialog can tell an admin-less client apart.
+    return users.map(({ userRoles, ...u }) => ({
+      ...u,
+      isAdmin: userRoles.some((ur) => ur.role.name === CUSTOMER_ADMIN_ROLE),
+    }));
   }
 
   async addContact(companyId: string, dto: CreateContactDto, clientId: string, actorId: string) {

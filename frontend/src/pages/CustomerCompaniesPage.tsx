@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Trash2, Building2, Boxes, Search, Upload,
+import { Plus, Pencil, Trash2, Building2, Boxes, Search, Upload, ShieldCheck, Unlink,
   Hash, AtSign, Mail, Phone, FileText, MessageSquare, CircleDot } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
@@ -16,6 +16,8 @@ import ImportExportBar from '@/components/ImportExportBar';
 import type { ReactNode } from 'react';
 import { MyExcessApprovals } from '@/components/MyExcessApprovals';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 /**
  * A column heading: its icon, then its label. Muted and small, so the headings
@@ -46,13 +48,25 @@ interface Company {
   ticketCount: number;
   contractScope?: 'PRODUCT' | 'CUSTOMER';
 }
-interface Contact { id: string; username: string; email: string; isActive: boolean; }
+interface Contact { id: string; username: string; name?: string | null; email: string; isActive: boolean; isAdmin: boolean; }
+interface AdminUser { id: string; username: string; name?: string | null; email: string; }
+
+/**
+ * The client's one customer admin, as the form holds it: a new login to create,
+ * or an existing unlinked CustomerAdmin to link. Required on New Client.
+ */
+interface AdminInput { mode: 'new' | 'link'; username: string; email: string; password: string; userId: string; }
+const emptyAdmin: AdminInput = { mode: 'new', username: '', email: '', password: '', userId: '' };
+
+const adminValid = (a: AdminInput) =>
+  a.mode === 'link' ? !!a.userId : !!(a.username.trim() && a.email.trim() && a.password.length >= 6);
+
+const displayName = (u: { name?: string | null; username: string }) => u.name?.trim() || u.username;
 
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 
 const empty = {
   name: '', code: '', contactEmail: '', contactPerson: '', contactNumber: '', maxContacts: 5,
-  adminUsername: '', adminEmail: '', adminPassword: '',
 };
 
 export default function CustomerCompaniesPage() {
@@ -62,6 +76,7 @@ export default function CustomerCompaniesPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Company | null>(null);
   const [form, setForm] = useState<typeof empty>(empty);
+  const [admin, setAdmin] = useState<AdminInput>(emptyAdmin);
   const [q, setQ] = useState('');
   // A new client has no id yet, so its logo is held here and uploaded once the
   // company exists. `pendingPreview` is an object URL we must revoke.
@@ -104,18 +119,20 @@ export default function CustomerCompaniesPage() {
         maxContacts: Number(c.maxContacts),
       };
       if (editing) return api.patch(`/api/customer-companies/${editing.id}`, body);
-      // Optional bootstrap: seed the first CustomerAdmin login on creation.
-      if (c.adminUsername && c.adminEmail && c.adminPassword) {
-        body.adminUsername = c.adminUsername;
-        body.adminEmail = c.adminEmail;
-        body.adminPassword = c.adminPassword;
-      }
+      // The customer admin rides on the create — linked or new, never neither.
+      if (admin.mode === 'link') body.adminUserId = admin.userId;
+      else Object.assign(body, { adminUsername: admin.username.trim(), adminEmail: admin.email.trim(), adminPassword: admin.password });
       const created = await api.post('/api/customer-companies', body);
       // The logo needs the new id, so it goes up right after the company lands.
       if (pendingLogo) await uploadLogo(created.data.id, pendingLogo);
       return created;
     },
-    onSuccess: () => { invalidate(); closeForm(); toast.success(editing ? 'Company updated' : 'Company created'); },
+    onSuccess: () => {
+      invalidate();
+      if (!editing) qc.invalidateQueries({ queryKey: ['available-admins'] });
+      closeForm();
+      toast.success(editing ? 'Company updated' : 'Company created');
+    },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error saving company'),
   });
 
@@ -149,9 +166,10 @@ export default function CustomerCompaniesPage() {
   };
 
   const closeForm = () => { setFormOpen(false); setEditing(null); clearPending(); };
-  const openCreate = () => { setEditing(null); setForm(empty); clearPending(); setFormOpen(true); };
+  const openCreate = () => { setEditing(null); setForm(empty); setAdmin(emptyAdmin); clearPending(); setFormOpen(true); };
   const openEdit = (c: Company) => {
     setEditing(c);
+    setAdmin(emptyAdmin);
     clearPending();
     setForm({
       ...empty, name: c.name, code: c.code ?? '', contactEmail: c.contactEmail ?? '',
@@ -228,6 +246,21 @@ export default function CustomerCompaniesPage() {
                 <Input type="number" min={1} max={50} value={form.maxContacts} onChange={(e) => setForm({ ...form, maxContacts: Number(e.target.value) })} />
               </div>
             </div>
+
+            {/* The client's one customer admin, right under its identity: required
+                on create; on edit, set here once if the client has none. */}
+            {editing
+              ? <CustomerAdminSection companyId={editing.id} />
+              : (
+                <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+                  <div className="text-sm font-medium">Customer admin <span className="text-destructive">*</span></div>
+                  <p className="text-xs text-muted-foreground">
+                    The client’s login. They manage their own team after this — you won’t add users here.
+                  </p>
+                  <CustomerAdminFields value={admin} onChange={setAdmin} />
+                </div>
+              )}
+
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Contact email</label>
               <Input type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} placeholder="ops@globex.example" />
@@ -254,23 +287,9 @@ export default function CustomerCompaniesPage() {
                 <ContactsSection companyId={editing.id} maxContacts={form.maxContacts} />
               </>
             )}
-
-            {!editing && (
-              <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
-                <div className="text-sm font-medium">First admin login <span className="font-normal text-muted-foreground">(optional)</span></div>
-                <p className="text-xs text-muted-foreground">
-                  Seed the company’s first admin. After this hand-off, they manage their own team — you won’t add users here.
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  <Input placeholder="Admin username" value={form.adminUsername} onChange={(e) => setForm({ ...form, adminUsername: e.target.value })} />
-                  <Input type="email" placeholder="Admin email" value={form.adminEmail} onChange={(e) => setForm({ ...form, adminEmail: e.target.value })} />
-                </div>
-                <Input type="text" placeholder="Temporary password (min 6)" value={form.adminPassword} onChange={(e) => setForm({ ...form, adminPassword: e.target.value })} />
-              </div>
-            )}
           </div>
           <DialogFooter>
-            <Button onClick={() => saveMutation.mutate(form)} disabled={!form.name.trim() || saveMutation.isPending}>
+            <Button onClick={() => saveMutation.mutate(form)} disabled={!form.name.trim() || (!editing && !adminValid(admin)) || saveMutation.isPending}>
               {saveMutation.isPending ? 'Saving…' : editing ? 'Save' : 'Create'}
             </Button>
           </DialogFooter>
@@ -409,17 +428,138 @@ function ContactsSection({ companyId, maxContacts }: { companyId: string; maxCon
     <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
       <div className="text-sm font-medium">People <span className="font-normal text-muted-foreground">({contacts.length}/{maxContacts})</span></div>
       {contacts.length === 0 && (
-        <p className="text-xs text-muted-foreground">No people yet. Seed a first admin when creating the company; they add the rest.</p>
+        <p className="text-xs text-muted-foreground">No people yet. Once the client has a customer admin, they add the rest.</p>
       )}
       {contacts.map((c) => (
         <div key={c.id} className="flex items-center justify-between rounded-lg border bg-background px-3 py-2">
           <div className="min-w-0">
-            <div className="truncate text-sm font-medium text-foreground">{c.username}</div>
+            <div className="flex items-center gap-1.5 truncate text-sm font-medium text-foreground">
+              {displayName(c)}
+              {c.isAdmin && <Badge variant="secondary" className="gap-1"><ShieldCheck className="size-3" /> Admin</Badge>}
+            </div>
             <div className="truncate text-xs text-muted-foreground">{c.email}</div>
           </div>
           {!c.isActive && <span className="text-xs text-muted-foreground">Inactive</span>}
         </div>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Create-a-new-login or link-an-existing-one, the two ways a client gets its
+ * admin. The link list is only CustomerAdmins no client holds yet — one already
+ * linked elsewhere is never moved, since that would strip the other client.
+ */
+function CustomerAdminFields({ value, onChange }: { value: AdminInput; onChange: (v: AdminInput) => void }) {
+  const { data: available = [], isSuccess } = useQuery<AdminUser[]>({
+    queryKey: ['available-admins'],
+    queryFn: async () => (await api.get('/api/customer-companies/available-admins')).data,
+  });
+  const set = (patch: Partial<AdminInput>) => onChange({ ...value, ...patch });
+
+  return (
+    <div className="space-y-2">
+      {/* The hand-rolled RadioGroup re-emits the current value on every click — harmless here. */}
+      <RadioGroup value={value.mode} onValueChange={(m) => set({ mode: m as AdminInput['mode'] })} className="flex flex-wrap gap-4">
+        <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="new" /> Create a new admin</label>
+        <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="link" /> Link an existing admin</label>
+      </RadioGroup>
+      {value.mode === 'new' ? (
+        <>
+          <div className="grid grid-cols-2 gap-2">
+            <Input placeholder="Admin username" value={value.username} onChange={(e) => set({ username: e.target.value })} />
+            <Input type="email" placeholder="Admin email" value={value.email} onChange={(e) => set({ email: e.target.value })} />
+          </div>
+          <Input type="text" placeholder="Temporary password (min 6)" value={value.password} onChange={(e) => set({ password: e.target.value })} />
+        </>
+      ) : isSuccess && available.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No unlinked customer admins. Create one on the Users screen with the CustomerAdmin role, or create a new admin here.
+        </p>
+      ) : (
+        // Radix emits '' when the value isn't among the loaded items — never a real pick, so it is ignored.
+        <Select value={value.userId} onValueChange={(v) => { if (v) set({ userId: v }); }}>
+          <SelectTrigger className="w-full"><SelectValue placeholder="Pick a customer admin" /></SelectTrigger>
+          <SelectContent>
+            {available.map((u) => (
+              <SelectItem key={u.id} value={u.id}>{displayName(u)} · {u.email}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The Edit dialog's admin slot. A client with an admin shows them, with Unlink
+ * to free the seat for another; one without (created by import, or before the
+ * admin was required) gets the same create/link fields, saved by their own
+ * button rather than the dialog's Save.
+ */
+function CustomerAdminSection({ companyId }: { companyId: string }) {
+  const qc = useQueryClient();
+  const [admin, setAdmin] = useState<AdminInput>(emptyAdmin);
+  const { data: contacts = [], isSuccess } = useQuery<Contact[]>({
+    queryKey: ['company-contacts', companyId],
+    queryFn: async () => (await api.get(`/api/customer-companies/${companyId}/contacts`)).data,
+  });
+  const current = contacts.find((c) => c.isAdmin);
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['company-contacts', companyId] });
+    qc.invalidateQueries({ queryKey: ['available-admins'] });
+    qc.invalidateQueries({ queryKey: ['customer-companies'] });
+    qc.invalidateQueries({ queryKey: ['users'] });
+  };
+  const setMut = useMutation({
+    mutationFn: () => api.post(`/api/customer-companies/${companyId}/admin`, admin.mode === 'link'
+      ? { userId: admin.userId }
+      : { username: admin.username.trim(), email: admin.email.trim(), password: admin.password }),
+    onSuccess: () => { refresh(); setAdmin(emptyAdmin); toast.success('Customer admin set'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Could not set the customer admin'),
+  });
+  const unlinkMut = useMutation({
+    mutationFn: () => api.delete(`/api/customer-companies/${companyId}/admin`),
+    onSuccess: () => { refresh(); toast.success('Customer admin unlinked'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Could not unlink the customer admin'),
+  });
+
+  return (
+    <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+      <div className="text-sm font-medium">Customer admin</div>
+      {!isSuccess ? (
+        <p className="text-xs text-muted-foreground">Loading…</p>
+      ) : current ? (
+        <div className="flex items-center justify-between gap-2 rounded-lg border bg-background px-3 py-2">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-medium text-foreground">{displayName(current)}</div>
+            <div className="truncate text-xs text-muted-foreground">{current.email}</div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="shrink-0 text-muted-foreground hover:text-destructive"
+            disabled={unlinkMut.isPending}
+            onClick={() => {
+              if (confirm(`Unlink ${displayName(current)}? They keep their account but can no longer act for this client until linked again.`)) unlinkMut.mutate();
+            }}
+          >
+            <Unlink className="size-4" /> Unlink
+          </Button>
+        </div>
+      ) : (
+        <>
+          <p className="text-xs text-amber-700 dark:text-amber-400">This client has no admin yet — nobody can log in for them.</p>
+          <CustomerAdminFields value={admin} onChange={setAdmin} />
+          <div className="flex justify-end">
+            <Button size="sm" disabled={!adminValid(admin) || setMut.isPending} onClick={() => setMut.mutate()}>
+              {setMut.isPending ? 'Saving…' : admin.mode === 'link' ? 'Link admin' : 'Create admin'}
+            </Button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

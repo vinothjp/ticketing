@@ -3,6 +3,8 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 COPY backend/package*.json ./
+# xlsx is vendored from cdn.sheetjs.com (npm stops at the vulnerable 0.18.5), so npm ci needs the tarball
+COPY backend/vendor ./vendor/
 RUN npm ci
 
 COPY backend/prisma ./prisma/
@@ -26,6 +28,7 @@ FROM node:20-alpine AS deps
 WORKDIR /app
 
 COPY backend/package*.json ./
+COPY backend/vendor ./vendor/
 RUN npm ci --omit=dev
 
 COPY backend/prisma ./prisma/

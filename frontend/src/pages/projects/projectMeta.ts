@@ -79,9 +79,16 @@ export interface ProjectSummary {
   startDate?: string | null;
   endDate?: string | null;
   progress: number;
+  /** Running projects only (active, not Completed/Cancelled); same rule as the dashboard tiles. */
+  health?: ProjectHealth | null;
   createdAt: string;
   _count?: { tasks: number; resources: number; tickets: number };
 }
+
+export type ProjectHealth = 'GREEN' | 'AMBER' | 'RED';
+/** The dashboard tiles link here with `?health=on-track|at-risk|off-track`. */
+export const HEALTH_PARAM: Record<string, ProjectHealth> = { 'on-track': 'GREEN', 'at-risk': 'AMBER', 'off-track': 'RED' };
+export const HEALTH_LABEL: Record<ProjectHealth, string> = { GREEN: 'On track', AMBER: 'At risk', RED: 'Off track' };
 
 export interface ProjectMilestone {
   id: string;

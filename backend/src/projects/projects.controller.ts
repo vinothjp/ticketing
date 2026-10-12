@@ -45,6 +45,23 @@ export class ProjectsController {
     return this.projects.analytics(req.user.clientId);
   }
 
+  /** The dashboard's Projects tiles: running projects by health. Before ':id'. */
+  @Get('dashboard-summary')
+  dashboardSummary(@Request() req: AuthedRequest) {
+    return this.projects.dashboardSummary(req.user.clientId);
+  }
+
+  /**
+   * The dashboard's "My project tasks". An Admin may look at another agent's
+   * (`?assignee=`, the dashboard's agent filter); anyone else always gets their own.
+   * Before ':id'.
+   */
+  @Get('my-tasks')
+  myTasks(@Request() req: AuthedRequest, @Query('assignee') assignee?: string) {
+    const isAdmin = req.user.roles.includes('Admin');
+    return this.projects.myTasks(req.user.clientId, isAdmin && assignee ? assignee : req.user.id);
+  }
+
   @Get(':id/financials')
   financials(@Param('id') id: string, @Request() req: AuthedRequest) {
     return this.projects.financials(id, req.user.clientId);

@@ -34,6 +34,9 @@ const DEFAULT_MILESTONES = [
 const STATUS_COMPLETION: Record<string, number> = { TODO: 0, IN_PROGRESS: 50, REVIEW: 80, COMPLETED: 100 };
 const completionFor = (status: string) => STATUS_COMPLETION[status] ?? 0;
 
+/** A project's health from its overdue open tasks: 3+ is off track, any is at risk. */
+const projectHealth = (overdue: number) => (overdue >= 3 ? 'RED' : overdue > 0 ? 'AMBER' : 'GREEN');
+
 /**
  * A summary item's status is read off its children, never set by hand: all
  * Completed → Completed; none started → To Do; every one at least in Review →
@@ -76,10 +79,17 @@ export class ProjectsService {
       orderBy: { updatedAt: 'desc' },
       include: {
         _count: { select: { tasks: true, resources: true, tickets: true } },
-        tasks: { select: { id: true, completionPct: true, parentTaskId: true } },
+        tasks: { select: { id: true, completionPct: true, parentTaskId: true, status: true, dueDate: true } },
       },
     });
-    return projects.map((p) => this.withListProgress(p));
+    // Health — the dashboard tiles' rule, so "At risk: 2" there lists exactly two here.
+    // Only a running project has one (active, not Completed / Cancelled), as on the tiles.
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    return projects.map((p) => {
+      const running = p.isActive && p.status !== 'COMPLETED' && p.status !== 'CANCELLED';
+      const overdue = p.tasks.filter((t) => t.status !== 'COMPLETED' && t.dueDate && t.dueDate < today).length;
+      return { ...this.withListProgress(p), health: running ? projectHealth(overdue) : null };
+    });
   }
 
   /** Tenant-wide project analytics + RAG health + portfolio financials (executive dashboard). */
@@ -123,11 +133,7 @@ export class ProjectsService {
     for (const e of expenses) { const row = rows.get(e.projectId); if (row) row.cost += num(e.amount); }
     for (const t of timesheets) { const row = rows.get(t.projectId); if (row) row.cost += num(t.hours) * num(t.costRate); }
 
-    const rag = (r: Row) => {
-      if (r.overdue >= 3) return 'RED';
-      if (r.overdue > 0) return 'AMBER';
-      return 'GREEN';
-    };
+    const rag = (r: Row) => projectHealth(r.overdue);
     const perProject = [...rows.values()].map((r) => ({
       ...r,
       progress: r.total ? Math.round((r.completed / r.total) * 100) : 0,
@@ -145,6 +151,55 @@ export class ProjectsService {
       perProject,
       portfolio: { ...portfolio, grossProfit: portfolio.revenue - portfolio.cost, margin: portfolio.revenue > 0 ? Math.round(((portfolio.revenue - portfolio.cost) / portfolio.revenue) * 1000) / 10 : 0 },
     };
+  }
+
+  /**
+   * The dashboard's Projects tiles: how many running projects there are, split by
+   * health. "Running" = active (not deactivated) and not Completed / Cancelled.
+   * Health is `projectHealth` — the same rule as Project Analytics' RAG, so a tile
+   * and the analytics page can never disagree about a project.
+   */
+  async dashboardSummary(clientId: string) {
+    const running = await this.prisma.project.findMany({
+      where: { clientId, isActive: true, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+      select: { id: true },
+    });
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const overdue = await this.prisma.projectTask.groupBy({
+      by: ['projectId'],
+      where: { projectId: { in: running.map((p) => p.id) }, status: { not: 'COMPLETED' }, dueDate: { lt: today } },
+      _count: { _all: true },
+    });
+    const overdueBy = new Map(overdue.map((o) => [o.projectId, o._count._all]));
+    const out = { active: running.length, onTrack: 0, atRisk: 0, offTrack: 0 };
+    for (const p of running) {
+      const h = projectHealth(overdueBy.get(p.id) ?? 0);
+      if (h === 'GREEN') out.onTrack++;
+      else if (h === 'AMBER') out.atRisk++;
+      else out.offTrack++;
+    }
+    return out;
+  }
+
+  /**
+   * Open project tasks assigned to one person, across every running project — the
+   * dashboard's "My project tasks". Completed tasks, and tasks in a deactivated,
+   * completed or cancelled project, are left out. Ordering is the caller's (the
+   * dashboard sorts by urgency).
+   */
+  myTasks(clientId: string, userId: string) {
+    return this.prisma.projectTask.findMany({
+      where: {
+        assigneeUserId: userId,
+        status: { not: 'COMPLETED' },
+        project: { clientId, isActive: true, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+      },
+      select: {
+        id: true, title: true, status: true, dueDate: true, taskNumber: true,
+        project: { select: { id: true, name: true, key: true } },
+      },
+      orderBy: [{ dueDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
+    });
   }
 
   // Change-request statuses that count as "approved" (their budget increase applies to the baseline).

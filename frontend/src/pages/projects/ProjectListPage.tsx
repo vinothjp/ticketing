@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Search, ArrowUp, ArrowDown, ArrowUpDown, ChevronLeft, ChevronRight, BarChart3,
   Hash, FolderKanban, CircleDot, Flag, AtSign, ToggleRight } from 'lucide-react';
@@ -30,7 +30,8 @@ function HeadLabel({ icon: Icon, children }: { icon: LucideIcon; children: React
 import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/hooks/useConfirm';
 import {
-  PROJECT_STATUSES, labelOf, projectStatusVariant, priorityVariant,
+  PROJECT_STATUSES, labelOf, projectStatusVariant, priorityVariant, HEALTH_PARAM, HEALTH_LABEL,
+  type ProjectHealth,
   type ProjectSummary,
 } from './projectMeta';
 
@@ -80,6 +81,16 @@ export default function ProjectListPage() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>('all');
+  // Health arrives from the dashboard's tiles (?health=at-risk) and stays in the address,
+  // so a refresh or a shared link keeps it; picking "All health" clears it.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const healthFilter: ProjectHealth | 'all' = (HEALTH_PARAM[searchParams.get('health') ?? ''] as ProjectHealth | undefined) ?? 'all';
+  const setHealthFilter = (v: string) => {
+    const next = new URLSearchParams(searchParams);
+    const param = Object.entries(HEALTH_PARAM).find(([, h]) => h === v)?.[0];
+    if (param) next.set('health', param); else next.delete('health');
+    setSearchParams(next, { replace: true });
+  };
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [page, setPage] = useState(1);
@@ -88,7 +99,7 @@ export default function ProjectListPage() {
     queryKey: ['projects', 'all'],
     queryFn: async () => (await api.get('/api/projects')).data,
   });
-  useEffect(() => { setPage(1); }, [search, statusFilter, activeFilter]);
+  useEffect(() => { setPage(1); }, [search, statusFilter, activeFilter, healthFilter]);
 
   // Projects are never deleted (like tickets) — an Admin deactivates one instead.
   const toggleActive = useMutation({
@@ -114,9 +125,10 @@ export default function ProjectListPage() {
         || (p.key ?? '').toLowerCase().includes(term);
       const matchesStatus = statusFilter === 'all' || p.status === statusFilter;
       const matchesActive = activeFilter === 'all' || (activeFilter === 'active' ? p.isActive : !p.isActive);
-      return matchesSearch && matchesStatus && matchesActive;
+      const matchesHealth = healthFilter === 'all' || p.health === healthFilter;
+      return matchesSearch && matchesStatus && matchesActive && matchesHealth;
     });
-  }, [projects, search, statusFilter, activeFilter]);
+  }, [projects, search, statusFilter, activeFilter, healthFilter]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -170,6 +182,13 @@ export default function ProjectListPage() {
             <SelectItem value="all">Active & deactivated</SelectItem>
             <SelectItem value="active">Active</SelectItem>
             <SelectItem value="inactive">Deactivated</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={healthFilter} onValueChange={(v) => { if (v) setHealthFilter(v); }}>
+          <SelectTrigger className="w-40"><SelectValue placeholder="All health" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All health</SelectItem>
+            {(Object.keys(HEALTH_LABEL) as ProjectHealth[]).map((h) => <SelectItem key={h} value={h}>{HEALTH_LABEL[h]}</SelectItem>)}
           </SelectContent>
         </Select>
         <span className="text-sm text-muted-foreground">

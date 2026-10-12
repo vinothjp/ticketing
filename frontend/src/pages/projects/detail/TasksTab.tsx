@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -94,7 +95,9 @@ export default function TasksTab({ project, users, onAddToResources }: {
   const { prompt, PromptDialog } = usePrompt();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<ProjectTask | null>(null);
-  const [detailId, setDetailId] = useState<string | null>(null);
+  // `?task=<id>` (the dashboard's My project tasks) opens that task straight away.
+  const [searchParams] = useSearchParams();
+  const [detailId, setDetailId] = useState<string | null>(() => searchParams.get('task'));
   const [view, setView] = useState<View>('wbs');
   const invalidate = () => invalidateProject(qc);
 

@@ -16,7 +16,21 @@ const DAY = 86_400_000;
  * left, not percent elapsed — a 30-day heads-up is the same promise on a
  * one-year AMC and on a three-month one.
  */
-const EXPIRY_ALERT_DAYS = 30;
+const EXPIRY_REMINDER_DAYS = [90, 60, 30];
+/** A lapsed shared contract gets its "has ended" notice only if it ended this recently. */
+const ENDED_NOTICE_WINDOW_DAYS = 30;
+/**
+ * The reminder due now, or null: the tightest window the contract has reached
+ * (45 days left → the 60-day one), provided it is tighter than the last one sent.
+ * One reminder per sweep at most — a contract that first appears inside 30 days
+ * gets the 30-day reminder alone, not all three at once.
+ */
+const reminderDue = (left: number, lastSent: number | null) => {
+  const reached = EXPIRY_REMINDER_DAYS.filter((d) => left <= d);
+  if (!reached.length) return null;
+  const due = Math.min(...reached);
+  return lastSent == null || due < lastSent ? due : null;
+};
 const daysLeft = (end: Date) => Math.ceil((end.getTime() - Date.now()) / DAY);
 const monthsAfter = (d: Date, months: number) => {
   const r = new Date(d);
@@ -57,6 +71,8 @@ const BLANK_CONTRACT = {
   contractExcessApproval: false,
   contractAllowTicketsAfterHours: true,
   contractExcessApprover: { disconnect: true },
+  contractExpiryAlertSentAt: null,
+  contractExpiryReminderDays: null,
 } satisfies Prisma.CustomerCompanyUpdateInput;
 
 const BLANK_PRODUCT_TERMS = {
@@ -85,6 +101,7 @@ const BLANK_PRODUCT_TERMS = {
   amcAllowTicketsAfterHours: true,
   amcExcessApproverId: null,
   expiryAlertSentAt: null,
+  expiryReminderDays: null,
   hoursAlertSentAt: null,
   warrantyAlertSentAt: null,
 } satisfies Prisma.CustomerCompanyProductUncheckedUpdateManyInput;
@@ -875,6 +892,7 @@ export class CustomerProductsService {
       hoursUsed: 0,
       visitsUsed: 0,
       expiryAlertSentAt: null,
+      expiryReminderDays: null,
       hoursAlertSentAt: null,
       warrantyAlertSentAt: null,
       // Support-hours config (defaults keep today's whole-term, no-excess behaviour).
@@ -951,7 +969,9 @@ export class CustomerProductsService {
         amcStart: start,
         amcEnd: end,
         status: 'ACTIVE',
-        expiryAlertSentAt: null,
+        // A new end date is a new deadline to remind about; re-saving other terms
+        // keeps the reminders already sent, so none goes out twice.
+        ...(end.getTime() !== cp.amcEnd?.getTime() ? { expiryAlertSentAt: null, expiryReminderDays: null } : {}),
         hoursAlertSentAt: null,
         ...(switched ? { hoursUsed: 0, visitsUsed: 0 } : {}),
         // Support-hours config (absent=keep, explicit-null clears the approver).
@@ -1083,6 +1103,7 @@ export class CustomerProductsService {
         hoursUsed: 0,
         visitsUsed: 0,
         expiryAlertSentAt: null,
+        expiryReminderDays: null,
         hoursAlertSentAt: null,
         warrantyAlertSentAt: cp.warrantyAlertSentAt,
       },
@@ -1232,7 +1253,15 @@ export class CustomerProductsService {
       };
       if (dto.coverageType) data.contractCoverageType = dto.coverageType;
       if (dto.start !== undefined) data.contractStart = dto.start ? new Date(dto.start) : null;
-      if (dto.end !== undefined) data.contractEnd = dto.end ? new Date(dto.end) : null;
+      if (dto.end !== undefined) {
+        data.contractEnd = dto.end ? new Date(dto.end) : null;
+        // A new end date is a new deadline to warn about; any other save leaves
+        // the expiry warning alone so it isn't sent twice for the same date.
+        if ((data.contractEnd as Date | null)?.getTime() !== company.contractEnd?.getTime()) {
+          data.contractExpiryAlertSentAt = null;
+          data.contractExpiryReminderDays = null;
+        }
+      }
       if (dto.visits !== undefined) data.contractVisits = dto.visits;
       // Support hours are re-resolved only when the payload actually carries the
       // Unlimited/Limited choice. A bare switch keeps the stored pool, and never
@@ -1459,6 +1488,8 @@ export class CustomerProductsService {
         contractHoursUsed: 0,
         contractVisitsUsed: 0,
         contractAlertSentAt: null,
+        contractExpiryAlertSentAt: null,
+        contractExpiryReminderDays: null,
       },
     });
     // A renewal starts a clean month for a MONTHLY contract.
@@ -1857,10 +1888,11 @@ export class CustomerProductsService {
   // ---- expiry sweep (called by the timer) ------------------------------------
 
   /**
-   * Email + notify the client once their coverage is `EXPIRY_ALERT_DAYS` (30)
-   * from its end, and terminate service (block new tickets) once it has fully
-   * lapsed. `expiryAlertSentAt` / `contractAlertSentAt` keep it to one warning
-   * per period; both are cleared whenever the terms are changed or renewed.
+   * Email + notify the client 90, 60 and 30 days before their coverage ends
+   * (`EXPIRY_REMINDER_DAYS`), and terminate service (block new tickets) once it
+   * has fully lapsed. `expiryReminderDays` / `contractExpiryReminderDays` record
+   * the last reminder sent, so each goes out once per end date; both are cleared
+   * when that date changes or is renewed.
    */
   async runExpirySweep() {
     // Per-product coverage only governs customers on PRODUCT scope. Switching a
@@ -1885,23 +1917,41 @@ export class CustomerProductsService {
       if (lapsed) {
         await this.prisma.customerCompanyProduct.update({ where: { id: cp.id }, data: { status: 'EXPIRED' } });
         await this.fireCoverageAlert(cp, 'expired');
-      } else if (left <= EXPIRY_ALERT_DAYS && !cp.expiryAlertSentAt) {
-        await this.prisma.customerCompanyProduct.update({ where: { id: cp.id }, data: { expiryAlertSentAt: new Date() } });
+        continue;
+      }
+      const due = reminderDue(left, cp.expiryReminderDays);
+      if (due) {
+        await this.prisma.customerCompanyProduct.update({
+          where: { id: cp.id }, data: { expiryAlertSentAt: new Date(), expiryReminderDays: due },
+        });
         await this.fireCoverageAlert(cp, 'expiring', left);
       }
-
     }
 
-    // Shared customer contracts: one warning 30 days out, same as per-product.
+    // Shared customer contracts: the same 90 / 60 / 30-day reminders. Their own
+    // markers — the hours-low alert's `contractAlertSentAt` must not suppress them.
+    // Only contracts still running and inside the widest window are read.
+    const widest = Math.max(...EXPIRY_REMINDER_DAYS);
     const contracts = await this.prisma.customerCompany.findMany({
-      where: { contractScope: 'CUSTOMER', contractEnd: { not: null }, contractAlertSentAt: null },
-      select: { id: true, name: true, clientId: true, contractStart: true, contractEnd: true, contactEmail: true, contractCoverageType: true },
+      where: {
+        contractScope: 'CUSTOMER',
+        contractEnd: { gt: new Date(now), lte: new Date(now + widest * DAY) },
+      },
+      select: {
+        id: true, name: true, clientId: true, contractStart: true, contractEnd: true, contactEmail: true,
+        contractCoverageType: true, contractExpiryReminderDays: true,
+      },
     });
+    let reminded = 0;
     for (const c of contracts) {
       if (!c.contractEnd) continue;
       const left = daysLeft(c.contractEnd);
-      if (left > EXPIRY_ALERT_DAYS) continue;
-      await this.prisma.customerCompany.update({ where: { id: c.id }, data: { contractAlertSentAt: new Date() } });
+      const due = reminderDue(left, c.contractExpiryReminderDays);
+      if (!due) continue;
+      reminded++;
+      await this.prisma.customerCompany.update({
+        where: { id: c.id }, data: { contractExpiryAlertSentAt: new Date(), contractExpiryReminderDays: due },
+      });
       const cover = c.contractCoverageType === 'WARRANTY' ? 'warranty' : 'support contract';
       const title = `Your ${cover} ends in ${Math.max(left, 0)} day(s)`;
       const body = `Your ${cover} ends on ${c.contractEnd.toDateString()}. Renew to keep service running.`;
@@ -1909,8 +1959,48 @@ export class CustomerProductsService {
       // The per-product path emails the client; the shared contract must too, or
       // a customer on one pooled contract only ever gets the in-app bell.
       await this.emailCompany(c, title, body, 'expiring');
+      await this.alertProvider(c.clientId, {
+        type: 'CONTRACT',
+        title: `${c.name}: ${cover} ends in ${Math.max(left, 0)} day(s)`,
+        body: `${c.name}'s ${cover} ends on ${c.contractEnd.toDateString()}. Follow up on the renewal.`,
+        link: `/admin/clients/${c.id}`,
+      }, 'expiring');
     }
-    return { scanned: active.length, contracts: contracts.length };
+
+    // Shared contracts that have run out: one "has ended" notice, to the client
+    // and the provider, as per-product coverage already gets. Recorded as
+    // reminder 0 on the same marker, so it goes once per end date and a new date
+    // or a renewal re-arms it. Only contracts ended within the last 30 days — a
+    // deploy must not announce contracts that lapsed long ago. Unlike a lapsed
+    // product nothing is switched off here, so the wording promises no pause.
+    const ended = await this.prisma.customerCompany.findMany({
+      where: {
+        contractScope: 'CUSTOMER',
+        contractEnd: { lte: new Date(now), gt: new Date(now - ENDED_NOTICE_WINDOW_DAYS * DAY) },
+        OR: [{ contractExpiryReminderDays: null }, { contractExpiryReminderDays: { not: 0 } }],
+      },
+      select: { id: true, name: true, clientId: true, contractEnd: true, contactEmail: true, contractCoverageType: true },
+    });
+    for (const c of ended) {
+      if (!c.contractEnd) continue;
+      reminded++;
+      await this.prisma.customerCompany.update({
+        where: { id: c.id }, data: { contractExpiryAlertSentAt: new Date(), contractExpiryReminderDays: 0 },
+      });
+      const cover = c.contractCoverageType === 'WARRANTY' ? 'warranty' : 'support contract';
+      const endedOn = c.contractEnd.toDateString();
+      const title = `Your ${cover} has ended`;
+      const body = `Your ${cover} ended on ${endedOn}. Renew to continue your cover.`;
+      await this.notifyCompanyAdmins(c.id, c.clientId, { type: 'CONTRACT', title, body });
+      await this.emailCompany(c, title, body, 'expired');
+      await this.alertProvider(c.clientId, {
+        type: 'CONTRACT',
+        title: `${c.name}: ${cover} has ended`,
+        body: `${c.name}'s ${cover} ended on ${endedOn}. Follow up on the renewal.`,
+        link: `/admin/clients/${c.id}`,
+      }, 'expired');
+    }
+    return { scanned: active.length, contracts: reminded };
   }
 
   private async fireCoverageAlert(
@@ -1937,6 +2027,55 @@ export class CustomerProductsService {
 
     await this.notifyCompanyAdmins(company.id, company.clientId, { type: 'PRODUCT_AMC', title: subject, body });
     await this.emailCompany(company, subject, body, phase);
+
+    // The provider is told too — they are the ones who chase the renewal. Worded
+    // for them (it names the client) and linked to that product's screen.
+    const coverLower = cp.amcType === 'FREE' ? 'warranty' : 'AMC'; // mid-sentence: "warranty", but AMC stays a capitalised acronym
+    await this.alertProvider(company.clientId, {
+      type: 'PRODUCT_AMC',
+      title: phase === 'expired'
+        ? `${company.name}: ${coverLower} for ${name} has ended`
+        : `${company.name}: ${coverLower} for ${name} ends in ${left} day(s)`,
+      body: phase === 'expired'
+        ? `${company.name}'s ${coverLower} for ${name} has ended${cp.amcType === 'FREE' ? '' : ' and their service is paused'}. Follow up on the renewal.`
+        : `${company.name}'s ${coverLower} for ${name} ends${endsOn ? ` on ${endsOn}` : ' soon'}. Follow up on the renewal.`,
+      link: `/admin/clients/${company.id}/products/${cp.id}`,
+    }, phase);
+  }
+
+  /**
+   * Coverage reminders for the provider's own side: every active tenant Admin
+   * gets the in-app notification (linked to the client's screen) and one email
+   * addressed to the admins alone — a client's address never shares a `To:` with
+   * the provider's. Best-effort, like the client email: an alert that can't be
+   * sent must never break the sweep.
+   */
+  private async alertProvider(
+    clientId: string,
+    n: { type: string; title: string; body: string; link: string },
+    phase: 'expiring' | 'expired',
+  ) {
+    const admins = await this.prisma.user.findMany({
+      where: { clientId, isActive: true, customerCompanyId: null, userRoles: { some: { role: { name: 'Admin' } } } },
+      select: { id: true, email: true },
+    });
+    if (!admins.length) return;
+    await this.notifications.notifyMany(admins.map((a) => a.id), { clientId, ...n });
+    const to = [...new Set(admins.map((a) => a.email).filter(Boolean))].join(', ');
+    if (!to || !(await this.mailer.isConfigured(clientId))) return;
+    const html = `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:520px;margin:0 auto;">
+        <div style="background:${phase === 'expired' ? '#dc2626' : '#f59e0b'};padding:24px;border-radius:12px 12px 0 0;text-align:center;">
+          <h1 style="color:#fff;margin:0;font-size:18px;">${n.title}</h1>
+        </div>
+        <div style="background:#fff;padding:28px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
+          <p style="color:#374151;font-size:14px;">${n.body}</p>
+          <p style="color:#6b7280;font-size:12px;">Open the client in the app to renew or extend their coverage.</p>
+        </div>
+      </div>`;
+    try {
+      await this.mailer.sendMail({ to, subject: n.title, html, text: n.body }, clientId);
+    } catch { /* best-effort */ }
   }
 
   /**

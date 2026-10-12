@@ -42,7 +42,8 @@ export class MailerService {
     text?: string;
     replyTo?: string;
     headers?: Record<string, string>;
-    attachments?: { filename: string; path: string }[];
+    // `cid` embeds the attachment in the HTML (<img src="cid:…">) instead of listing it as a file.
+    attachments?: { filename: string; path: string; cid?: string }[];
   }, clientId?: string | null): Promise<{ messageId?: string }> {
     const config = await this.resolveConfig(clientId);
     const transporter = await this.getTransporter(clientId);

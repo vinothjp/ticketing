@@ -39,6 +39,21 @@ type Node = {
   children?: Node[];
 };
 
+// A parent's status follows its children — the same rule as ProjectsService's
+// `rollupStatus` (and manual/project_task_parent_status_rollup.sql). Only leaves
+// carry a status in the specs below; a parent's is never typed by hand.
+const rollupStatus = (children: Status[]): Status => {
+  if (children.every((s) => s === 'COMPLETED')) return 'COMPLETED';
+  if (children.every((s) => s === 'TODO')) return 'TODO';
+  if (children.every((s) => s === 'REVIEW' || s === 'COMPLETED')) return 'REVIEW';
+  return 'IN_PROGRESS';
+};
+const statusOf = (node: Node): Status =>
+  node.children?.length ? rollupStatus(node.children.map(statusOf)) : (node.status ?? 'TODO');
+// When a completed item finished: a leaf on its own start day, a parent with its last child.
+const finishedOn = (node: Node): number =>
+  node.children?.length ? Math.max(...node.children.map(finishedOn)) : (node.start ?? 0);
+
 type ProjSpec = {
   name: string;
   key: string;
@@ -171,6 +186,7 @@ async function main() {
     let taskNumber = 0;
     const insert = async (node: Node, parentId: string | null, code: string) => {
       taskNumber += 1;
+      const status = statusOf(node);
       const created = await prisma.projectTask.create({
         data: {
           projectId: project.id,
@@ -182,8 +198,8 @@ async function main() {
           type: node.wbsType === 'MILESTONE' ? 'MILESTONE' : 'TASK',
           title: node.title,
           description: `${node.title} — ${node.wbsType.toLowerCase()} under the ${spec.name} plan.`,
-          status: node.status ?? 'TODO',
-          completionPct: ({ IN_PROGRESS: 50, REVIEW: 80, COMPLETED: 100 } as Record<string, number>)[node.status ?? 'TODO'] ?? 0, // same status → % rule as ProjectsService
+          status,
+          completionPct: ({ IN_PROGRESS: 50, REVIEW: 80, COMPLETED: 100 } as Record<string, number>)[status] ?? 0, // same status → % rule as ProjectsService
           priority: node.priority ?? null,
           durationDays: node.children?.length ? null : (node.durationDays ?? null),
           startDate: node.start != null ? day(node.start) : null,
@@ -192,7 +208,7 @@ async function main() {
           assigneeName: node.assignee ? uname(node.assignee) : null,
           critical: node.critical ?? false,
           sortOrder: taskNumber,
-          completedAt: node.status === 'COMPLETED' ? day(node.start ?? 0) : null,
+          completedAt: status === 'COMPLETED' ? day(finishedOn(node)) : null,
           createdBy: uid('admin'), createdByName: 'admin', updatedBy: uid('admin'),
         },
       });

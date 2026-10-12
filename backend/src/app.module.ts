@@ -35,6 +35,8 @@ import { ProjectTemplatesModule } from './project-templates/project-templates.mo
 import { ProductsModule } from './products/products.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { AssetsModule } from './assets/assets.module';
+import { CommunicationsModule } from './communications/communications.module';
+import { GalleryModule } from './gallery/gallery.module';
 
 @Module({
   imports: [
@@ -72,6 +74,8 @@ import { AssetsModule } from './assets/assets.module';
     ProductsModule,
     NotificationsModule,
     AssetsModule,
+    CommunicationsModule,
+    GalleryModule,
   ],
   controllers: [AppController],
   providers: [AppService],

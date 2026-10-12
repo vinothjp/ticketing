@@ -58,6 +58,11 @@ import ProductRequestsPage from './pages/ProductRequestsPage';
 import ClientDetailPage from './pages/clients/ClientDetailPage';
 import ClientProductPage from './pages/clients/ClientProductPage';
 import ClientAssignProductPage from './pages/clients/ClientAssignProductPage';
+import CommunicationsPage from './pages/communications/CommunicationsPage';
+import CommunicationEditorPage from './pages/communications/CommunicationEditorPage';
+import CommunicationViewPage from './pages/communications/CommunicationViewPage';
+import GalleryPage from './pages/gallery/GalleryPage';
+import AlbumPage from './pages/gallery/AlbumPage';
 
 const queryClient = new QueryClient();
 const isSuperAdmin = (roles: string[]) => roles.includes('SuperAdmin');
@@ -122,6 +127,12 @@ export default function App() {
                           <Route path="/projects/new" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectCreatePage /></RoleGate>} />
                           <Route path="/projects/analytics" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectAnalyticsPage /></RoleGate>} />
                           <Route path="/timesheet" element={<RoleGate allow={isStaff} redirectTo="/tickets"><TimesheetPage /></RoleGate>} />
+                          <Route path="/gallery" element={<RoleGate allow={isStaff} redirectTo="/tickets"><GalleryPage /></RoleGate>} />
+                          <Route path="/gallery/:id" element={<RoleGate allow={isStaff} redirectTo="/tickets"><AlbumPage /></RoleGate>} />
+                          <Route path="/communications" element={<RoleGate allow={isStaff} redirectTo="/tickets"><CommunicationsPage /></RoleGate>} />
+                          <Route path="/communications/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/communications"><CommunicationEditorPage /></RoleGate>} />
+                          <Route path="/communications/:id/edit" element={<RoleGate allow={isTenantAdmin} redirectTo="/communications"><CommunicationEditorPage /></RoleGate>} />
+                          <Route path="/communications/:id" element={<RoleGate allow={isStaff} redirectTo="/tickets"><CommunicationViewPage /></RoleGate>} />
                           <Route path="/client-visits" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ClientVisitsPage /></RoleGate>} />
                           <Route path="/client-visits/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientVisitFormPage /></RoleGate>} />
                           <Route path="/client-visits/:id/edit" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientVisitFormPage /></RoleGate>} />

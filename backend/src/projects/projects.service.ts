@@ -18,6 +18,7 @@ import type { ResourceSheetRow } from './resource-sheet';
 import { assertCostedMember } from './timesheet-member';
 import { timesheetRates } from './timesheet-rate';
 import { assertLoggableTask } from './timesheet-task';
+import { AnnouncementSuggestionsService } from '../communications/announcement-suggestions.service';
 
 type Actor = { id: string; username?: string; roles?: string[] };
 const isAdmin = (a: Actor) => !!a.roles?.includes('Admin');
@@ -48,7 +49,15 @@ const rollupStatus = (children: string[]) => {
 
 @Injectable()
 export class ProjectsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private suggestions: AnnouncementSuggestionsService,
+  ) {}
+
+  /** Raise an "Announce this?" prompt without ever letting it fail the save that triggered it. */
+  private async suggest(raise: () => Promise<void>) {
+    try { await raise(); } catch { /* best-effort: the prompt is a nicety, the save is not */ }
+  }
 
   // ---- Projects -----------------------------------------------------------
 
@@ -323,6 +332,12 @@ export class ProjectsService {
 
   async create(dto: CreateProjectDto, clientId: string, actor: Actor) {
     const managerName = await this.userName(clientId, dto.managerUserId);
+    const project = await this.createInTx(dto, clientId, actor, managerName);
+    await this.suggest(() => this.suggestions.onProjectCreated(project));
+    return project;
+  }
+
+  private createInTx(dto: CreateProjectDto, clientId: string, actor: Actor, managerName: string | null) {
     return this.prisma.$transaction(async (tx) => {
       const client = await tx.client.update({
         where: { id: clientId },
@@ -445,7 +460,11 @@ export class ProjectsService {
       data.managerName = await this.userName(clientId, dto.managerUserId);
     }
 
-    await this.prisma.project.update({ where: { id }, data });
+    const saved = await this.prisma.project.update({ where: { id }, data });
+    // Moving into Completed (not re-saving a completed project) is worth announcing.
+    if (dto.status === 'COMPLETED' && proj.status !== 'COMPLETED') {
+      await this.suggest(() => this.suggestions.onProjectCompleted(saved));
+    }
     // If the project's start/end window changed, re-bound every WBS item into it
     // (expanding just widens the room; shrinking clamps out-of-range items to the edge).
     if (set(dto.startDate) || set(dto.endDate)) {
@@ -1111,7 +1130,15 @@ export class ProjectsService {
       data.approvalStatus = dto.approvalStatus;
       data.decidedAt = dto.approvalStatus === 'PENDING' ? null : new Date();
     }
-    return this.prisma.projectMilestone.update({ where: { id: milestoneId }, data });
+    const saved = await this.prisma.projectMilestone.update({ where: { id: milestoneId }, data });
+    // A milestone signed off is a sign-off to announce (a Go Live one, a client achievement).
+    if (dto.approvalStatus === 'APPROVED' && existing.approvalStatus !== 'APPROVED') {
+      await this.suggest(async () => {
+        const project = await this.prisma.project.findUniqueOrThrow({ where: { id: saved.projectId } });
+        await this.suggestions.onMilestoneApproved(saved, project);
+      });
+    }
+    return saved;
   }
 
   async removeMilestone(milestoneId: string, clientId: string) {

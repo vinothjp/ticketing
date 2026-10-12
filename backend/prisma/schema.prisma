@@ -61,6 +61,8 @@ model Client {
   clientVisits ClientVisit[]
   assets       Asset[]
   assetAllocations AssetAllocation[]
+  communications Communication[]
+  galleryAlbums GalleryAlbum[]
   ticketSequence Int @default(0)
   kbSequence   Int @default(0)
   projectSequence Int @default(0)
@@ -218,7 +220,16 @@ model CustomerCompany {
   contractPoNumber         String?
   contractPoFileUrl        String?
   contractPoFileName       String?
+  // Set when the shared contract's "support hours running low" alert fires;
+  // cleared on any contract change so it re-arms.
   contractAlertSentAt      DateTime?
+  // When the shared contract's last expiry reminder went out, and which one it
+  // was (90 / 60 / 30 days out) — their own markers, so the hours-low alert above
+  // can never suppress them. Cleared only when the end date moves (an edit or a
+  // renewal), so re-saving other terms doesn't resend a reminder.
+  contractExpiryAlertSentAt DateTime?
+  // 90 / 60 / 30 = that reminder was the last sent; 0 = the "has ended" notice went out.
+  contractExpiryReminderDays Int?
   excessRequests           SupportHoursExcessRequest[]
   // How the shared-contract support-hours allowance is read: FULL_AMC = one pool
   // for the whole term (contractHours), MONTHLY = contractHours is a per-month
@@ -253,6 +264,7 @@ model CustomerCompany {
   productRequests ProductRequest[]
   consultants  CustomerConsultant[]
   clientVisits ClientVisit[]
+  galleryAlbums GalleryAlbum[]
 
   @@unique([clientId, name])
 }
@@ -511,8 +523,12 @@ model CustomerCompanyProduct {
   paidAmcVisits     Int?
   hoursUsed         Decimal  @default(0)
   visitsUsed        Int      @default(0)
-  // Set when the "coverage running out" alert fires, so it goes once per period.
+  // When the last "coverage running out" reminder went out.
   expiryAlertSentAt DateTime?
+  // Which reminder that was — 90, 60 or 30 days out (EXPIRY_REMINDER_DAYS). The
+  // sweep sends the next one once its window is reached. Cleared only when
+  // amcEnd moves, so re-saving other terms never resends a reminder.
+  expiryReminderDays Int?
   warrantyAlertSentAt DateTime?
   // Same idea for the support-hours pool: the "hours running low" alert fires
   // once per coverage period, cleared whenever the terms or the period change.
@@ -1182,6 +1198,7 @@ model Project {
   invoices          ProjectInvoice[]
   attachments       ProjectAttachment[]
   tickets           Ticket[]
+  galleryAlbums     GalleryAlbum[]
 
   @@unique([clientId, projectNumber])
   @@index([clientId, status])
@@ -1827,4 +1844,134 @@ model AssetActivity {
 
   @@index([clientId, assetId, createdAt])
   @@index([clientId, employeeUserId, createdAt])
+}
+
+// An internal communication sent to every active staff member of the tenant: a
+// one-off announcement or the monthly newsletter. Written and sent by an Admin;
+// read by all staff on the Communications screen. Plain text — paragraphs are
+// blank-line separated and become <p>s in the email.
+model Communication {
+  id             String    @id @default(uuid())
+  clientId       String
+  client         Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  kind           String    @default("ANNOUNCEMENT")   // ANNOUNCEMENT | NEWSLETTER
+  subject        String
+  body           String
+  // DRAFT → (SCHEDULED →) SENDING → SENT. Only DRAFT / SCHEDULED are editable or
+  // deletable; a sent communication is a record.
+  status         String    @default("DRAFT")
+  scheduledAt    DateTime?
+  sentAt         DateTime?
+  // Gallery albums shown with it — usually one on an announcement, several on a
+  // newsletter. Plain ids, not a relation: an album deleted later just drops out
+  // of the in-app view, and the email already sent keeps its embedded photos.
+  albumIds       String[]  @default([])
+  // Snapshot of the audience when sending began, and how many emails failed.
+  recipientCount Int       @default(0)
+  failedCount    Int       @default(0)
+  createdBy      String?
+  createdByName  String?
+  updatedBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  recipients     CommunicationRecipient[]
+
+  @@index([clientId, status])
+  @@index([status, scheduledAt])
+}
+
+// One row per person a communication went to — its delivery log. Written when
+// sending starts (PENDING) and settled one email at a time, so a restart part-way
+// through resumes from the rows still PENDING instead of re-mailing everyone.
+model CommunicationRecipient {
+  id              String        @id @default(uuid())
+  communicationId String
+  communication   Communication @relation(fields: [communicationId], references: [id], onDelete: Cascade)
+  userId          String        // plain column: the log outlives a deleted user
+  name            String
+  email           String
+  status          String        @default("PENDING")  // PENDING | SENT | FAILED
+  error           String?
+  sentAt          DateTime?
+
+  @@unique([communicationId, userId])
+  @@index([communicationId, status])
+}
+
+// Photo gallery — staff-only albums of project initiatives, client achievements,
+// UAT / sign-off team photos and awards. Admins create albums and upload; every
+// staff member views. Files live under uploads/gallery/<albumId>/.
+model GalleryAlbum {
+  id                String           @id @default(uuid())
+  clientId          String
+  client            Client           @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  title             String
+  description       String?
+  category          String           @default("OTHER")  // PROJECT_INITIATIVE | CLIENT_ACHIEVEMENT | UAT_SIGNOFF | AWARD | OTHER
+  eventDate         DateTime?
+  // Optional context. Kept (nulled) if the project or client is removed.
+  projectId         String?
+  project           Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  customerCompanyId String?
+  customerCompany   CustomerCompany? @relation(fields: [customerCompanyId], references: [id], onDelete: SetNull)
+  // The photo shown on the album card; falls back to the first photo when unset.
+  coverPhotoId      String?
+  createdBy         String?
+  createdByName     String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  photos            GalleryPhoto[]
+
+  @@index([clientId, eventDate])
+}
+
+// One photo. What is stored is never the camera original: uploads are shrunk to
+// a web copy of 1 MB or less plus a small thumbnail (GalleryService.process).
+model GalleryPhoto {
+  id           String       @id @default(uuid())
+  albumId      String
+  album        GalleryAlbum @relation(fields: [albumId], references: [id], onDelete: Cascade)
+  fileUrl      String       // "/uploads/gallery/<albumId>/<id>.jpg"
+  thumbUrl     String       // "/uploads/gallery/<albumId>/<id>_t.jpg" (= fileUrl if it could not be made)
+  width        Int?
+  height       Int?
+  sizeBytes    Int
+  originalName String?
+  caption      String?
+  sortOrder    Int          @default(0)
+  uploadedBy   String?
+  createdAt    DateTime     @default(now())
+
+  @@index([albumId, sortOrder])
+}
+
+// "Announce this?" — a prompt raised when something worth announcing happens in
+// Projects: a project created (initiative), a milestone signed off (UAT / sign-off;
+// a Go Live sign-off is a client achievement) or a project completed. Admins see
+// the pending ones on the Communications screen; nothing is ever sent without an
+// admin writing and sending the announcement themselves.
+model AnnouncementSuggestion {
+  id                String    @id @default(uuid())
+  clientId          String
+  // One suggestion per event, ever: e.g. "milestone-approved:<id>". Re-saving a
+  // project or re-approving a milestone hits this and suggests nothing new.
+  sourceKey         String
+  kind              String    // PROJECT_CREATED | MILESTONE_APPROVED | PROJECT_COMPLETED
+  category          String    // the album category it maps to (galleryMeta)
+  title             String
+  body              String
+  // Context, as plain ids — prefills the album; names are already in the text.
+  projectId         String?
+  milestoneId       String?
+  customerCompanyId String?
+  // "Add photos & announce" made this album; the announcement made from it.
+  albumId           String?
+  communicationId   String?
+  status            String    @default("PENDING")   // PENDING | USED | DISMISSED
+  decidedBy         String?
+  decidedAt         DateTime?
+  createdAt         DateTime  @default(now())
+
+  @@unique([clientId, sourceKey])
+  @@index([clientId, status])
 }

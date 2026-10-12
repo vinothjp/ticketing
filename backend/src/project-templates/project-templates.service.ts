@@ -3,6 +3,24 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProjectTemplateDto, UpdateProjectTemplateDto } from './dto/project-template.dto';
 
+/**
+ * A template's milestones become a project's milestones, and a project refuses two
+ * with the same name (ProjectsService.assertMilestoneNameFree) — so a template
+ * must not carry two either, ignoring case and surrounding spaces, or every
+ * project made from it starts with a duplicate.
+ */
+function assertUniqueMilestones(blueprint: Record<string, unknown> | undefined) {
+  const milestones = Array.isArray(blueprint?.milestones) ? (blueprint.milestones as { name?: unknown }[]) : [];
+  const seen = new Map<string, string>();
+  for (const m of milestones) {
+    const name = typeof m?.name === 'string' ? m.name.trim() : '';
+    if (!name) continue;
+    const first = seen.get(name.toLowerCase());
+    if (first) throw new ConflictException(`This template has two milestones named "${first}" — each milestone needs its own name`);
+    seen.set(name.toLowerCase(), name);
+  }
+}
+
 @Injectable()
 export class ProjectTemplatesService {
   constructor(private prisma: PrismaService) {}
@@ -23,6 +41,7 @@ export class ProjectTemplatesService {
   async create(dto: CreateProjectTemplateDto, clientId: string, actorId: string) {
     const dup = await this.prisma.projectTemplate.findFirst({ where: { clientId, name: dto.name.trim() } });
     if (dup) throw new ConflictException('A project template with this name already exists');
+    assertUniqueMilestones(dto.blueprint);
     return this.prisma.projectTemplate.create({
       data: {
         clientId,
@@ -46,6 +65,7 @@ export class ProjectTemplatesService {
       });
       if (dup) throw new ConflictException('A project template with this name already exists');
     }
+    assertUniqueMilestones(dto.blueprint);
     return this.prisma.projectTemplate.update({
       where: { id },
       data: {

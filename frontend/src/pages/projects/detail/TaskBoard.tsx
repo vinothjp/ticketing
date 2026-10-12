@@ -85,13 +85,16 @@ function DraggableCard({
   onEdit: (t: ProjectTask) => void;
   onDelete: (id: string) => void;
 }) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: task.id, disabled: !editable });
+  // A summary item's column is set by its sub-tasks, so it can be edited but not dragged.
+  const draggable = editable && !task.isParent;
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: task.id, disabled: !draggable });
   return (
     <div
       ref={setNodeRef}
-      {...(editable ? listeners : {})}
+      {...(draggable ? listeners : {})}
       {...attributes}
-      className={`group touch-none ${editable ? 'cursor-grab active:cursor-grabbing' : ''} ${isDragging ? 'opacity-40' : ''}`}
+      title={task.isParent ? 'Status follows its sub-tasks' : undefined}
+      className={`group touch-none ${draggable ? 'cursor-grab active:cursor-grabbing' : ''} ${isDragging ? 'opacity-40' : ''}`}
     >
       <CardBody task={task} keyStr={keyStr} listName={listName} editable={editable} onEdit={onEdit} onDelete={onDelete} />
     </div>

@@ -315,8 +315,11 @@ export default function TasksTab({ project, users, onAddToResources }: {
           <TableCell>{t.priority ? <Badge variant={priorityVariant(t.priority)}>{labelOf(t.priority)}</Badge> : <span className="text-muted-foreground">—</span>}</TableCell>
           <TableCell className="text-xs text-muted-foreground">{(t.isParent ? t.rolledCompletionPct : t.completionPct) ?? 0}%</TableCell>
           <TableCell>
-            {canEdit(t) ? (
-              <Select value={t.status} onValueChange={(v) => statusMutation.mutate({ id: t.id, status: v })}>
+            {/* A summary item's status follows its sub-tasks (the server sets it), so it is read-only. */}
+            {t.isParent ? (
+              <span title="Follows its sub-tasks"><Badge variant={taskStatusVariant(t.status)}>{labelOf(t.status)}</Badge></span>
+            ) : canEdit(t) ? (
+              <Select value={t.status} onValueChange={(v) => { if (v && v !== t.status) statusMutation.mutate({ id: t.id, status: v }); }}>
                 <SelectTrigger size="sm" className="w-36"><Badge variant={taskStatusVariant(t.status)}>{labelOf(t.status)}</Badge></SelectTrigger>
                 <SelectContent>{TASK_STATUSES.map((s) => <SelectItem key={s} value={s}>{labelOf(s)}</SelectItem>)}</SelectContent>
               </Select>
@@ -459,10 +462,11 @@ export default function TasksTab({ project, users, onAddToResources }: {
                 )} />
                 <FormField control={form.control} name="status" render={({ field }) => (
                   <FormItem><FormLabel>Status</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
+                    <Select value={field.value} onValueChange={(v) => { if (v) field.onChange(v); }} disabled={!!editing?.isParent}>
                       <FormControl><SelectTrigger className="w-full"><SelectValue /></SelectTrigger></FormControl>
                       <SelectContent>{TASK_STATUSES.map((s) => <SelectItem key={s} value={s}>{labelOf(s)}</SelectItem>)}</SelectContent>
                     </Select>
+                    {editing?.isParent && <p className="text-xs text-muted-foreground">Follows its sub-tasks.</p>}
                   </FormItem>
                 )} />
               </div>

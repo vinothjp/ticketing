@@ -60,6 +60,25 @@ export class UsersController {
     return this.usersService.importEmployees(req.user.clientId, req.user.id, file);
   }
 
+  // ---- Users screen import ----
+  // Its own sheet (login fields + Roles), separate from the Employee Master's.
+  // Also declared before `:id`.
+
+  /** The blank Users import template, with an Instructions sheet. */
+  @Get('import-template')
+  @Roles('Admin')
+  userTemplate(@Res() res: Response) {
+    sendWorkbook(res, 'user-import-template.xlsx', this.usersService.userImportTemplate());
+  }
+
+  /** Bulk add logins. Add-only: an existing username or email is refused, never updated. */
+  @Post('import')
+  @Roles('Admin')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
+  importUsers(@UploadedFile() file: Express.Multer.File, @Request() req: AuthedRequest) {
+    return this.usersService.importUsers(req.user.clientId, req.user.id, file);
+  }
+
   @Get(':id')
   @UseGuards(StaffGuard)
   findOne(@Param('id') id: string, @Request() req: AuthedRequest) {

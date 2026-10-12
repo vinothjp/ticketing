@@ -17,6 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
+import ImportExportBar from '@/components/ImportExportBar';
 
 interface Role { id: string; name: string; }
 interface User {
@@ -267,9 +268,22 @@ export default function UsersPage() {
     <div>
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-bold text-foreground">Users</h1>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="size-4" /> New User
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* The Users screen's own sheet: login fields + Roles. Employee details import on Employee Master. */}
+          <ImportExportBar
+            noun="users"
+            templateName="user-import-template.xlsx"
+            templateUrl="/api/users/import-template"
+            importUrl="/api/users/import"
+            onImported={() => {
+              qc.invalidateQueries({ queryKey: ['users'] });
+              qc.invalidateQueries({ queryKey: ['employees'] });
+            }}
+          />
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="size-4" /> New User
+          </Button>
+        </div>
       </div>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

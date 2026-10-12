@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Trash2, Plus, X, Eye, MessageSquare, GitBranch, ListTree, FileText, Zap } from 'lucide-react';
 import { toast } from 'sonner';
@@ -12,7 +12,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Combobox } from '@/components/ui/combobox';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { useConfirm } from '@/hooks/useConfirm';
 import {
   TASK_STATUSES, PRIORITIES, invalidateProject, labelOf, taskStatusVariant, taskKey,
   type TaskDetail, type ProjectTask, type ProjectResource, type UserOption,
@@ -21,6 +22,39 @@ import AssigneeSelect from './AssigneeSelect';
 
 const NONE = '__none__';
 const toDateInput = (v?: string | null) => (v ? new Date(v).toISOString().slice(0, 10) : '');
+
+// The task's own fields are a draft: nothing is written until Save, and closing the
+// window any other way discards it. Comments and sub-tasks keep their own Post / +
+// buttons, which act at once.
+type Fields = {
+  status: string;
+  priority: string | null;
+  assigneeUserId: string | null;
+  startDate: string;
+  dueDate: string;
+  critical: boolean;
+  description: string;
+  tags: string[];
+  watcherIds: string[];
+  predecessorIds: string[];
+};
+const fieldsOf = (t: TaskDetail): Fields => ({
+  status: t.status,
+  priority: t.priority ?? null,
+  assigneeUserId: t.assigneeUserId ?? null,
+  startDate: toDateInput(t.startDate),
+  dueDate: toDateInput(t.dueDate),
+  critical: !!t.critical,
+  description: t.description ?? '',
+  tags: t.tags ?? [],
+  watcherIds: t.watchers.map((w) => w.userId),
+  predecessorIds: t.predecessors.map((l) => l.predecessor.id),
+});
+// Watchers and predecessors are sets — order is not a change.
+const same = (a: unknown, b: unknown) =>
+  Array.isArray(a) && Array.isArray(b)
+    ? a.length === b.length && a.every((x) => b.includes(x))
+    : JSON.stringify(a) === JSON.stringify(b);
 
 function Section({ icon: Icon, title, count, children }: {
   icon: typeof Eye; title: string; count?: number; children: React.ReactNode;
@@ -57,6 +91,18 @@ export default function TaskDetailDialog({
   const [comment, setComment] = useState('');
   const [tagInput, setTagInput] = useState('');
   const [subtaskInput, setSubtaskInput] = useState('');
+  // Only the fields the user has touched; everything else reads through to the saved
+  // task, so a refetch (after posting a comment, say) never wipes an unsaved edit.
+  const [edits, setEdits] = useState<Partial<Fields>>({});
+  const [saving, setSaving] = useState(false);
+  const { confirm, ConfirmDialog } = useConfirm();
+
+  useEffect(() => {
+    setEdits({});
+    setComment('');
+    setTagInput('');
+    setSubtaskInput('');
+  }, [taskId]);
 
   const { data: task } = useQuery<TaskDetail>({
     queryKey: ['project-task', taskId],
@@ -72,18 +118,9 @@ export default function TaskDetailDialog({
     ({ mutationFn: fn, onSuccess: () => { invalidate(); if (ok) toast.success(ok); },
        onError: (e: any) => toast.error(e.response?.data?.message || 'Error') });
 
-  const patchTask = useMutation({
-    mutationFn: (data: Record<string, unknown>) => api.patch(`/api/projects/tasks/${taskId}`, data),
-    onSuccess: invalidate,
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error updating task'),
-  });
   const addComment = useMutation(mut(() => api.post(`/api/projects/tasks/${taskId}/comments`, { body: comment.trim() }), 'Comment added'));
   const delComment = useMutation({ mutationFn: (id: string) => api.delete(`/api/projects/task-comments/${id}`), onSuccess: invalidate });
-  const addWatcher = useMutation({ mutationFn: (userId: string) => api.post(`/api/projects/tasks/${taskId}/watchers`, { userId }), onSuccess: invalidate });
-  const delWatcher = useMutation({ mutationFn: (userId: string) => api.delete(`/api/projects/tasks/${taskId}/watchers/${userId}`), onSuccess: invalidate });
   const addSubtask = useMutation(mut(() => api.post(`/api/projects/${projectId}/tasks`, { title: subtaskInput.trim(), parentTaskId: taskId }), 'Sub-task added'));
-  const addDep = useMutation({ mutationFn: (predecessorId: string) => api.post(`/api/projects/tasks/${taskId}/dependencies`, { predecessorId }), onSuccess: invalidate, onError: (e: any) => toast.error(e.response?.data?.message || 'Error') });
-  const delDep = useMutation({ mutationFn: (depId: string) => api.delete(`/api/projects/dependencies/${depId}`), onSuccess: invalidate });
 
   if (!task) {
     return (
@@ -93,7 +130,64 @@ export default function TaskDetailDialog({
     );
   }
 
+  const saved = fieldsOf(task);
+  const draft: Fields = { ...saved, ...edits };
+  const set = <K extends keyof Fields>(k: K, v: Fields[K]) => setEdits((e) => ({ ...e, [k]: v }));
+  const changed = (Object.keys(edits) as (keyof Fields)[]).filter((k) => !same(edits[k], saved[k]));
+  const dirty = changed.length > 0;
+
+  // Close by any route other than Save: ask before throwing an edit away.
+  const requestClose = async () => {
+    if (saving) return;
+    if (dirty && !(await confirm({
+      title: 'Discard unsaved changes?',
+      description: 'Your changes to this task have not been saved.',
+      confirmText: 'Discard', cancelText: 'Keep editing', destructive: true,
+    }))) return;
+    onClose();
+  };
+
+  const save = async () => {
+    if (!dirty) { onClose(); return; }
+    setSaving(true);
+    try {
+      const patch: Record<string, unknown> = {};
+      for (const k of changed) {
+        if (k === 'watcherIds' || k === 'predecessorIds') continue;
+        if (k === 'startDate' || k === 'dueDate') patch[k] = draft[k] || undefined;
+        else if (k === 'assigneeUserId') patch[k] = draft.assigneeUserId || null;
+        else patch[k] = draft[k];
+      }
+      if (Object.keys(patch).length) await api.patch(`/api/projects/tasks/${taskId}`, patch);
+      // Link changes one at a time, so a refused one names itself and the rest still land.
+      for (const uid of draft.watcherIds.filter((x) => !saved.watcherIds.includes(x))) {
+        await api.post(`/api/projects/tasks/${taskId}/watchers`, { userId: uid });
+      }
+      for (const uid of saved.watcherIds.filter((x) => !draft.watcherIds.includes(x))) {
+        await api.delete(`/api/projects/tasks/${taskId}/watchers/${uid}`);
+      }
+      for (const pid of draft.predecessorIds.filter((x) => !saved.predecessorIds.includes(x))) {
+        await api.post(`/api/projects/tasks/${taskId}/dependencies`, { predecessorId: pid });
+      }
+      for (const link of task.predecessors.filter((l) => !draft.predecessorIds.includes(l.predecessor.id))) {
+        await api.delete(`/api/projects/dependencies/${link.id}`);
+      }
+      invalidate();
+      setEdits({});
+      toast.success('Task saved');
+      onClose();
+    } catch (e: any) {
+      // Whatever did land is refetched; the edits stay so the user can correct and retry.
+      invalidate();
+      toast.error(e.response?.data?.message || 'Error saving task');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const canEdit = isAdmin || task.assigneeUserId === myId;
+  // A summary item's status is derived from its sub-tasks on the server, never set here.
+  const isSummary = task.subtasks.length > 0;
   // Live WBS numbers come from the project list (computed), not the raw task record.
   const wbsById = new Map(tasks.map((t) => [t.id, t.wbsCode]));
   const myWbs = wbsById.get(taskId ?? '') ?? null;
@@ -106,43 +200,65 @@ export default function TaskDetailDialog({
   const earliest = (...ds: (string | undefined)[]) => ds.filter(Boolean).sort()[0] as string | undefined;
   const pMin = latest(parentStart, projectStart);        // floor: later of parent start / project start
   const pMax = parentEnd ?? projectEnd;                    // cap by parent end; top-level phase by project end
-  const tags = task.tags ?? [];
-  const watcherIds = new Set(task.watchers.map((w) => w.userId));
-  const predIds = new Set(task.predecessors.map((l) => l.predecessor.id));
+  const tags = draft.tags;
+  const watcherIds = new Set(draft.watcherIds);
+  const predIds = new Set(draft.predecessorIds);
   const depCandidates = tasks.filter((t) => t.id !== task.id && !predIds.has(t.id));
+  // A watcher or predecessor picked in this session isn't on the saved task yet, so its
+  // label comes from the user / task lists the dialog already has.
+  const watcherName = (uid: string) =>
+    task.watchers.find((w) => w.userId === uid)?.user.username ?? users.find((u) => u.id === uid)?.username ?? uid;
+  const predecessorOf = (pid: string) => {
+    const t = task.predecessors.find((l) => l.predecessor.id === pid)?.predecessor ?? tasks.find((x) => x.id === pid);
+    return t ? { taskNumber: t.taskNumber, title: t.title, status: t.status } : null;
+  };
 
   const submitComment = () => { if (comment.trim()) addComment.mutate(undefined, { onSuccess: () => setComment('') }); };
   const submitTag = () => {
     const t = tagInput.trim();
-    if (t && !tags.includes(t)) patchTask.mutate({ tags: [...tags, t] }, { onSuccess: () => setTagInput('') });
+    if (t && !tags.includes(t)) set('tags', [...tags, t]);
+    setTagInput('');
   };
-  const removeTag = (t: string) => patchTask.mutate({ tags: tags.filter((x) => x !== t) });
+  const removeTag = (t: string) => set('tags', tags.filter((x) => x !== t));
   const submitSubtask = () => { if (subtaskInput.trim()) addSubtask.mutate(undefined, { onSuccess: () => setSubtaskInput('') }); };
 
   return (
-    <Dialog open={!!taskId} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl max-h-[86vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            {myWbs && <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs font-normal text-muted-foreground">{myWbs}</span>}
-            <span className="text-xs font-normal text-muted-foreground">{taskKey(projectKey, task.taskNumber)}</span>
-            {task.title}
-            {!canEdit && <Badge variant="outline" className="ml-1 font-normal">View only</Badge>}
+    <Dialog open={!!taskId} onOpenChange={(o) => { if (!o) void requestClose(); }}>
+      {/* Pinned header carrying Save over a scrolling body, so Save is in reach however far down you are. */}
+      <DialogContent showCloseButton={false} className="flex max-h-[86vh] max-w-3xl flex-col gap-0 overflow-hidden p-0">
+        <div className="flex items-center gap-3 border-b px-6 py-3">
+          <DialogTitle className="flex min-w-0 flex-1 items-center gap-2">
+            {myWbs && <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-xs font-normal text-muted-foreground">{myWbs}</span>}
+            <span className="shrink-0 text-xs font-normal text-muted-foreground">{taskKey(projectKey, task.taskNumber)}</span>
+            <span className="truncate" title={task.title}>{task.title}</span>
+            {!canEdit && <Badge variant="outline" className="ml-1 shrink-0 font-normal">View only</Badge>}
           </DialogTitle>
-        </DialogHeader>
+          {dirty && <span className="shrink-0 text-xs text-amber-600">Unsaved changes</span>}
+          {canEdit ? (
+            <>
+              <Button size="sm" variant="outline" className="shrink-0" onClick={() => void requestClose()} disabled={saving}>Cancel</Button>
+              <Button size="sm" className="shrink-0" onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save & close'}</Button>
+            </>
+          ) : (
+            <Button size="sm" variant="outline" className="shrink-0" onClick={onClose}>Close</Button>
+          )}
+        </div>
 
+        <div className="grid flex-1 gap-4 overflow-y-auto px-6 py-4">
         {/* Properties */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div>
-            <div className="mb-1 text-xs text-muted-foreground">Status</div>
-            <Select value={task.status} onValueChange={(v) => patchTask.mutate({ status: v })} disabled={!canEdit}>
-              <SelectTrigger size="sm" className="w-full"><Badge variant={taskStatusVariant(task.status)}>{labelOf(task.status)}</Badge></SelectTrigger>
+            <div className="mb-1 text-xs text-muted-foreground">
+              Status{isSummary && <span title="Set from its sub-tasks"> · follows sub-tasks</span>}
+            </div>
+            <Select value={draft.status} onValueChange={(v) => { if (v) set('status', v); }} disabled={!canEdit || isSummary}>
+              <SelectTrigger size="sm" className="w-full"><Badge variant={taskStatusVariant(draft.status)}>{labelOf(draft.status)}</Badge></SelectTrigger>
               <SelectContent>{TASK_STATUSES.map((s) => <SelectItem key={s} value={s}>{labelOf(s)}</SelectItem>)}</SelectContent>
             </Select>
           </div>
           <div>
             <div className="mb-1 text-xs text-muted-foreground">Priority</div>
-            <Select value={task.priority ?? NONE} onValueChange={(v) => patchTask.mutate({ priority: v === NONE ? null : v })} disabled={!canEdit}>
+            <Select value={draft.priority ?? NONE} onValueChange={(v) => { if (v) set('priority', v === NONE ? null : v); }} disabled={!canEdit}>
               <SelectTrigger size="sm" className="w-full"><SelectValue placeholder="None" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value={NONE}>None</SelectItem>
@@ -154,34 +270,33 @@ export default function TaskDetailDialog({
             <div className="mb-1 text-xs text-muted-foreground">Assignee</div>
             <AssigneeSelect
               size="sm" disabled={!canEdit} users={users} resources={resources} onAddToResources={onAddToResources}
-              value={task.assigneeUserId ?? ''} onChange={(uid) => patchTask.mutate({ assigneeUserId: uid || null })}
+              value={draft.assigneeUserId ?? ''} onChange={(uid) => set('assigneeUserId', uid || null)}
             />
           </div>
           <div>
             <div className="mb-1 text-xs text-muted-foreground">Start date</div>
-            <DateField disabled={!canEdit} value={toDateInput(task.startDate)} min={pMin} max={earliest(toDateInput(task.dueDate) || undefined, pMax)} onChange={(v) => patchTask.mutate({ startDate: v || undefined })} />
+            <DateField disabled={!canEdit} value={draft.startDate} min={pMin} max={earliest(draft.dueDate || undefined, pMax)} onChange={(v) => set('startDate', v)} />
           </div>
           <div>
             <div className="mb-1 text-xs text-muted-foreground">End date</div>
-            <DateField disabled={!canEdit} value={toDateInput(task.dueDate)} min={latest(toDateInput(task.startDate), pMin)} max={pMax} onChange={(v) => patchTask.mutate({ dueDate: v || undefined })} />
+            <DateField disabled={!canEdit} value={draft.dueDate} min={latest(draft.startDate, pMin)} max={pMax} onChange={(v) => set('dueDate', v)} />
           </div>
         </div>
 
         {/* Critical path flag (shows the ⚡ marker in the WBS) */}
         <label className="flex w-fit items-center gap-2 text-sm">
-          <Checkbox checked={!!task.critical} disabled={!canEdit} onCheckedChange={(v) => patchTask.mutate({ critical: !!v })} />
+          <Checkbox checked={draft.critical} disabled={!canEdit} onCheckedChange={(v) => set('critical', !!v)} />
           <span className="flex items-center gap-1"><Zap className="size-3.5 text-destructive" /> Critical path</span>
         </label>
 
         {/* Description */}
         <Section icon={FileText} title="Description">
           <Textarea
-            key={task.id}
             rows={3}
             readOnly={!canEdit}
-            defaultValue={task.description ?? ''}
+            value={draft.description}
             placeholder={canEdit ? 'Add a short summary of this task…' : 'No description'}
-            onBlur={(e) => { if (!canEdit) return; const v = e.target.value; if (v !== (task.description ?? '')) patchTask.mutate({ description: v }); }}
+            onChange={(e) => set('description', e.target.value)}
           />
         </Section>
 
@@ -208,20 +323,20 @@ export default function TaskDetailDialog({
         </Section>
 
         {/* Watchers */}
-        <Section icon={Eye} title="Watchers" count={task.watchers.length}>
+        <Section icon={Eye} title="Watchers" count={draft.watcherIds.length}>
           <div className="flex flex-wrap items-center gap-2">
-            {task.watchers.map((w) => (
-              <Badge key={w.id} variant="outline" className="gap-1">
-                {w.user.username}
-                {canEdit && <button type="button" onClick={() => delWatcher.mutate(w.userId)}><X className="size-3" /></button>}
+            {draft.watcherIds.map((uid) => (
+              <Badge key={uid} variant="outline" className="gap-1">
+                {watcherName(uid)}
+                {canEdit && <button type="button" onClick={() => set('watcherIds', draft.watcherIds.filter((x) => x !== uid))}><X className="size-3" /></button>}
               </Badge>
             ))}
-            {task.watchers.length === 0 && <span className="text-xs text-muted-foreground">None</span>}
+            {draft.watcherIds.length === 0 && <span className="text-xs text-muted-foreground">None</span>}
             {canEdit && (
               <Combobox
                 size="sm" className="w-40" placeholder="Add watcher" emptyText="No matching user"
                 value=""
-                onChange={(v) => { if (v) addWatcher.mutate(v); }}
+                onChange={(v) => { if (v && !watcherIds.has(v)) set('watcherIds', [...draft.watcherIds, v]); }}
                 options={users.filter((u) => !watcherIds.has(u.id)).map((u) => ({ value: u.id, label: u.username }))}
               />
             )}
@@ -232,18 +347,21 @@ export default function TaskDetailDialog({
         <Section icon={GitBranch} title="Dependencies">
           <div className="space-y-2 rounded-lg border p-3">
             <div className="text-xs font-medium text-muted-foreground">Predecessors (must finish first)</div>
-            {task.predecessors.length === 0 && <p className="text-xs text-muted-foreground">None</p>}
-            {task.predecessors.map((l) => (
-              <div key={l.id} className="flex items-center justify-between text-sm">
-                <span>
-                  <span className="text-xs text-muted-foreground">{taskKey(projectKey, l.predecessor.taskNumber)}</span> {l.predecessor.title}
-                  <Badge variant={taskStatusVariant(l.predecessor.status)} className="ml-2">{labelOf(l.predecessor.status)}</Badge>
-                </span>
-                {canEdit && <Button size="icon" variant="ghost" className="size-6" onClick={() => delDep.mutate(l.id)}><X className="size-3.5" /></Button>}
-              </div>
-            ))}
+            {draft.predecessorIds.length === 0 && <p className="text-xs text-muted-foreground">None</p>}
+            {draft.predecessorIds.map((pid) => {
+              const p = predecessorOf(pid);
+              return (
+                <div key={pid} className="flex items-center justify-between text-sm">
+                  <span>
+                    {p && <span className="text-xs text-muted-foreground">{taskKey(projectKey, p.taskNumber)}</span>} {p?.title ?? pid}
+                    {p && <Badge variant={taskStatusVariant(p.status)} className="ml-2">{labelOf(p.status)}</Badge>}
+                  </span>
+                  {canEdit && <Button size="icon" variant="ghost" className="size-6" onClick={() => set('predecessorIds', draft.predecessorIds.filter((x) => x !== pid))}><X className="size-3.5" /></Button>}
+                </div>
+              );
+            })}
             {canEdit && (
-              <Select value="" onValueChange={(v) => addDep.mutate(v)}>
+              <Select value="" onValueChange={(v) => { if (v && !predIds.has(v)) set('predecessorIds', [...draft.predecessorIds, v]); }}>
                 <SelectTrigger size="sm" className="w-full"><SelectValue placeholder="Add predecessor…" /></SelectTrigger>
                 <SelectContent>
                   {depCandidates.map((t) => <SelectItem key={t.id} value={t.id}>{taskKey(projectKey, t.taskNumber)} {t.title}</SelectItem>)}
@@ -317,12 +435,9 @@ export default function TaskDetailDialog({
             </div>
           </div>
         </Section>
-
-        <DialogFooter className="items-center gap-2">
-          <span className="mr-auto text-xs text-muted-foreground">Changes save automatically</span>
-          <Button onClick={onClose}>Save &amp; close</Button>
-        </DialogFooter>
+        </div>
       </DialogContent>
+      {ConfirmDialog}
     </Dialog>
   );
 }

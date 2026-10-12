@@ -33,6 +33,19 @@ const DEFAULT_MILESTONES = [
 const STATUS_COMPLETION: Record<string, number> = { TODO: 0, IN_PROGRESS: 50, REVIEW: 80, COMPLETED: 100 };
 const completionFor = (status: string) => STATUS_COMPLETION[status] ?? 0;
 
+/**
+ * A summary item's status is read off its children, never set by hand: all
+ * Completed → Completed; none started → To Do; every one at least in Review →
+ * Review; anything else is work under way → In Progress. Mirrored by
+ * `manual/project_task_parent_status_rollup.sql` for existing data.
+ */
+const rollupStatus = (children: string[]) => {
+  if (children.every((s) => s === 'COMPLETED')) return 'COMPLETED';
+  if (children.every((s) => s === 'TODO')) return 'TODO';
+  if (children.every((s) => s === 'REVIEW' || s === 'COMPLETED')) return 'REVIEW';
+  return 'IN_PROGRESS';
+};
+
 @Injectable()
 export class ProjectsService {
   constructor(private prisma: PrismaService) {}
@@ -460,7 +473,7 @@ export class ProjectsService {
     const assigneeName = await this.userName(clientId, dto.assigneeUserId);
     const status = dto.status ?? 'TODO';
     const completionPct = completionFor(status);
-    return this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.$transaction(async (tx) => {
       // Per-project sequential task number → key = project.key + '-' + taskNumber.
       const proj = await tx.project.update({
         where: { id: projectId },
@@ -532,6 +545,9 @@ export class ProjectsService {
         },
       });
     });
+    // A new child changes what its parent (and theirs) reads as.
+    await this.syncAncestorStatus(created.parentTaskId, actor);
+    return created;
   }
 
   // Agents may only edit tasks assigned to them; admins edit anything.
@@ -669,7 +685,10 @@ export class ProjectsService {
       data.assigneeUserId = dto.assigneeUserId || null;
       data.assigneeName = await this.userName(clientId, dto.assigneeUserId);
     }
-    if (set(dto.status)) {
+    // A re-pick of the current status is no change (the edit form always sends it);
+    // a real change on a summary item is refused — its status follows its children.
+    if (set(dto.status) && dto.status !== existing.status) {
+      await this.assertNotSummary(taskId);
       data.status = dto.status;
       data.completedAt = dto.status === 'COMPLETED' ? (existing.completedAt ?? new Date()) : null;
       data.completionPct = completionFor(dto.status!);
@@ -682,8 +701,12 @@ export class ProjectsService {
       if (inherited && !ownSprint) data.sprint = { connect: { id: inherited } };
     }
     const updated = await this.prisma.projectTask.update({ where: { id: taskId }, data });
-    // Completing a parent completes everything beneath it (so the rollup reads 100%).
-    if (dto.status === 'COMPLETED') await this.completeDescendants(existing.projectId, taskId, actor);
+    // Its own status, or where it hangs, changes what the summary items above read as —
+    // both the old parent (which lost it) and the new one (which gained it).
+    await this.syncAncestorStatus(updated.parentTaskId, actor);
+    if (existing.parentTaskId && existing.parentTaskId !== updated.parentTaskId) {
+      await this.syncAncestorStatus(existing.parentTaskId, actor);
+    }
     // If the schedule moved, push dependent tasks forward (when cascading is enabled).
     if (set(dto.startDate) || set(dto.dueDate)) await this.cascadeDates(existing.projectId, taskId);
     return updated;
@@ -779,6 +802,8 @@ export class ProjectsService {
   async updateTaskStatus(taskId: string, dto: UpdateTaskStatusDto, clientId: string, actor: Actor) {
     const existing = await this.getOwnedTask(taskId, clientId);
     this.assertTaskEditable(existing, actor);
+    const changed = dto.status !== existing.status;
+    if (changed) await this.assertNotSummary(taskId);
     const updated = await this.prisma.projectTask.update({
       where: { id: taskId },
       data: {
@@ -789,36 +814,48 @@ export class ProjectsService {
         updatedBy: actor.id,
       },
     });
-    if (dto.status === 'COMPLETED') await this.completeDescendants(existing.projectId, taskId, actor);
+    if (changed) await this.syncAncestorStatus(existing.parentTaskId, actor);
     return updated;
   }
 
-  /** Mark every descendant (sub-tasks at any depth) of a task COMPLETED / 100%. */
-  private async completeDescendants(projectId: string, rootId: string, actor: Actor) {
-    const all = await this.prisma.projectTask.findMany({
-      where: { projectId },
-      select: { id: true, parentTaskId: true },
-    });
-    const childrenBy = new Map<string, string[]>();
-    for (const t of all) {
-      if (!t.parentTaskId) continue;
-      const arr = childrenBy.get(t.parentTaskId) ?? [];
-      arr.push(t.id);
-      childrenBy.set(t.parentTaskId, arr);
+  /** A summary item (one with children) takes its status from them; it can't be set by hand. */
+  private async assertNotSummary(taskId: string) {
+    if (await this.prisma.projectTask.count({ where: { parentTaskId: taskId } })) {
+      throw new BadRequestException(
+        "This item's status follows its sub-tasks — change the sub-tasks' status instead",
+      );
     }
-    const descendants: string[] = [];
-    const stack = [...(childrenBy.get(rootId) ?? [])];
-    while (stack.length) {
-      const id = stack.pop()!;
-      descendants.push(id);
-      const kids = childrenBy.get(id);
-      if (kids) stack.push(...kids);
-    }
-    if (descendants.length) {
-      await this.prisma.projectTask.updateMany({
-        where: { id: { in: descendants } },
-        data: { status: 'COMPLETED', completionPct: 100, completedAt: new Date(), updatedBy: actor.id },
+  }
+
+  /**
+   * Re-derive the status of `parentId` from its children, then walk up. Stops at
+   * the first ancestor whose status doesn't change: everything above it reads only
+   * its children, so it can't change either. An item left with no children (its
+   * last one deleted or moved away) keeps the status it last had — it is a plain
+   * task again and can be set by hand.
+   */
+  private async syncAncestorStatus(parentId: string | null, actor: Actor) {
+    let id = parentId;
+    const seen = new Set<string>(); // a bad parent chain must not loop forever
+    while (id && !seen.has(id)) {
+      seen.add(id);
+      const [node, children] = await Promise.all([
+        this.prisma.projectTask.findUnique({ where: { id }, select: { status: true, completedAt: true, parentTaskId: true } }),
+        this.prisma.projectTask.findMany({ where: { parentTaskId: id }, select: { status: true } }),
+      ]);
+      if (!node || !children.length) return;
+      const status = rollupStatus(children.map((c) => c.status));
+      if (status === node.status) return;
+      await this.prisma.projectTask.update({
+        where: { id },
+        data: {
+          status,
+          completionPct: completionFor(status),
+          completedAt: status === 'COMPLETED' ? (node.completedAt ?? new Date()) : null,
+          updatedBy: actor.id,
+        },
       });
+      id = node.parentTaskId;
     }
   }
 
@@ -826,6 +863,8 @@ export class ProjectsService {
     const existing = await this.getOwnedTask(taskId, clientId);
     this.assertTaskEditable(existing, actor);
     await this.prisma.projectTask.delete({ where: { id: taskId } });
+    // Its parent loses a child; its own children (now top-level) need nothing.
+    await this.syncAncestorStatus(existing.parentTaskId, actor);
     return { message: 'Task deleted' };
   }
 
@@ -1047,10 +1086,11 @@ export class ProjectsService {
 
   async createMilestone(projectId: string, dto: CreateMilestoneDto, clientId: string, actor: Actor) {
     await this.getOwned(projectId, clientId);
+    const name = await this.assertMilestoneNameFree(projectId, dto.name);
     return this.prisma.projectMilestone.create({
       data: {
         projectId,
-        name: dto.name.trim(),
+        name,
         status: dto.status ?? 'PENDING',
         targetDate: dto.targetDate ? new Date(dto.targetDate) : null,
         sortOrder: dto.sortOrder ?? 0,
@@ -1060,9 +1100,9 @@ export class ProjectsService {
   }
 
   async updateMilestone(milestoneId: string, dto: UpdateMilestoneDto, clientId: string) {
-    await this.getOwnedMilestone(milestoneId, clientId);
+    const existing = await this.getOwnedMilestone(milestoneId, clientId);
     const data: Prisma.ProjectMilestoneUpdateInput = {};
-    if (dto.name !== undefined) data.name = dto.name.trim();
+    if (dto.name !== undefined) data.name = await this.assertMilestoneNameFree(existing.projectId, dto.name, milestoneId);
     if (dto.status !== undefined) data.status = dto.status;
     if (dto.targetDate !== undefined) data.targetDate = dto.targetDate ? new Date(dto.targetDate) : null;
     if (dto.sortOrder !== undefined) data.sortOrder = dto.sortOrder;
@@ -1588,5 +1628,26 @@ export class ProjectsService {
     });
     if (!m) throw new NotFoundException('Milestone not found');
     return m;
+  }
+
+  /**
+   * A milestone name is unique inside its project, ignoring case and surrounding
+   * spaces — two "Testing" groups would split one stage gate's tasks and progress in
+   * two. A pre-check, not a DB constraint: the containers' `prisma db push` owns the
+   * schema. Returns the trimmed name to store.
+   */
+  private async assertMilestoneNameFree(projectId: string, raw: string, exceptId?: string) {
+    const name = raw.trim();
+    if (!name) throw new BadRequestException('Milestone name is required');
+    const clash = await this.prisma.projectMilestone.findFirst({
+      where: {
+        projectId,
+        name: { equals: name, mode: 'insensitive' },
+        ...(exceptId ? { id: { not: exceptId } } : {}),
+      },
+      select: { name: true },
+    });
+    if (clash) throw new ConflictException(`A milestone named "${clash.name}" already exists in this project`);
+    return name;
   }
 }

@@ -71,8 +71,8 @@ export class CustomerTeamService {
     });
     if (clash) throw new ConflictException('Username or email already exists');
 
-    const roleName = dto.role === 'admin' ? 'CustomerAdmin' : 'Customer';
-    const roleId = await this.roleId(actor.clientId, roleName);
+    // Always an employee — the client's one admin is set by the provider.
+    const roleId = await this.roleId(actor.clientId, 'Customer');
     const passwordHash = await bcrypt.hash(dto.password, 12);
     const user = await this.prisma.user.create({
       data: {
@@ -86,33 +86,46 @@ export class CustomerTeamService {
         userRoles: { create: [{ roleId, createdBy: actor.id }] },
       },
     });
-    return { id: user.id, username: user.username, email: user.email, role: dto.role ?? 'employee' };
+    return { id: user.id, username: user.username, email: user.email, role: 'employee' as const };
   }
 
   async update(userId: string, dto: UpdateTeamMemberDto, actor: Actor) {
     const target = await this.memberOfMyCompany(userId, actor.customerCompanyId);
+
     const isSelf = target.id === actor.id;
 
     // Guard against self-lockout: an admin can't deactivate or demote themselves.
     if (isSelf && dto.isActive === false) {
       throw new BadRequestException('You cannot deactivate your own account');
     }
-    if (isSelf && dto.role === 'employee') {
-      throw new BadRequestException('You cannot remove your own admin role');
+    if (isSelf && dto.role) {
+      throw new BadRequestException('You cannot change your own role — hand admin over to someone else instead');
     }
 
     if (dto.role) {
-      const desired = dto.role === 'admin' ? 'CustomerAdmin' : 'Customer';
       const [customerId, adminId] = await Promise.all([
         this.roleId(actor.clientId, 'Customer'),
         this.roleId(actor.clientId, 'CustomerAdmin'),
       ]);
-      const keepId = desired === 'CustomerAdmin' ? adminId : customerId;
-      // Replace their customer-side role assignment with the desired one.
-      await this.prisma.userRole.deleteMany({
-        where: { userId, roleId: { in: [customerId, adminId] } },
-      });
-      await this.prisma.userRole.create({ data: { userId, roleId: keepId, createdBy: actor.id } });
+      const setRole = (userId: string, roleId: string) => [
+        this.prisma.userRole.deleteMany({ where: { userId, roleId: { in: [customerId, adminId] } } }),
+        this.prisma.userRole.create({ data: { userId, roleId, createdBy: actor.id } }),
+      ];
+      const targetIsAdmin = target.userRoles.some((ur) => ur.role.name === 'CustomerAdmin');
+
+      if (dto.role === 'employee') {
+        // Demoting another admin never adds one, so it is always safe — it is
+        // also how a client that ended up with several admins gets back to one.
+        if (targetIsAdmin) await this.prisma.$transaction(setRole(userId, customerId));
+      } else if (!targetIsAdmin) {
+        // "Make admin" is a hand-over, not a promotion: a client has exactly one
+        // admin, so the actor steps down in the same transaction the target
+        // steps up. Their token still carries the old role until they sign in
+        // again, which is why the page signs them out straight after.
+        if (!target.isActive) throw new BadRequestException('Reactivate them before handing admin over');
+        await this.prisma.$transaction([...setRole(userId, adminId), ...setRole(actor.id, customerId)]);
+        return { message: 'Admin handed over', handedOver: true };
+      }
     }
 
     if (dto.isActive !== undefined) {

@@ -1,30 +1,28 @@
 // Shared types for the cross-project weekly Timesheet page.
 
-// The Activity list from the Excel spec ("21 Project Time Sheet.xlsx"), which
-// seeds the tenant's `timesheetActivity` option list. The live list comes from
-// the server (`WeekResponse.activities`, read off that option list); this array
-// is only the fallback before the week has loaded.
-export const ACTIVITIES = [
-  'Blueprint',
-  'System Configuration',
-  'Unit Testing',
-  'UAT',
-  'Training',
-  'Cut over',
-  'PRD Deployment',
-  'Go-Live Support',
-] as const;
+// A work item time can be logged against: one of the project's leaf tasks or
+// subtasks, in WBS order, with its live WBS code and the top-level item above it.
+export interface LoggableTask {
+  id: string;
+  code: string;
+  title: string;
+  phase: string | null;
+}
 
 export interface ProjectOption {
   id: string;
   name: string;
   projectNumber: string;
   customerName: string | null;
+  startDate: string | null;       // yyyy-mm-dd — no time is logged outside the project's run
+  endDate: string | null;
+  tasks: LoggableTask[];           // the Activity choices for a row on this project
 }
 
 // A row as returned by the server (existing entries collapsed by project+activity).
 export interface WeekRow {
   projectId: string;
+  taskId: string | null;          // null only on an entry from before rows named a task
   activity: string;
   workPerformed: string | null;
   status: string;                 // DRAFT | SUBMITTED | APPROVED | REJECTED
@@ -37,7 +35,6 @@ export interface WeekResponse {
   consultant: { id: string; username: string | null };
   documentNumber: string;
   documentDate: string;
-  activities: readonly string[];
   projects: ProjectOption[];
   rows: WeekRow[];
 }
@@ -45,6 +42,7 @@ export interface WeekResponse {
 // Editable client-side row (status carried through so we can badge/lock it).
 export interface GridRow {
   projectId: string;
+  taskId: string | null;
   activity: string;
   workPerformed: string;
   status: string;

@@ -30,7 +30,8 @@ export interface ImportResult {
 export default function ImportExportBar({
   exportUrl, templateUrl, importUrl, noun, templateName, onImported,
 }: {
-  exportUrl: string;
+  /** Omit for a screen that offers only the template and the import (the Users screen). */
+  exportUrl?: string;
   templateUrl: string;
   importUrl: string;
   /** What is being imported, for the messages — 'employees', 'assets'. */
@@ -99,13 +100,15 @@ export default function ImportExportBar({
       <Button variant="outline" disabled={busy} onClick={() => fileRef.current?.click()}>
         <Upload className="size-4" /> {upload.isPending ? 'Importing…' : 'Import'}
       </Button>
-      <Button
-        variant="outline"
-        disabled={busy}
-        onClick={() => download.mutate({ url: exportUrl, name: `${noun}.xlsx` })}
-      >
-        <Download className="size-4" /> Export
-      </Button>
+      {exportUrl && (
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => download.mutate({ url: exportUrl, name: `${noun}.xlsx` })}
+        >
+          <Download className="size-4" /> Export
+        </Button>
+      )}
 
       <Dialog open={!!result} onOpenChange={(open) => { if (!open) setResult(null); }}>
         <DialogContent className="flex max-h-[calc(100svh-2rem)] w-[calc(100vw-2rem)] flex-col overflow-hidden sm:max-w-2xl">

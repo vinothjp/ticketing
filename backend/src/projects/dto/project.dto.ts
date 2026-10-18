@@ -50,6 +50,8 @@ export class UpdateProjectDto {
   @IsOptional() @IsString() scope?: string;
   @IsOptional() @IsString() outOfScope?: string;
   @IsOptional() @IsString() successCriteria?: string;
+  // Projects are never deleted; an Admin deactivates one instead.
+  @IsOptional() @IsBoolean() isActive?: boolean;
 }
 
 // Body for approving / rejecting / submitting a change request.
@@ -73,7 +75,6 @@ class BaseTaskDto {
   @IsOptional() @IsDateString() actualStart?: string;
   @IsOptional() @IsDateString() actualFinish?: string;
   @IsOptional() @IsInt() @Min(0) durationDays?: number;
-  @IsOptional() @IsInt() @Min(0) @Max(100) completionPct?: number;
   @IsOptional() @IsInt() @Min(0) estimatedHours?: number;
   @IsOptional() @IsInt() @Min(0) actualHours?: number;
   @IsOptional() @IsInt() @Min(0) plannedEffort?: number;
@@ -89,6 +90,13 @@ export class CreateProjectTaskDto extends BaseTaskDto {
 
 export class UpdateProjectTaskDto extends BaseTaskDto {
   @IsOptional() @IsString() @MinLength(1) title?: string;
+}
+
+// Moves a WBS item's sprint work: the item itself when it is a leaf, or — for a summary item —
+// every leaf beneath it currently in `fromSprintId` (null/absent = the backlog).
+export class MoveToSprintDto {
+  @IsOptional() @IsString() sprintId?: string | null;
+  @IsOptional() @IsString() fromSprintId?: string | null;
 }
 
 export class UpdateTaskStatusDto {

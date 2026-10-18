@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Trash2, Download,
+import { useQuery } from '@tanstack/react-query';
+import { Plus, Pencil, Download,
   Hash, Calendar, Building2, AtSign, Package, Timer, CircleDot, AlignLeft } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { toast } from 'sonner';
 import api from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
 import { VisitReportDialog } from './VisitReportDialog';
@@ -42,7 +41,6 @@ function HeadLabel({ icon: Icon, children }: { icon: LucideIcon; children: React
 }
 
 export function ClientVisitsPage() {
-  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
@@ -113,25 +111,6 @@ export function ClientVisitsPage() {
     }, { replace: true });
   }, [openVisitId, visits]);
   const reportVisit = visits.find((v) => v.id === reportVisitId) ?? null;
-
-  const deleteMutation = useMutation({
-    mutationFn: async (id: string) => {
-      await api.delete(`/api/client-visits/${id}`);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['client-visits'] });
-      toast.success('Visit deleted successfully');
-    },
-    onError: () => {
-      toast.error('Failed to delete visit');
-    }
-  });
-
-  const handleDelete = (id: string) => {
-    if (window.confirm('Are you sure you want to delete this visit?')) {
-      deleteMutation.mutate(id);
-    }
-  };
 
   const handleExport = () => {
     exportCsv('client-visits.csv', visits, [
@@ -262,7 +241,7 @@ export function ClientVisitsPage() {
                 <TableHead className="w-[5%] border-r"><HeadLabel icon={Timer}>Hours</HeadLabel></TableHead>
                 <TableHead className="w-[15%] border-r"><HeadLabel icon={CircleDot}>Status</HeadLabel></TableHead>
                 <TableHead className="border-r"><HeadLabel icon={AlignLeft}>Purpose</HeadLabel></TableHead>
-                <TableHead className="w-20" />
+                <TableHead className="w-px" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -338,9 +317,6 @@ export function ClientVisitsPage() {
                             <Pencil className="h-4 w-4" />
                           </Button>
                         )}
-                        <Button variant="ghost" size="icon" className="size-8" title="Delete visit" onClick={() => handleDelete(visit.id)}>
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
                       </div>
                     ) : (
                       <Button variant="outline" size="sm" onClick={() => setReportVisitId(visit.id)}>

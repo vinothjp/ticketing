@@ -1,22 +1,51 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2, UserPlus, Pencil } from 'lucide-react';
+import { Plus, Trash2, UserPlus, Pencil, Check, User, BadgeCheck, Tag, Percent, Wallet, Banknote, Receipt } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
 import { DateField } from '@/components/ui/date-field';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Combobox } from '@/components/ui/combobox';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { useConfirm } from '@/hooks/useConfirm';
+import ImportExportBar from '@/components/ImportExportBar';
 import { invalidateProject, type ProjectDetail, type ResourceCategory, type UserOption } from '../projectMeta';
 
-const NONE = '__none__';
+/**
+ * A column heading: its icon, then its label. Muted and small, so the headings
+ * read as chrome and the values below them carry the weight. Mirrors the
+ * Change Management list.
+ */
+function HeadLabel({ icon: Icon, children, className = '' }: {
+  icon: LucideIcon; children: ReactNode; className?: string;
+}) {
+  return (
+    <span className={`flex items-center gap-1.5 text-xs font-semibold text-muted-foreground ${className}`}>
+      <Icon className="size-3.5 shrink-0" />
+      {children}
+    </span>
+  );
+}
+
 const money = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 const toDate = (v?: string | null) => (v ? new Date(v).toISOString().slice(0, 10) : '');
+const HEAD = 'text-xs font-semibold text-muted-foreground';
+
+// One figure in the summary strip above the plan: muted label, bold value.
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <span>
+      <span className="text-muted-foreground">{label}</span>{' '}
+      <span className="font-semibold tabular-nums">{value}</span>
+    </span>
+  );
+}
 
 type MemberForm = {
   id: string | null;
@@ -33,7 +62,13 @@ const emptyForm = (project: ProjectDetail): MemberForm => ({
   startDate: toDate(project.startDate), endDate: toDate(project.endDate),
 });
 
-export default function ResourcesTab({ project, users }: { project: ProjectDetail; users: UserOption[] }) {
+export default function ResourcesTab({ project, users, prefillUserId, onPrefillUsed }: {
+  project: ProjectDetail;
+  users: UserOption[];
+  /** Open Add Member with this user already picked — sent here from an assignee picker. */
+  prefillUserId?: string | null;
+  onPrefillUsed?: () => void;
+}) {
   const qc = useQueryClient();
   const { confirm, ConfirmDialog } = useConfirm();
   const [open, setOpen] = useState(false);
@@ -71,6 +106,19 @@ export default function ResourcesTab({ project, users }: { project: ProjectDetai
   });
 
   const openNew = () => { setForm(emptyForm(project)); setOpen(true); };
+  useEffect(() => {
+    if (!prefillUserId) return;
+    setForm({ ...emptyForm(project), userId: prefillUserId });
+    setOpen(true);
+    onPrefillUsed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillUserId]);
+
+  // A member is planned inside the project's window; the pickers block every day outside it.
+  const projStart = toDate(project.startDate) || undefined;
+  const projEnd = toDate(project.endDate) || undefined;
+  const latest = (...ds: (string | undefined)[]) => ds.filter(Boolean).sort().slice(-1)[0] as string | undefined;
+  const earliest = (...ds: (string | undefined)[]) => ds.filter(Boolean).sort()[0] as string | undefined;
   const openEdit = (r: ProjectDetail['resources'][number]) => {
     setForm({
       id: r.id, userId: r.userId ?? '', categoryId: r.categoryId ?? '', role: r.role ?? '',
@@ -92,11 +140,28 @@ export default function ResourcesTab({ project, users }: { project: ProjectDetai
   return (
     <div className="space-y-4">
       {ConfirmDialog}
-      <div className="flex items-center justify-between">
-        <span className="text-sm text-muted-foreground">
-          {project.resources.length} member{project.resources.length === 1 ? '' : 's'} · planned cost {money(totalCost)} · billing {money(totalBilling)} · margin {money(totalBilling - totalCost)}
+      <div className="flex flex-wrap items-baseline gap-x-8 gap-y-1 border-b pb-3 text-sm">
+        <span>
+          <span className="font-semibold tabular-nums">{project.resources.length}</span>{' '}
+          <span className="text-muted-foreground">member{project.resources.length === 1 ? '' : 's'}</span>
         </span>
-        <Button size="sm" onClick={openNew}><Plus className="size-4" /> Add Member</Button>
+        <Stat label="Planned cost" value={money(totalCost)} />
+        <Stat label="Billing" value={money(totalBilling)} />
+        <Stat label="Margin" value={money(totalBilling - totalCost)} />
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <ImportExportBar
+            noun="resources"
+            templateName="resource-import-template.xlsx"
+            exportUrl={`/api/projects/${project.id}/resources/export`}
+            templateUrl="/api/projects/resources/import-template"
+            importUrl={`/api/projects/${project.id}/resources/import`}
+            onImported={invalidate}
+          />
+        </div>
+        <Button onClick={openNew}><Plus className="size-4" /> Add Member</Button>
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
@@ -104,22 +169,20 @@ export default function ResourcesTab({ project, users }: { project: ProjectDetai
           <DialogHeader><DialogTitle>{form.id ? 'Edit member' : 'Add member to plan'}</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div>
-              <div className="mb-1 text-sm">Member</div>
-              <Select value={form.userId || NONE} onValueChange={(v) => setForm((f) => ({ ...f, userId: v === NONE ? '' : v }))}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="Select user" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NONE}>—</SelectItem>
-                  {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <div className="mb-1 text-sm">Member <span className="text-destructive">*</span></div>
+              <Combobox
+                placeholder="Select member" emptyText="No matching user"
+                value={form.userId}
+                onChange={(v) => { if (v) setForm((f) => ({ ...f, userId: v })); }}
+                options={users.map((u) => ({ value: u.id, label: u.username }))}
+              />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <div className="mb-1 text-sm">Category (rate)</div>
-                <Select value={form.categoryId || NONE} onValueChange={(v) => setForm((f) => ({ ...f, categoryId: v === NONE ? '' : v }))}>
-                  <SelectTrigger className="w-full"><SelectValue placeholder="None" /></SelectTrigger>
+                <div className="mb-1 text-sm">Category (rate) <span className="text-destructive">*</span></div>
+                <Select value={form.categoryId || undefined} onValueChange={(v) => { if (v) setForm((f) => ({ ...f, categoryId: v })); }}>
+                  <SelectTrigger className="w-full"><SelectValue placeholder="Select category" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={NONE}>None</SelectItem>
                     {categories.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
@@ -136,11 +199,11 @@ export default function ResourcesTab({ project, users }: { project: ProjectDetai
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <div className="mb-1 text-sm">Start date</div>
-                <DateField value={form.startDate} onChange={(v) => setForm((f) => ({ ...f, startDate: v }))} />
+                <DateField value={form.startDate} min={projStart} max={earliest(form.endDate || undefined, projEnd)} onChange={(v) => setForm((f) => ({ ...f, startDate: v }))} />
               </div>
               <div>
                 <div className="mb-1 text-sm">End date</div>
-                <DateField value={form.endDate} onChange={(v) => setForm((f) => ({ ...f, endDate: v }))} />
+                <DateField value={form.endDate} min={latest(form.startDate || undefined, projStart)} max={projEnd} onChange={(v) => setForm((f) => ({ ...f, endDate: v }))} />
               </div>
             </div>
             <label className="flex items-center gap-2 text-sm">
@@ -149,37 +212,46 @@ export default function ResourcesTab({ project, users }: { project: ProjectDetai
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button disabled={save.isPending} onClick={() => save.mutate(form)}><UserPlus className="size-4" /> {form.id ? 'Save changes' : 'Add member'}</Button>
+            <Button disabled={save.isPending} onClick={() => {
+              if (!form.userId) { toast.error('Select a member'); return; }
+              // No category means no rate: the member would plan and bill at 0.
+              if (!form.categoryId) { toast.error(`Select a category — it sets the member's daily cost and billing rate`); return; }
+              save.mutate(form);
+            }}><UserPlus className="size-4" /> {form.id ? 'Save changes' : 'Add member'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      <div className="overflow-x-auto border-t">
+      <div className="overflow-hidden rounded-lg border">
         <Table>
           <TableHeader>
-            <TableRow>
-              <TableHead>Consultant</TableHead>
-              <TableHead>Role</TableHead>
-              <TableHead>Category</TableHead>
-              <TableHead className="text-right">Alloc %</TableHead>
-              <TableHead className="text-right">Daily cost</TableHead>
-              <TableHead className="text-right">Daily billing</TableHead>
-              <TableHead>Billable</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
+            <TableRow className="bg-muted/50 hover:bg-muted/50">
+              <TableHead className="border-r"><HeadLabel icon={User}>Consultant</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={BadgeCheck}>Role</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={Tag}>Category</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={Percent} className="justify-end">Allocation</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={Wallet} className="justify-end">Cost/day</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={Banknote} className="justify-end">Billing/day</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={Receipt} className="justify-center">Billable</HeadLabel></TableHead>
+              <TableHead className={`${HEAD} w-px text-right`}>Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {project.resources.length === 0 && <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground">No resources planned.</TableCell></TableRow>}
+            {project.resources.length === 0 && <TableRow><TableCell colSpan={8} className="py-8 text-center text-muted-foreground">No resources planned.</TableCell></TableRow>}
             {rows.map(({ r, cat }) => (
               <TableRow key={r.id}>
-                <TableCell className="font-medium">{r.user?.username || r.consultantName || '—'}</TableCell>
-                <TableCell>{r.role || '—'}</TableCell>
-                <TableCell>{cat?.name || '—'}</TableCell>
-                <TableCell className="text-right tabular-nums">{r.allocationPct}%</TableCell>
-                <TableCell className="text-right tabular-nums">{cat ? money(cat.dailyCost) : '—'}</TableCell>
-                <TableCell className="text-right tabular-nums">{cat ? money(cat.dailyBilling) : '—'}</TableCell>
-                <TableCell>{r.billable ? <Badge variant="success">Billable</Badge> : <Badge variant="outline">No</Badge>}</TableCell>
-                <TableCell className="text-right">
+                <TableCell className="border-r font-medium">{r.user?.username || r.consultantName || '—'}</TableCell>
+                <TableCell className="border-r"><span className="block max-w-[14rem] truncate" title={r.role ?? undefined}>{r.role || '—'}</span></TableCell>
+                <TableCell className="border-r">{cat?.name || '—'}</TableCell>
+                <TableCell className="border-r text-right tabular-nums">{r.allocationPct}%</TableCell>
+                <TableCell className="border-r text-right tabular-nums">{cat ? money(cat.dailyCost) : '—'}</TableCell>
+                <TableCell className="border-r text-right tabular-nums">{cat ? money(cat.dailyBilling) : '—'}</TableCell>
+                <TableCell className="border-r text-center">
+                  {r.billable
+                    ? <Check className="mx-auto size-4 text-emerald-600" aria-label="Billable" />
+                    : <span className="text-muted-foreground" title="Not billable">—</span>}
+                </TableCell>
+                <TableCell className="w-px text-right">
                   <div className="flex justify-end gap-1">
                     <Button size="icon" variant="ghost" className="size-8" onClick={() => openEdit(r)}><Pencil className="size-4" /></Button>
                     <Button size="icon" variant="ghost" className="size-8 text-destructive hover:text-destructive"

@@ -448,10 +448,4 @@ export class ChangeRequestsService {
     }
     return updated;
   }
-
-  async remove(id: string, clientId: string) {
-    await this.findOne(id, clientId);
-    await this.prisma.changeRequest.delete({ where: { id } });
-    return { message: 'Change request deleted' };
-  }
 }

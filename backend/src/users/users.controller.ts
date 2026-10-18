@@ -27,8 +27,10 @@ export class UsersController {
   // external customers out, so the internal staff roster isn't disclosed to them.
   @Get()
   @UseGuards(StaffGuard)
-  findAll(@Request() req: AuthedRequest, @Query('includeCustomers') includeCustomers?: string) {
-    return this.usersService.findAll(req.user.clientId, includeCustomers === 'true');
+  // `includeCustomerAdmins` is the Users screen's view: staff plus every client's
+  // admin. A client's employees are never listed — they are managed in My Team.
+  findAll(@Request() req: AuthedRequest, @Query('includeCustomerAdmins') includeCustomerAdmins?: string) {
+    return this.usersService.findAll(req.user.clientId, includeCustomerAdmins === 'true');
   }
 
   // ---- Employee Master import / export ----
@@ -56,6 +58,25 @@ export class UsersController {
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
   importEmployees(@UploadedFile() file: Express.Multer.File, @Request() req: AuthedRequest) {
     return this.usersService.importEmployees(req.user.clientId, req.user.id, file);
+  }
+
+  // ---- Users screen import ----
+  // Its own sheet (login fields + Roles), separate from the Employee Master's.
+  // Also declared before `:id`.
+
+  /** The blank Users import template, with an Instructions sheet. */
+  @Get('import-template')
+  @Roles('Admin')
+  userTemplate(@Res() res: Response) {
+    sendWorkbook(res, 'user-import-template.xlsx', this.usersService.userImportTemplate());
+  }
+
+  /** Bulk add logins. Add-only: an existing username or email is refused, never updated. */
+  @Post('import')
+  @Roles('Admin')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
+  importUsers(@UploadedFile() file: Express.Multer.File, @Request() req: AuthedRequest) {
+    return this.usersService.importUsers(req.user.clientId, req.user.id, file);
   }
 
   @Get(':id')

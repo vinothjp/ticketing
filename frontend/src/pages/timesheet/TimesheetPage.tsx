@@ -8,16 +8,21 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Combobox } from '@/components/ui/combobox';
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip';
 import {
-  ACTIVITIES, projectLabel, weekStartOf, addDays, dayHeader, statusVariant,
-  type WeekResponse, type GridRow, type ProjectOption,
+  projectLabel, weekStartOf, addDays, dayHeader, statusVariant,
+  type WeekResponse, type GridRow,
 } from './timesheetMeta';
 
 interface UserOption { id: string; username: string }
 
-const emptyRow = (): GridRow => ({ projectId: '', activity: '', workPerformed: '', status: 'DRAFT', days: {} });
+const emptyRow = (): GridRow => ({ projectId: '', taskId: null, activity: '', workPerformed: '', status: 'DRAFT', days: {} });
+// The Activity box's value: the task, or — for an entry from before rows named a
+// task — its old text, which stays shown (and saved) as it was.
+const LEGACY = 'legacy:';
+const activityValue = (r: GridRow) => r.taskId ?? (r.activity ? `${LEGACY}${r.activity}` : '');
 const rowTotal = (r: GridRow) => Object.values(r.days).reduce((s, h) => s + (Number(h) || 0), 0);
 // MM/DD/YY for the header date range (matches the reference layout).
 const shortDate = (iso: string) => {
@@ -31,13 +36,17 @@ export default function TimesheetPage() {
   const isAdmin = !!user?.roles.includes('Admin');
 
   const [weekStart, setWeekStart] = useState(() => weekStartOf(new Date()));
-  const [consultantId, setConsultantId] = useState(user?.id ?? '');
+  // An agent fills in their own week. An admin is not a consultant, so nobody is
+  // preselected for them — they pick whose week to open, themselves included.
+  const [consultantId, setConsultantId] = useState(isAdmin ? '' : user?.id ?? '');
+  const noConsultant = !consultantId;
   const [rows, setRows] = useState<GridRow[]>([]);
   const [noteRow, setNoteRow] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const { data, isLoading } = useQuery<WeekResponse>({
     queryKey: ['timesheet', 'week', consultantId, weekStart],
+    enabled: !noConsultant,
     queryFn: async () =>
       (await api.get('/api/timesheet/week', { params: { weekStart, userId: consultantId || undefined } })).data,
     refetchOnWindowFocus: false,
@@ -77,8 +86,13 @@ export default function TimesheetPage() {
   const save = useMutation({
     mutationFn: (submit: boolean) => {
       const payload = rows
-        .filter((r) => r.projectId && r.activity)
-        .map((r) => ({ projectId: r.projectId, activity: r.activity, workPerformed: r.workPerformed || undefined, days: r.days }));
+        .filter((r) => r.projectId && (r.taskId || r.activity))
+        .map((r) => ({
+          projectId: r.projectId,
+          // The server stores the task's own title; only an old entry sends its text.
+          ...(r.taskId ? { taskId: r.taskId } : { activity: r.activity }),
+          workPerformed: r.workPerformed || undefined, days: r.days,
+        }));
       return api.post('/api/timesheet/week', {
         weekStart, userId: consultantId || undefined, submit,
         documentNumber: data?.documentNumber, rows: payload,
@@ -96,16 +110,17 @@ export default function TimesheetPage() {
     mutationFn: async (file: File) => {
       const fd = new FormData();
       fd.append('file', file);
-      return (await api.post('/api/timesheet/week/import', fd)).data as { rows: GridRow[]; unmatched: string[] };
+      // Matched against the consultant's own projects, so the grid never holds one they can't save.
+      return (await api.post('/api/timesheet/week/import', fd, { params: { userId: consultantId || undefined } })).data as { rows: GridRow[]; unmatched: string[] };
     },
     onSuccess: (res) => {
-      // Merge imported rows into the grid, combining day hours for matching project+activity.
+      // Merge imported rows into the grid, combining day hours for matching project+task.
       setRows((prev) => {
-        const merged = [...prev.filter((r) => r.projectId && r.activity)];
+        const merged = [...prev.filter((r) => r.projectId && (r.taskId || r.activity))];
         for (const imp of res.rows) {
-          const existing = merged.find((r) => r.projectId === imp.projectId && r.activity === imp.activity && !locked(r));
+          const existing = merged.find((r) => r.projectId === imp.projectId && r.taskId === imp.taskId && !locked(r));
           if (existing) existing.days = { ...existing.days, ...imp.days };
-          else merged.push({ projectId: imp.projectId, activity: imp.activity, workPerformed: imp.workPerformed ?? '', status: 'DRAFT', days: imp.days });
+          else merged.push({ projectId: imp.projectId, taskId: imp.taskId, activity: imp.activity, workPerformed: imp.workPerformed ?? '', status: 'DRAFT', days: imp.days });
         }
         while (merged.length < 4) merged.push(emptyRow());
         return merged;
@@ -142,13 +157,13 @@ export default function TimesheetPage() {
         </div>
         <div className="flex items-center gap-2">
           <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={onPickFile} />
-          <Button variant="outline" size="sm" disabled={importFile.isPending} onClick={() => fileRef.current?.click()}>
+          <Button variant="outline" size="sm" disabled={noConsultant || importFile.isPending} onClick={() => fileRef.current?.click()}>
             <Upload className="size-4" /> Import
           </Button>
-          <Button variant="outline" size="sm" disabled={save.isPending} onClick={() => save.mutate(false)}>
+          <Button variant="outline" size="sm" disabled={noConsultant || save.isPending} onClick={() => save.mutate(false)}>
             <Save className="size-4" /> Save
           </Button>
-          <Button size="sm" disabled={save.isPending} onClick={() => save.mutate(true)}>
+          <Button size="sm" disabled={noConsultant || save.isPending} onClick={() => save.mutate(true)}>
             <Send className="size-4" /> Save &amp; Submit
           </Button>
         </div>
@@ -159,13 +174,15 @@ export default function TimesheetPage() {
         <div className="flex items-center gap-2">
           <span className="text-sm text-muted-foreground">Consultant</span>
           {isAdmin ? (
-            <Select value={consultantId} onValueChange={setConsultantId}>
-              <SelectTrigger className="h-8 w-56"><SelectValue placeholder="Select consultant" /></SelectTrigger>
-              <SelectContent>
-                {user && !users.some((u) => u.id === user.id) && <SelectItem value={user.id}>{user.username} (me)</SelectItem>}
-                {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            <Combobox
+              size="sm" className="w-56" placeholder="Select consultant" emptyText="No matching user"
+              value={consultantId}
+              onChange={setConsultantId}
+              options={[
+                ...(user && !users.some((u) => u.id === user.id) ? [{ value: user.id, label: `${user.username} (me)` }] : []),
+                ...users.map((u) => ({ value: u.id, label: u.id === user?.id ? `${u.username} (me)` : u.username })),
+              ]}
+            />
           ) : (
             <span className="text-sm font-medium">{consultantName}</span>
           )}
@@ -177,16 +194,26 @@ export default function TimesheetPage() {
         </div>
       </div>
 
+      {noConsultant && (
+        <p className="text-sm text-muted-foreground">Choose a consultant to open their timesheet for the week.</p>
+      )}
+      {!noConsultant && data && projects.length === 0 && (
+        <p className="text-sm text-muted-foreground">
+          {consultantName || 'This consultant'} isn't on any project's Resources tab yet — time can only be logged on a project that lists them with a cost category.
+        </p>
+      )}
+
       {/* Grid */}
-      {isLoading ? (
+      {noConsultant ? null : isLoading ? (
         <p className="text-muted-foreground">Loading…</p>
       ) : (
         <div className="overflow-x-auto rounded-lg border">
+          <TooltipProvider delayDuration={0}>
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr className="border-b bg-muted/50 text-left">
-                <th className="min-w-[200px] px-3 py-2 font-medium">Client : Project</th>
-                <th className="min-w-[160px] px-3 py-2 font-medium">Activity</th>
+                <th className="min-w-[260px] px-3 py-2 font-medium">Client : Project</th>
+                <th className="min-w-[240px] px-3 py-2 font-medium">Activity</th>
                 {days.map((d, i) => {
                   const h = dayHeader(d, i);
                   const weekend = i >= 5;
@@ -208,39 +235,73 @@ export default function TimesheetPage() {
                   <tr key={i} className="border-b last:border-0">
                     <td className="px-3 py-1.5">
                       <div className="flex items-center gap-1">
-                        <Select value={r.projectId} onValueChange={(v) => setField(i, { projectId: v })} disabled={isLocked}>
-                          <SelectTrigger className="h-8 w-full"><SelectValue placeholder="Select project" /></SelectTrigger>
-                          <SelectContent>
-                            {projects.map((p: ProjectOption) => <SelectItem key={p.id} value={p.id}>{projectLabel(p)}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
+                        <Combobox
+                          size="sm" className="min-w-0 flex-1" placeholder="Select project"
+                          emptyText={projects.length ? 'No matching project' : 'No project associated'}
+                          value={r.projectId}
+                          onChange={(v) => { if (v !== r.projectId) setField(i, { projectId: v, taskId: null, activity: '' }); }}
+                          disabled={isLocked}
+                          options={projects.map((p) => ({ value: p.id, label: projectLabel(p) }))}
+                        />
                         {r.status !== 'DRAFT' && <Badge variant={statusVariant(r.status)} className="shrink-0">{r.status}</Badge>}
                       </div>
                     </td>
                     <td className="px-3 py-1.5">
                       <div className="flex items-center gap-1">
-                        <Select value={r.activity} onValueChange={(v) => setField(i, { activity: v })} disabled={isLocked}>
-                          <SelectTrigger className="h-8 w-full"><SelectValue placeholder="Select activity" /></SelectTrigger>
-                          <SelectContent>
-                            {(data?.activities ?? ACTIVITIES).map((a) => <SelectItem key={a} value={a}>{a}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
+                        {(() => {
+                          // The row's project's own tasks and subtasks, in WBS order.
+                          const tasks = projectById.get(r.projectId)?.tasks ?? [];
+                          return (
+                            <Combobox
+                              size="sm" className="min-w-0 flex-1" maxRows={5} placement="below"
+                              placeholder={r.projectId ? 'Select task' : 'Select project first'}
+                              emptyText={!r.projectId ? 'Pick a project first' : tasks.length ? 'No matching task' : 'No task on this project'}
+                              value={activityValue(r)}
+                              onChange={(v) => {
+                                const t = tasks.find((x) => x.id === v);
+                                if (t && t.id !== r.taskId) setField(i, { taskId: t.id, activity: t.title });
+                              }}
+                              disabled={isLocked || !r.projectId}
+                              options={[
+                                ...(!r.taskId && r.activity ? [{ value: activityValue(r), label: r.activity, hint: 'earlier entry' }] : []),
+                                ...tasks.map((t) => ({ value: t.id, label: `${t.code} ${t.title}`, hint: t.phase })),
+                              ]}
+                            />
+                          );
+                        })()}
                         <Button variant="ghost" size="sm" className="h-8 px-2" title="Work performed" onClick={() => setNoteRow(i)}>
                           <StickyNote className={`size-4 ${r.workPerformed ? 'text-primary' : 'text-muted-foreground'}`} />
                         </Button>
                       </div>
                     </td>
-                    {days.map((d) => (
-                      <td key={d} className="px-1 py-1.5 text-center">
+                    {days.map((d) => {
+                      const p = projectById.get(r.projectId);
+                      const outside = !!p && ((!!p.startDate && d < p.startDate) || (!!p.endDate && d > p.endDate));
+                      const cell = (
                         <Input
                           type="number" min={0} step="0.5" inputMode="decimal"
                           className="h-8 w-14 px-1 text-center tabular-nums"
                           value={r.days[d] ? String(r.days[d]) : ''}
-                          disabled={isLocked}
+                          // A day outside the project's run takes no hours; one already
+                          // holding some stays editable so it can be cleared.
+                          disabled={isLocked || (outside && !r.days[d])}
                           onChange={(e) => setCell(i, d, e.target.value)}
                         />
-                      </td>
-                    ))}
+                      );
+                      return (
+                        <td key={d} className="px-1 py-1.5 text-center">
+                          {outside ? (
+                            // A disabled input fires no hover events, so the tooltip
+                            // hangs off a wrapper — and shows at once, not after the
+                            // browser's own title delay.
+                            <Tooltip>
+                              <TooltipTrigger asChild><span className="inline-block">{cell}</span></TooltipTrigger>
+                              <TooltipContent>Outside the project's dates ({p?.startDate ?? '…'} to {p?.endDate ?? '…'})</TooltipContent>
+                            </Tooltip>
+                          ) : cell}
+                        </td>
+                      );
+                    })}
                     <td className="px-3 py-1.5 text-right font-medium tabular-nums">{rowTotal(r) || ''}</td>
                     <td className="px-2 py-1.5 text-right">
                       <Button variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground hover:text-destructive" disabled={isLocked} onClick={() => removeRow(i)}>
@@ -264,6 +325,7 @@ export default function TimesheetPage() {
               </tr>
             </tfoot>
           </table>
+          </TooltipProvider>
         </div>
       )}
 

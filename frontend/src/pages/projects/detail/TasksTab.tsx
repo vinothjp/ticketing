@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -26,6 +27,8 @@ import TaskGantt from './TaskGantt';
 import TaskDetailDialog from './TaskDetailDialog';
 import WbsView from './WbsView';
 import PriorityMark from './PriorityMark';
+import AssigneeSelect from './AssigneeSelect';
+
 
 const NONE = '__none__';
 
@@ -42,7 +45,6 @@ const taskSchema = z.object({
   startDate: z.string().min(1, 'Start date is required'),
   dueDate: z.string().min(1, 'End date is required'),
   durationDays: z.string().optional(),
-  completionPct: z.string().optional(),
   estimatedHours: z.string().optional(),
   position: z.string().optional(),   // 1-based insert position among siblings (create only)
 });
@@ -50,7 +52,7 @@ type TaskValues = z.infer<typeof taskSchema>;
 
 const emptyTask = (): TaskValues => ({
   title: '', wbsType: 'TASK', milestoneId: '', sprintId: '', parentTaskId: '', description: '',
-  assigneeUserId: '', status: 'TODO', priority: '', startDate: '', dueDate: '', durationDays: '', completionPct: '', estimatedHours: '', position: '',
+  assigneeUserId: '', status: 'TODO', priority: '', startDate: '', dueDate: '', durationDays: '', estimatedHours: '', position: '',
 });
 const toDateInput = (v?: string | null) => (v ? new Date(v).toISOString().slice(0, 10) : '');
 const nextLevel = (t: string) =>
@@ -58,13 +60,26 @@ const nextLevel = (t: string) =>
 
 type View = 'wbs' | 'list' | 'group' | 'board' | 'timeline';
 
-export default function TasksTab({ project, users }: { project: ProjectDetail; users: UserOption[] }) {
+export default function TasksTab({ project, users, onAddToResources }: {
+  project: ProjectDetail;
+  users: UserOption[];
+  /** Opens the Resources tab's Add Member form with this user picked. */
+  onAddToResources: (userId: string) => void;
+}) {
   const qc = useQueryClient();
   const { user } = useAuth();
   const isAdmin = !!user?.roles.includes('Admin');
   const myId = user?.id ?? null;
   // Agents may only edit tasks assigned to them; admins edit anything.
   const canEdit = (t: ProjectTask) => isAdmin || t.assigneeUserId === myId;
+  // A summary item's sprints, derived from the leaves beneath it, in sprint order.
+  const sprintsUnder = (id: string): string[] => {
+    const held = new Set<string>();
+    const walk = (pid: string) => project.tasks.filter((c) => c.parentTaskId === pid)
+      .forEach((c) => { if (c.sprintId) held.add(c.sprintId); walk(c.id); });
+    walk(id);
+    return project.sprints.filter((sp) => held.has(sp.id)).map((sp) => sp.name);
+  };
   // For the Gantt, agents see only their assigned tasks (plus ancestors to keep the WBS tree intact).
   const ganttProject = useMemo(() => {
     if (isAdmin) return project;
@@ -80,7 +95,9 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
   const { prompt, PromptDialog } = usePrompt();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<ProjectTask | null>(null);
-  const [detailId, setDetailId] = useState<string | null>(null);
+  // `?task=<id>` (the dashboard's My project tasks) opens that task straight away.
+  const [searchParams] = useSearchParams();
+  const [detailId, setDetailId] = useState<string | null>(() => searchParams.get('task'));
   const [view, setView] = useState<View>('wbs');
   const invalidate = () => invalidateProject(qc);
 
@@ -133,7 +150,6 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
         startDate: toDateInput(editing.startDate),
         dueDate: toDateInput(editing.dueDate),
         durationDays: editing.durationDays != null ? String(editing.durationDays) : '',
-        completionPct: editing.completionPct != null ? String(editing.completionPct) : '',
         estimatedHours: editing.estimatedHours != null ? String(editing.estimatedHours) : '',
       });
     }
@@ -156,7 +172,8 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
       wbsType: v.wbsType,
       type: v.wbsType === 'MILESTONE' ? 'MILESTONE' : 'TASK',
       milestoneId: v.milestoneId || null,
-      sprintId: v.sprintId || null,
+      // A summary item never holds a sprint (its sprints are its leaves'), so it sends none.
+      ...(editing?.isParent ? {} : { sprintId: v.sprintId || null }),
       parentTaskId: v.parentTaskId || null,
       description: v.description || undefined,
       assigneeUserId: v.assigneeUserId || undefined,
@@ -165,7 +182,6 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
       startDate: start,
       dueDate: due,
       durationDays: dur,
-      completionPct: v.completionPct ? Number(v.completionPct) : undefined,
       estimatedHours: v.estimatedHours ? Number(v.estimatedHours) : undefined,
     };
   };
@@ -302,8 +318,11 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
           <TableCell>{t.priority ? <Badge variant={priorityVariant(t.priority)}>{labelOf(t.priority)}</Badge> : <span className="text-muted-foreground">—</span>}</TableCell>
           <TableCell className="text-xs text-muted-foreground">{(t.isParent ? t.rolledCompletionPct : t.completionPct) ?? 0}%</TableCell>
           <TableCell>
-            {canEdit(t) ? (
-              <Select value={t.status} onValueChange={(v) => statusMutation.mutate({ id: t.id, status: v })}>
+            {/* A summary item's status follows its sub-tasks (the server sets it), so it is read-only. */}
+            {t.isParent ? (
+              <span title="Follows its sub-tasks"><Badge variant={taskStatusVariant(t.status)}>{labelOf(t.status)}</Badge></span>
+            ) : canEdit(t) ? (
+              <Select value={t.status} onValueChange={(v) => { if (v && v !== t.status) statusMutation.mutate({ id: t.id, status: v }); }}>
                 <SelectTrigger size="sm" className="w-36"><Badge variant={taskStatusVariant(t.status)}>{labelOf(t.status)}</Badge></SelectTrigger>
                 <SelectContent>{TASK_STATUSES.map((s) => <SelectItem key={s} value={s}>{labelOf(s)}</SelectItem>)}</SelectContent>
               </Select>
@@ -358,6 +377,8 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
       <TaskDetailDialog
         taskId={detailId} projectId={project.id} projectKey={project.key ?? null}
         users={users} tasks={project.tasks} projectStart={projMin} projectEnd={projMax} onClose={() => setDetailId(null)}
+        resources={project.resources}
+        onAddToResources={(uid) => { setDetailId(null); onAddToResources(uid); }}
       />
 
       <Dialog open={dialogOpen} onOpenChange={(o) => { setDialogOpen(o); if (!o) setEditing(null); }}>
@@ -411,6 +432,15 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
                     </Select>
                   </FormItem>
                 )} />
+                {editing?.isParent ? (
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">Sprints</div>
+                    <p className="text-sm text-muted-foreground">
+                      {sprintsUnder(editing.id).join(', ') || 'None yet'}
+                      <span className="block text-xs">From the tasks beneath it — add those to a sprint, not this item.</span>
+                    </p>
+                  </div>
+                ) : (
                 <FormField control={form.control} name="sprintId" render={({ field }) => (
                   <FormItem><FormLabel>Sprint</FormLabel>
                     <Select value={field.value || NONE} onValueChange={(v) => field.onChange(v === NONE ? '' : v)}>
@@ -422,29 +452,28 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
                     </Select>
                   </FormItem>
                 )} />
+                )}
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <FormField control={form.control} name="assigneeUserId" render={({ field }) => (
                   <FormItem><FormLabel>Assignee</FormLabel>
-                    <Select value={field.value || NONE} onValueChange={(v) => field.onChange(v === NONE ? '' : v)}>
-                      <FormControl><SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        <SelectItem value={NONE}>Unassigned</SelectItem>
-                        {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
+                    <AssigneeSelect
+                      value={field.value ?? ''} onChange={field.onChange} users={users} resources={project.resources}
+                      onAddToResources={(uid) => { setDialogOpen(false); setEditing(null); onAddToResources(uid); }}
+                    />
                   </FormItem>
                 )} />
                 <FormField control={form.control} name="status" render={({ field }) => (
                   <FormItem><FormLabel>Status</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
+                    <Select value={field.value} onValueChange={(v) => { if (v) field.onChange(v); }} disabled={!!editing?.isParent}>
                       <FormControl><SelectTrigger className="w-full"><SelectValue /></SelectTrigger></FormControl>
                       <SelectContent>{TASK_STATUSES.map((s) => <SelectItem key={s} value={s}>{labelOf(s)}</SelectItem>)}</SelectContent>
                     </Select>
+                    {editing?.isParent && <p className="text-xs text-muted-foreground">Follows its sub-tasks.</p>}
                   </FormItem>
                 )} />
               </div>
-              <div className="grid grid-cols-4 gap-3">
+              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_5.5rem] gap-3">
                 <FormField control={form.control} name="startDate" render={({ field }) => (
                   <FormItem><FormLabel>Start *</FormLabel><FormControl><DateField value={field.value} onChange={field.onChange} min={dateFloor} max={earliest(wDue, dateCap)} /></FormControl><FormMessage /></FormItem>
                 )} />
@@ -453,11 +482,7 @@ export default function TasksTab({ project, users }: { project: ProjectDetail; u
                 )} />
                 <FormField control={form.control} name="durationDays" render={({ field }) => (
                   <FormItem><FormLabel>Duration (d)</FormLabel><FormControl><Input type="number" min={0} {...field} /></FormControl></FormItem>
-                )} />
-                <FormField control={form.control} name="completionPct" render={({ field }) => (
-                  <FormItem><FormLabel>%</FormLabel><FormControl><Input type="number" min={0} max={100} {...field} /></FormControl></FormItem>
-                )} />
-              </div>
+                )} />              </div>
               <div className="grid grid-cols-2 gap-3">
                 <FormField control={form.control} name="priority" render={({ field }) => (
                   <FormItem><FormLabel>Priority</FormLabel>

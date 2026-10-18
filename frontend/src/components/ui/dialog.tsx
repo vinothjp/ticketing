@@ -37,6 +37,7 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & { showCloseButton?: boolean }) {
   return (
@@ -56,6 +57,14 @@ function DialogContent({
           'max-h-[calc(100svh-2rem)] overflow-y-auto',
           className,
         )}
+        // A control inside the dialog may portal its panel to <body> (the DateField
+        // calendar) so the dialog's scroll box can't clip it. Radix would read a click
+        // there as outside the dialog and close it; a panel marked
+        // `data-floating-panel` belongs to the dialog.
+        onInteractOutside={(e) => {
+          if ((e.target as Element | null)?.closest?.('[data-floating-panel]')) e.preventDefault();
+          onInteractOutside?.(e);
+        }}
         {...props}
       >
         {children}

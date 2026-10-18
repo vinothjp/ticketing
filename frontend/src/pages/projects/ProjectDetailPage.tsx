@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Combobox } from '@/components/ui/combobox';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   PROJECT_STATUSES, PRIORITIES, labelOf, projectStatusVariant, priorityVariant,
@@ -34,6 +35,9 @@ export default function ProjectDetailPage() {
   const [searchParams] = useSearchParams();
   const qc = useQueryClient();
   const [tab, setTab] = useState(searchParams.get('tab') ?? 'overview');
+  // A user picked as an assignee who is not on the resource plan, waiting for the Add Member form.
+  const [addMemberFor, setAddMemberFor] = useState<string | null>(null);
+  const addToResources = (userId: string) => { setAddMemberFor(userId); setTab('resources'); };
 
   const { data: project, isLoading } = useQuery<ProjectDetail>({
     queryKey: ['projects', id],
@@ -57,7 +61,7 @@ export default function ProjectDetailPage() {
   if (isLoading || !project) return <p className="text-muted-foreground">Loading...</p>;
 
   const sprintsEnabled = project.features?.sprints !== false; // default on; Settings can disable
-  const timeTrackingEnabled = project.features?.timeTracking === true; // opt-in via Settings
+  const timeTrackingEnabled = project.features?.timeTracking === true; // on for new projects; Settings → "Show timesheet"
 
   return (
     <div>
@@ -70,6 +74,7 @@ export default function ProjectDetailPage() {
         <h1 className="text-xl font-bold text-foreground">{project.name}</h1>
         {project.key && <span className="text-xs text-muted-foreground">· {project.key}</span>}
         <Badge variant={projectStatusVariant(project.status)}>{labelOf(project.status)}</Badge>
+        {!project.isActive && <Badge variant="outline" className="text-muted-foreground">Deactivated</Badge>}
         {project.priority && <Badge variant={priorityVariant(project.priority)}>{labelOf(project.priority)}</Badge>}
       </div>
 
@@ -91,9 +96,9 @@ export default function ProjectDetailPage() {
           <div className={`grid grid-cols-1 gap-6 ${tab === 'overview' ? 'lg:grid-cols-[minmax(0,1fr)_300px]' : ''}`}>
           <div className="min-w-0">
           <TabsContent value="overview" className="pt-4"><OverviewTab project={project} /></TabsContent>
-          <TabsContent value="tasks" className="pt-4"><TasksTab project={project} users={users} /></TabsContent>
+          <TabsContent value="tasks" className="pt-4"><TasksTab project={project} users={users} onAddToResources={addToResources} /></TabsContent>
           {sprintsEnabled && <TabsContent value="sprints" className="pt-4"><SprintsTab project={project} /></TabsContent>}
-          <TabsContent value="resources" className="pt-4"><ResourcesTab project={project} users={users} /></TabsContent>
+          <TabsContent value="resources" className="pt-4"><ResourcesTab project={project} users={users} prefillUserId={addMemberFor} onPrefillUsed={() => setAddMemberFor(null)} /></TabsContent>
           {timeTrackingEnabled && <TabsContent value="timesheet" className="pt-4"><TimesheetTab project={project} users={users} /></TabsContent>}
           <TabsContent value="financials" className="pt-4"><FinancialsTab project={project} /></TabsContent>
           <TabsContent value="calendar" className="pt-4"><CalendarTab project={project} /></TabsContent>
@@ -132,16 +137,12 @@ export default function ProjectDetailPage() {
               </div>
               <div>
                 <div className="mb-1 text-xs text-muted-foreground">Manager</div>
-                <Select
-                  value={project.managerUserId ?? NONE}
-                  onValueChange={(v) => updateMutation.mutate({ managerUserId: v === NONE ? null : v })}
-                >
-                  <SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={NONE}>Unassigned</SelectItem>
-                    {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <Combobox
+                  placeholder="Unassigned" emptyText="No matching user"
+                  value={project.managerUserId ?? ''}
+                  onChange={(v) => { if (v !== (project.managerUserId ?? '')) updateMutation.mutate({ managerUserId: v || null }); }}
+                  options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.username }))]}
+                />
               </div>
             </CardContent>
           </Card>

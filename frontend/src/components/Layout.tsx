@@ -29,6 +29,8 @@ import {
   GitPullRequestArrow,
   Boxes,
   PackagePlus,
+  Megaphone,
+  Images,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { usePrefs } from '../context/PreferencesContext';
@@ -45,7 +47,6 @@ import {
 import ChangePasswordDialog from './ChangePasswordDialog';
 import PreferencesMenu from './PreferencesMenu';
 import GlobalSearch from './GlobalSearch';
-import CopilotWidget from './CopilotWidget';
 
 interface NavItem {
   to: string;
@@ -71,6 +72,10 @@ const tenantNavGroups: NavGroup[] = [
       { to: '/change-requests', label: 'Change Management', icon: GitPullRequestArrow },
       { to: '/timesheet', label: 'Timesheet', icon: Clock3 },
       { to: '/client-visits', label: 'Client Visits', icon: ClipboardList },
+      // Announcements + the newsletter: every staff member reads them; only an Admin writes.
+      // Customers never get it (their Workspace is narrowed to an allow-list below).
+      { to: '/communications', label: 'Communications', icon: Megaphone },
+      { to: '/gallery', label: 'Gallery', icon: Images },
     ],
   },
   {
@@ -346,7 +351,6 @@ export default function Layout({ children }: { children: ReactNode }) {
       </main>
 
       <ChangePasswordDialog open={changePasswordOpen} onOpenChange={setChangePasswordOpen} />
-      {!isSuperAdmin && <CopilotWidget />}
     </div>
   );
 }

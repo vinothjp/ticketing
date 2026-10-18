@@ -15,6 +15,7 @@ async function bootstrap() {
   mkdirSync(join(process.cwd(), 'uploads/projects'), { recursive: true });
   mkdirSync(join(process.cwd(), 'uploads/change-requests'), { recursive: true });
   mkdirSync(join(process.cwd(), 'uploads/po'), { recursive: true });
+  mkdirSync(join(process.cwd(), 'uploads/gallery'), { recursive: true });
   app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads' });
 
   app.enableCors({

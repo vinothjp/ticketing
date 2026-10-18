@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -6,9 +6,19 @@ import {
   CreateProjectTaskDto, UpdateProjectTaskDto, UpdateTaskStatusDto,
   CreateMilestoneDto, UpdateMilestoneDto,
   CreateTaskCommentDto, AddWatcherDto, AddDependencyDto,
-  CreateSprintDto, UpdateSprintDto,
+  CreateSprintDto, UpdateSprintDto, MoveToSprintDto,
   CreateResourceDto, UpdateResourceDto, CreateTimesheetDto, UpdateTimesheetDto,
 } from './dto/project.dto';
+import {
+  exportSheet, importTemplate, readSheet, rowReader, asText, asDate, errorText,
+} from '../lib/spreadsheet';
+import type { ImportResult } from '../lib/spreadsheet';
+import { RESOURCE_COLUMNS, RESOURCE_IMPORT_NOTES } from './resource-sheet';
+import type { ResourceSheetRow } from './resource-sheet';
+import { assertCostedMember } from './timesheet-member';
+import { timesheetRates } from './timesheet-rate';
+import { assertLoggableTask } from './timesheet-task';
+import { AnnouncementSuggestionsService } from '../communications/announcement-suggestions.service';
 
 type Actor = { id: string; username?: string; roles?: string[] };
 const isAdmin = (a: Actor) => !!a.roles?.includes('Admin');
@@ -19,9 +29,38 @@ const DEFAULT_MILESTONES = [
   'Training', 'Go Live', 'Hypercare', 'Closure',
 ];
 
+// A task's % complete is read off its status, never typed — so reopening a task takes its %
+// (and every rollup above it) back down with it. Parents still roll up from their children.
+const STATUS_COMPLETION: Record<string, number> = { TODO: 0, IN_PROGRESS: 50, REVIEW: 80, COMPLETED: 100 };
+const completionFor = (status: string) => STATUS_COMPLETION[status] ?? 0;
+
+/** A project's health from its overdue open tasks: 3+ is off track, any is at risk. */
+const projectHealth = (overdue: number) => (overdue >= 3 ? 'RED' : overdue > 0 ? 'AMBER' : 'GREEN');
+
+/**
+ * A summary item's status is read off its children, never set by hand: all
+ * Completed → Completed; none started → To Do; every one at least in Review →
+ * Review; anything else is work under way → In Progress. Mirrored by
+ * `manual/project_task_parent_status_rollup.sql` for existing data.
+ */
+const rollupStatus = (children: string[]) => {
+  if (children.every((s) => s === 'COMPLETED')) return 'COMPLETED';
+  if (children.every((s) => s === 'TODO')) return 'TODO';
+  if (children.every((s) => s === 'REVIEW' || s === 'COMPLETED')) return 'REVIEW';
+  return 'IN_PROGRESS';
+};
+
 @Injectable()
 export class ProjectsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private suggestions: AnnouncementSuggestionsService,
+  ) {}
+
+  /** Raise an "Announce this?" prompt without ever letting it fail the save that triggered it. */
+  private async suggest(raise: () => Promise<void>) {
+    try { await raise(); } catch { /* best-effort: the prompt is a nicety, the save is not */ }
+  }
 
   // ---- Projects -----------------------------------------------------------
 
@@ -40,15 +79,22 @@ export class ProjectsService {
       orderBy: { updatedAt: 'desc' },
       include: {
         _count: { select: { tasks: true, resources: true, tickets: true } },
-        tasks: { select: { id: true, completionPct: true, parentTaskId: true } },
+        tasks: { select: { id: true, completionPct: true, parentTaskId: true, status: true, dueDate: true } },
       },
     });
-    return projects.map((p) => this.withListProgress(p));
+    // Health — the dashboard tiles' rule, so "At risk: 2" there lists exactly two here.
+    // Only a running project has one (active, not Completed / Cancelled), as on the tiles.
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    return projects.map((p) => {
+      const running = p.isActive && p.status !== 'COMPLETED' && p.status !== 'CANCELLED';
+      const overdue = p.tasks.filter((t) => t.status !== 'COMPLETED' && t.dueDate && t.dueDate < today).length;
+      return { ...this.withListProgress(p), health: running ? projectHealth(overdue) : null };
+    });
   }
 
   /** Tenant-wide project analytics + RAG health + portfolio financials (executive dashboard). */
   async analytics(clientId: string) {
-    const [projects, tasks, invoices, expenses, timesheets, resources] = await Promise.all([
+    const [projects, tasks, invoices, expenses, timesheets] = await Promise.all([
       this.prisma.project.findMany({ where: { clientId }, select: { id: true, name: true, budget: true } }),
       this.prisma.projectTask.findMany({
         where: { project: { clientId } },
@@ -56,8 +102,8 @@ export class ProjectsService {
       }),
       this.prisma.projectInvoice.findMany({ where: { project: { clientId } }, select: { amount: true, amountPaid: true, projectId: true } }),
       this.prisma.projectExpense.findMany({ where: { project: { clientId } }, select: { amount: true, projectId: true } }),
-      this.prisma.projectTimesheet.findMany({ where: { project: { clientId } }, select: { hours: true, userId: true, projectId: true } }),
-      this.prisma.projectResource.findMany({ where: { project: { clientId } }, select: { userId: true, projectId: true, category: { select: { hourlyCost: true } } } }),
+      // Only approved hours are cost — same rule as the per-project Financials tab.
+      this.prisma.projectTimesheet.findMany({ where: { project: { clientId }, status: 'APPROVED' }, select: { hours: true, costRate: true, projectId: true } }),
     ]);
     const num = (d: unknown) => Number(d ?? 0);
     const cat = (s: string) => (s === 'COMPLETED' ? 'completed' : s === 'IN_PROGRESS' || s === 'REVIEW' ? 'inProgress' : 'yetToStart');
@@ -81,18 +127,13 @@ export class ProjectsService {
         if (t.status !== 'COMPLETED' && t.dueDate && new Date(t.dueDate) < today) row.overdue++;
       }
     }
-    // Revenue + resource cost per project for the financial rollup.
-    const rateByUser = new Map<string, number>();
-    for (const r of resources) if (r.userId && r.category) rateByUser.set(r.userId, num(r.category.hourlyCost));
+    // Revenue + resource cost per project for the financial rollup. Hours cost at the
+    // rate frozen on each row when it was logged, never at today's rate.
     for (const i of invoices) { const row = rows.get(i.projectId); if (row) row.revenue += num(i.amount); }
     for (const e of expenses) { const row = rows.get(e.projectId); if (row) row.cost += num(e.amount); }
-    for (const t of timesheets) { const row = rows.get(t.projectId); if (row) row.cost += num(t.hours) * (t.userId ? rateByUser.get(t.userId) ?? 0 : 0); }
+    for (const t of timesheets) { const row = rows.get(t.projectId); if (row) row.cost += num(t.hours) * num(t.costRate); }
 
-    const rag = (r: Row) => {
-      if (r.overdue >= 3) return 'RED';
-      if (r.overdue > 0) return 'AMBER';
-      return 'GREEN';
-    };
+    const rag = (r: Row) => projectHealth(r.overdue);
     const perProject = [...rows.values()].map((r) => ({
       ...r,
       progress: r.total ? Math.round((r.completed / r.total) * 100) : 0,
@@ -112,6 +153,55 @@ export class ProjectsService {
     };
   }
 
+  /**
+   * The dashboard's Projects tiles: how many running projects there are, split by
+   * health. "Running" = active (not deactivated) and not Completed / Cancelled.
+   * Health is `projectHealth` — the same rule as Project Analytics' RAG, so a tile
+   * and the analytics page can never disagree about a project.
+   */
+  async dashboardSummary(clientId: string) {
+    const running = await this.prisma.project.findMany({
+      where: { clientId, isActive: true, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+      select: { id: true },
+    });
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const overdue = await this.prisma.projectTask.groupBy({
+      by: ['projectId'],
+      where: { projectId: { in: running.map((p) => p.id) }, status: { not: 'COMPLETED' }, dueDate: { lt: today } },
+      _count: { _all: true },
+    });
+    const overdueBy = new Map(overdue.map((o) => [o.projectId, o._count._all]));
+    const out = { active: running.length, onTrack: 0, atRisk: 0, offTrack: 0 };
+    for (const p of running) {
+      const h = projectHealth(overdueBy.get(p.id) ?? 0);
+      if (h === 'GREEN') out.onTrack++;
+      else if (h === 'AMBER') out.atRisk++;
+      else out.offTrack++;
+    }
+    return out;
+  }
+
+  /**
+   * Open project tasks assigned to one person, across every running project — the
+   * dashboard's "My project tasks". Completed tasks, and tasks in a deactivated,
+   * completed or cancelled project, are left out. Ordering is the caller's (the
+   * dashboard sorts by urgency).
+   */
+  myTasks(clientId: string, userId: string) {
+    return this.prisma.projectTask.findMany({
+      where: {
+        assigneeUserId: userId,
+        status: { not: 'COMPLETED' },
+        project: { clientId, isActive: true, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+      },
+      select: {
+        id: true, title: true, status: true, dueDate: true, taskNumber: true,
+        project: { select: { id: true, name: true, key: true } },
+      },
+      orderBy: [{ dueDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
+    });
+  }
+
   // Change-request statuses that count as "approved" (their budget increase applies to the baseline).
   private static readonly CR_APPROVED = new Set(['APPROVED', 'CUSTOMER_APPROVED']);
   // …and those still awaiting a decision (their increase is a pending, not-yet-applied ask).
@@ -123,18 +213,15 @@ export class ProjectsService {
    * (baseline = Project.budget, revised = baseline + Σ approved change requests).
    */
   private async financialCore(projectId: string) {
-    const [project, invoices, expenses, timesheets, resources, changeRequests] = await Promise.all([
+    const [project, invoices, expenses, timesheets, changeRequests] = await Promise.all([
       this.prisma.project.findUnique({ where: { id: projectId }, select: { budget: true, currency: true } }),
       this.prisma.projectInvoice.findMany({ where: { projectId } }),
       this.prisma.projectExpense.findMany({ where: { projectId } }),
-      this.prisma.projectTimesheet.findMany({ where: { projectId } }),
-      this.prisma.projectResource.findMany({ where: { projectId }, include: { category: true } }),
+      // Hours become cost only once an Admin approves them; drafts and pending submissions don't count.
+      this.prisma.projectTimesheet.findMany({ where: { projectId, status: 'APPROVED' } }),
       this.prisma.projectChangeRequest.findMany({ where: { projectId } }),
     ]);
     const num = (d: unknown) => Number(d ?? 0);
-    // A consultant's cost/billing rate comes from their resource-plan category.
-    const rateByUser = new Map<string, { cost: number; billing: number }>();
-    for (const r of resources) if (r.userId && r.category) rateByUser.set(r.userId, { cost: num(r.category.hourlyCost), billing: num(r.category.billingRate) });
 
     const revenue = invoices.reduce((s, i) => s + num(i.amount), 0);
     const collected = invoices.reduce((s, i) => s + num(i.amountPaid), 0);
@@ -144,9 +231,10 @@ export class ProjectsService {
     const activityMap = new Map<string, { activity: string; hours: number; cost: number; revenue: number }>();
     for (const t of timesheets) {
       const hrs = num(t.hours);
-      const rate = t.userId ? rateByUser.get(t.userId) : undefined;
-      const cost = hrs * (rate?.cost ?? 0);
-      const rev = hrs * (rate?.billing ?? 0);
+      // The rates frozen on the row when it was logged — a later rate edit, category
+      // change or removal from Resources never reprices work already done.
+      const cost = hrs * num(t.costRate);
+      const rev = hrs * num(t.billingRate);
       resourceCost += cost;
       const act = t.activity || 'Unassigned';
       const a = activityMap.get(act) ?? { activity: act, hours: 0, cost: 0, revenue: 0 };
@@ -163,7 +251,7 @@ export class ProjectsService {
     const revisedBudget = baseline + approvedChanges;
 
     return {
-      project, num, rateByUser, invoices, expenses, changeRequests,
+      project, num, invoices, expenses, changeRequests,
       revenue, collected, expenseCost, resourceCost, vendorCost, totalCost, activityMap,
       baseline, approvedChanges, pendingChanges, revisedBudget, remaining: revisedBudget - totalCost,
     };
@@ -299,6 +387,12 @@ export class ProjectsService {
 
   async create(dto: CreateProjectDto, clientId: string, actor: Actor) {
     const managerName = await this.userName(clientId, dto.managerUserId);
+    const project = await this.createInTx(dto, clientId, actor, managerName);
+    await this.suggest(() => this.suggestions.onProjectCreated(project));
+    return project;
+  }
+
+  private createInTx(dto: CreateProjectDto, clientId: string, actor: Actor, managerName: string | null) {
     return this.prisma.$transaction(async (tx) => {
       const client = await tx.client.update({
         where: { id: clientId },
@@ -321,6 +415,8 @@ export class ProjectsService {
           currency: dto.currency?.trim() || null,
           startDate: dto.startDate ? new Date(dto.startDate) : null,
           endDate: dto.endDate ? new Date(dto.endDate) : null,
+          // A new project shows its Timesheet tab; Settings → "Show timesheet" turns it off.
+          features: { timeTracking: true, ...(dto.features ?? {}) } as Prisma.InputJsonValue,
           createdBy: actor.id,
           createdByName: actor.username ?? null,
           updatedBy: actor.id,
@@ -389,6 +485,11 @@ export class ProjectsService {
     if (set(dto.key)) data.key = dto.key?.trim() || null;
     if (set(dto.description)) data.description = dto.description?.trim() || null;
     if (set(dto.status)) data.status = dto.status;
+    if (set(dto.isActive)) {
+      // A project is never deleted, like a ticket; deactivating it is the Admin's call.
+      if (!isAdmin(actor)) throw new ForbiddenException('Only an Admin can activate or deactivate a project');
+      data.isActive = dto.isActive;
+    }
     if (set(dto.priority)) data.priority = dto.priority || null;
     if (set(dto.customerCompanyId)) {
       data.customerCompany = dto.customerCompanyId
@@ -414,7 +515,11 @@ export class ProjectsService {
       data.managerName = await this.userName(clientId, dto.managerUserId);
     }
 
-    await this.prisma.project.update({ where: { id }, data });
+    const saved = await this.prisma.project.update({ where: { id }, data });
+    // Moving into Completed (not re-saving a completed project) is worth announcing.
+    if (dto.status === 'COMPLETED' && proj.status !== 'COMPLETED') {
+      await this.suggest(() => this.suggestions.onProjectCompleted(saved));
+    }
     // If the project's start/end window changed, re-bound every WBS item into it
     // (expanding just widens the room; shrinking clamps out-of-range items to the edge).
     if (set(dto.startDate) || set(dto.endDate)) {
@@ -423,12 +528,6 @@ export class ProjectsService {
       await this.clampTasksToWindow(id, newStart, newEnd);
     }
     return this.findOne(id, clientId);
-  }
-
-  async remove(id: string, clientId: string) {
-    await this.getOwned(id, clientId);
-    await this.prisma.project.delete({ where: { id } });
-    return { message: 'Project deleted' };
   }
 
 
@@ -447,8 +546,8 @@ export class ProjectsService {
     if (!isAdmin(actor)) throw new ForbiddenException('Only admins can create WBS items');
     const assigneeName = await this.userName(clientId, dto.assigneeUserId);
     const status = dto.status ?? 'TODO';
-    const completionPct = status === 'COMPLETED' ? 100 : (dto.completionPct ?? 0);
-    return this.prisma.$transaction(async (tx) => {
+    const completionPct = completionFor(status);
+    const created = await this.prisma.$transaction(async (tx) => {
       // Per-project sequential task number → key = project.key + '-' + taskNumber.
       const proj = await tx.project.update({
         where: { id: projectId },
@@ -482,12 +581,15 @@ export class ProjectsService {
         ? new Date(dto.dueDate)
         : (effStart ? new Date(effStart.getTime() + (dto.durationDays ?? 2) * 86_400_000) : null);
       await this.assertDateWindow(tx, projectId, dto.parentTaskId || null, effStart, effEnd, clientId);
+      if (dto.sprintId) await this.assertSprintOfProject(tx, dto.sprintId, projectId);
+      // Only leaves sit in a sprint. Splitting a sprint item hands its sprint to the new child.
+      const inherited = dto.parentTaskId ? await this.releaseParentSprint(tx, dto.parentTaskId) : null;
       return tx.projectTask.create({
         data: {
           projectId,
           taskNumber: proj.taskSequence,
           milestoneId: dto.milestoneId || null,
-          sprintId: dto.sprintId || null,
+          sprintId: dto.sprintId || inherited || null,
           storyPoints: dto.storyPoints ?? null,
           wbsType: dto.wbsType ?? 'TASK',
           durationDays: dto.durationDays ?? null,
@@ -517,6 +619,9 @@ export class ProjectsService {
         },
       });
     });
+    // A new child changes what its parent (and theirs) reads as.
+    await this.syncAncestorStatus(created.parentTaskId, actor);
+    return created;
   }
 
   // Agents may only edit tasks assigned to them; admins edit anything.
@@ -639,6 +744,13 @@ export class ProjectsService {
     if (set(dto.plannedEffort)) data.plannedEffort = dto.plannedEffort ?? null;
     if (set(dto.tags)) data.tags = (dto.tags ?? []).map((t) => t.trim()).filter(Boolean);
     if (set(dto.storyPoints)) data.storyPoints = dto.storyPoints ?? null;
+    if (set(dto.sprintId) && dto.sprintId) {
+      // Sprints hold leaf work only — a summary item's sprints are derived from its leaves.
+      if (await this.prisma.projectTask.count({ where: { parentTaskId: taskId } })) {
+        throw new BadRequestException("A summary item can't be in a sprint — add the tasks beneath it instead");
+      }
+      await this.assertSprintOfProject(this.prisma, dto.sprintId, existing.projectId);
+    }
     if (set(dto.sprintId)) {
       data.sprint = dto.sprintId ? { connect: { id: dto.sprintId } } : { disconnect: true };
     }
@@ -647,17 +759,28 @@ export class ProjectsService {
       data.assigneeUserId = dto.assigneeUserId || null;
       data.assigneeName = await this.userName(clientId, dto.assigneeUserId);
     }
-    // completionPct: explicit value wins; a COMPLETED status forces 100.
-    if (set(dto.completionPct)) data.completionPct = Math.max(0, Math.min(100, dto.completionPct!));
-    if (set(dto.status)) {
+    // A re-pick of the current status is no change (the edit form always sends it);
+    // a real change on a summary item is refused — its status follows its children.
+    if (set(dto.status) && dto.status !== existing.status) {
+      await this.assertNotSummary(taskId);
       data.status = dto.status;
       data.completedAt = dto.status === 'COMPLETED' ? (existing.completedAt ?? new Date()) : null;
-      if (dto.status === 'COMPLETED' && !set(dto.completionPct)) data.completionPct = 100;
+      data.completionPct = completionFor(dto.status!);
     }
 
+    // Re-parenting under a sprint item makes that item a summary: its sprint passes to this one.
+    if (set(dto.parentTaskId) && dto.parentTaskId && dto.parentTaskId !== existing.parentTaskId) {
+      const inherited = await this.releaseParentSprint(this.prisma, dto.parentTaskId);
+      const ownSprint = set(dto.sprintId) ? dto.sprintId : existing.sprintId;
+      if (inherited && !ownSprint) data.sprint = { connect: { id: inherited } };
+    }
     const updated = await this.prisma.projectTask.update({ where: { id: taskId }, data });
-    // Completing a parent completes everything beneath it (so the rollup reads 100%).
-    if (dto.status === 'COMPLETED') await this.completeDescendants(existing.projectId, taskId, actor);
+    // Its own status, or where it hangs, changes what the summary items above read as —
+    // both the old parent (which lost it) and the new one (which gained it).
+    await this.syncAncestorStatus(updated.parentTaskId, actor);
+    if (existing.parentTaskId && existing.parentTaskId !== updated.parentTaskId) {
+      await this.syncAncestorStatus(existing.parentTaskId, actor);
+    }
     // If the schedule moved, push dependent tasks forward (when cascading is enabled).
     if (set(dto.startDate) || set(dto.dueDate)) await this.cascadeDates(existing.projectId, taskId);
     return updated;
@@ -753,46 +876,60 @@ export class ProjectsService {
   async updateTaskStatus(taskId: string, dto: UpdateTaskStatusDto, clientId: string, actor: Actor) {
     const existing = await this.getOwnedTask(taskId, clientId);
     this.assertTaskEditable(existing, actor);
+    const changed = dto.status !== existing.status;
+    if (changed) await this.assertNotSummary(taskId);
     const updated = await this.prisma.projectTask.update({
       where: { id: taskId },
       data: {
         status: dto.status,
         sortOrder: dto.sortOrder ?? existing.sortOrder,
         completedAt: dto.status === 'COMPLETED' ? (existing.completedAt ?? new Date()) : null,
-        completionPct: dto.status === 'COMPLETED' ? 100 : existing.completionPct,
+        completionPct: completionFor(dto.status),
         updatedBy: actor.id,
       },
     });
-    if (dto.status === 'COMPLETED') await this.completeDescendants(existing.projectId, taskId, actor);
+    if (changed) await this.syncAncestorStatus(existing.parentTaskId, actor);
     return updated;
   }
 
-  /** Mark every descendant (sub-tasks at any depth) of a task COMPLETED / 100%. */
-  private async completeDescendants(projectId: string, rootId: string, actor: Actor) {
-    const all = await this.prisma.projectTask.findMany({
-      where: { projectId },
-      select: { id: true, parentTaskId: true },
-    });
-    const childrenBy = new Map<string, string[]>();
-    for (const t of all) {
-      if (!t.parentTaskId) continue;
-      const arr = childrenBy.get(t.parentTaskId) ?? [];
-      arr.push(t.id);
-      childrenBy.set(t.parentTaskId, arr);
+  /** A summary item (one with children) takes its status from them; it can't be set by hand. */
+  private async assertNotSummary(taskId: string) {
+    if (await this.prisma.projectTask.count({ where: { parentTaskId: taskId } })) {
+      throw new BadRequestException(
+        "This item's status follows its sub-tasks — change the sub-tasks' status instead",
+      );
     }
-    const descendants: string[] = [];
-    const stack = [...(childrenBy.get(rootId) ?? [])];
-    while (stack.length) {
-      const id = stack.pop()!;
-      descendants.push(id);
-      const kids = childrenBy.get(id);
-      if (kids) stack.push(...kids);
-    }
-    if (descendants.length) {
-      await this.prisma.projectTask.updateMany({
-        where: { id: { in: descendants } },
-        data: { status: 'COMPLETED', completionPct: 100, completedAt: new Date(), updatedBy: actor.id },
+  }
+
+  /**
+   * Re-derive the status of `parentId` from its children, then walk up. Stops at
+   * the first ancestor whose status doesn't change: everything above it reads only
+   * its children, so it can't change either. An item left with no children (its
+   * last one deleted or moved away) keeps the status it last had — it is a plain
+   * task again and can be set by hand.
+   */
+  private async syncAncestorStatus(parentId: string | null, actor: Actor) {
+    let id = parentId;
+    const seen = new Set<string>(); // a bad parent chain must not loop forever
+    while (id && !seen.has(id)) {
+      seen.add(id);
+      const [node, children] = await Promise.all([
+        this.prisma.projectTask.findUnique({ where: { id }, select: { status: true, completedAt: true, parentTaskId: true } }),
+        this.prisma.projectTask.findMany({ where: { parentTaskId: id }, select: { status: true } }),
+      ]);
+      if (!node || !children.length) return;
+      const status = rollupStatus(children.map((c) => c.status));
+      if (status === node.status) return;
+      await this.prisma.projectTask.update({
+        where: { id },
+        data: {
+          status,
+          completionPct: completionFor(status),
+          completedAt: status === 'COMPLETED' ? (node.completedAt ?? new Date()) : null,
+          updatedBy: actor.id,
+        },
       });
+      id = node.parentTaskId;
     }
   }
 
@@ -800,6 +937,8 @@ export class ProjectsService {
     const existing = await this.getOwnedTask(taskId, clientId);
     this.assertTaskEditable(existing, actor);
     await this.prisma.projectTask.delete({ where: { id: taskId } });
+    // Its parent loses a child; its own children (now top-level) need nothing.
+    await this.syncAncestorStatus(existing.parentTaskId, actor);
     return { message: 'Task deleted' };
   }
 
@@ -949,6 +1088,58 @@ export class ProjectsService {
     return { message: 'Sprint deleted' };
   }
 
+  /**
+   * Sprint membership, Jira-style: only leaf work items sit in a sprint. Moving a leaf moves it;
+   * moving a summary item is a shortcut that moves every leaf beneath it currently in
+   * `fromSprintId` (null = the backlog) — the summary itself never stores a sprint.
+   */
+  async moveToSprint(taskId: string, dto: MoveToSprintDto, clientId: string, actor: Actor) {
+    const task = await this.getOwnedTask(taskId, clientId);
+    const to = dto.sprintId || null;
+    const from = dto.fromSprintId || null;
+    if (to) await this.assertSprintOfProject(this.prisma, to, task.projectId);
+    const tasks = await this.prisma.projectTask.findMany({
+      where: { projectId: task.projectId },
+      select: { id: true, parentTaskId: true, sprintId: true, wbsType: true, assigneeUserId: true },
+    });
+    const kids = new Map<string, string[]>();
+    for (const t of tasks) if (t.parentTaskId) (kids.get(t.parentTaskId) ?? kids.set(t.parentTaskId, []).get(t.parentTaskId)!).push(t.id);
+    if (!kids.has(taskId)) {
+      this.assertTaskEditable(task, actor);
+      await this.prisma.projectTask.update({ where: { id: taskId }, data: { sprintId: to, updatedBy: actor.id } });
+      return { moved: 1 };
+    }
+    if (!isAdmin(actor)) throw new ForbiddenException('Only admins can move a whole branch between sprints');
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    const leaves: string[] = [];
+    const walk = (id: string) => {
+      const c = kids.get(id);
+      if (c) { c.forEach(walk); return; }
+      const t = byId.get(id)!;
+      if (t.wbsType !== 'PHASE' && (t.sprintId ?? null) === from) leaves.push(id);
+    };
+    walk(taskId);
+    if (leaves.length) {
+      await this.prisma.projectTask.updateMany({ where: { id: { in: leaves } }, data: { sprintId: to, updatedBy: actor.id } });
+    }
+    return { moved: leaves.length };
+  }
+
+  // A sprint named on a task must belong to that task's project.
+  private async assertSprintOfProject(db: Prisma.TransactionClient | PrismaService, sprintId: string, projectId: string) {
+    const ok = await db.projectSprint.count({ where: { id: sprintId, projectId } });
+    if (!ok) throw new BadRequestException('Sprint not found in this project');
+  }
+
+  // An item gaining a child becomes a summary and stops holding a sprint; returns the sprint it
+  // held so the child can take it over (splitting sprint work keeps it in the sprint).
+  private async releaseParentSprint(db: Prisma.TransactionClient | PrismaService, parentId: string): Promise<string | null> {
+    const parent = await db.projectTask.findUnique({ where: { id: parentId }, select: { sprintId: true } });
+    if (!parent?.sprintId) return null;
+    await db.projectTask.update({ where: { id: parentId }, data: { sprintId: null } });
+    return parent.sprintId;
+  }
+
   private async getOwnedSprint(sprintId: string, clientId: string) {
     const sprint = await this.prisma.projectSprint.findFirst({
       where: { id: sprintId, project: { clientId } },
@@ -969,10 +1160,11 @@ export class ProjectsService {
 
   async createMilestone(projectId: string, dto: CreateMilestoneDto, clientId: string, actor: Actor) {
     await this.getOwned(projectId, clientId);
+    const name = await this.assertMilestoneNameFree(projectId, dto.name);
     return this.prisma.projectMilestone.create({
       data: {
         projectId,
-        name: dto.name.trim(),
+        name,
         status: dto.status ?? 'PENDING',
         targetDate: dto.targetDate ? new Date(dto.targetDate) : null,
         sortOrder: dto.sortOrder ?? 0,
@@ -982,9 +1174,9 @@ export class ProjectsService {
   }
 
   async updateMilestone(milestoneId: string, dto: UpdateMilestoneDto, clientId: string) {
-    await this.getOwnedMilestone(milestoneId, clientId);
+    const existing = await this.getOwnedMilestone(milestoneId, clientId);
     const data: Prisma.ProjectMilestoneUpdateInput = {};
-    if (dto.name !== undefined) data.name = dto.name.trim();
+    if (dto.name !== undefined) data.name = await this.assertMilestoneNameFree(existing.projectId, dto.name, milestoneId);
     if (dto.status !== undefined) data.status = dto.status;
     if (dto.targetDate !== undefined) data.targetDate = dto.targetDate ? new Date(dto.targetDate) : null;
     if (dto.sortOrder !== undefined) data.sortOrder = dto.sortOrder;
@@ -993,7 +1185,15 @@ export class ProjectsService {
       data.approvalStatus = dto.approvalStatus;
       data.decidedAt = dto.approvalStatus === 'PENDING' ? null : new Date();
     }
-    return this.prisma.projectMilestone.update({ where: { id: milestoneId }, data });
+    const saved = await this.prisma.projectMilestone.update({ where: { id: milestoneId }, data });
+    // A milestone signed off is a sign-off to announce (a Go Live one, a client achievement).
+    if (dto.approvalStatus === 'APPROVED' && existing.approvalStatus !== 'APPROVED') {
+      await this.suggest(async () => {
+        const project = await this.prisma.project.findUniqueOrThrow({ where: { id: saved.projectId } });
+        await this.suggestions.onMilestoneApproved(saved, project);
+      });
+    }
+    return saved;
   }
 
   async removeMilestone(milestoneId: string, clientId: string) {
@@ -1006,7 +1206,11 @@ export class ProjectsService {
   // ---- Resources plan -----------------------------------------------------
 
   async addResource(projectId: string, dto: CreateResourceDto, clientId: string, actor: Actor) {
-    await this.getOwned(projectId, clientId);
+    const project = await this.getOwned(projectId, clientId);
+    if (!dto.userId) throw new BadRequestException('Member is required');
+    // The category carries the daily rate; a member without one plans and bills at 0.
+    if (!dto.categoryId) throw new BadRequestException(`Category is required — it sets the member's daily cost and billing rate`);
+    this.assertResourceWindow(project, dto.startDate, dto.endDate);
     return this.prisma.projectResource.create({
       data: {
         projectId,
@@ -1026,7 +1230,21 @@ export class ProjectsService {
   }
 
   async updateResource(resourceId: string, dto: UpdateResourceDto, clientId: string) {
-    await this.getOwnedResource(resourceId, clientId);
+    const existing = await this.getOwnedResource(resourceId, clientId);
+    if (dto.userId !== undefined && !dto.userId) throw new BadRequestException('Member is required');
+    if (dto.categoryId !== undefined && !dto.categoryId) {
+      throw new BadRequestException(`Category is required — it sets the member's daily cost and billing rate`);
+    }
+    // Only a write that touches the dates is checked, so editing the role or rate of a
+    // member planned before the project was re-dated is not refused for it.
+    if (dto.startDate !== undefined || dto.endDate !== undefined) {
+      const project = await this.getOwned(existing.projectId, clientId);
+      this.assertResourceWindow(
+        project,
+        dto.startDate !== undefined ? dto.startDate : existing.startDate,
+        dto.endDate !== undefined ? dto.endDate : existing.endDate,
+      );
+    }
     return this.prisma.projectResource.update({
       where: { id: resourceId },
       data: {
@@ -1050,6 +1268,152 @@ export class ProjectsService {
     return { message: 'Resource removed' };
   }
 
+  /** The project's resource plan as a spreadsheet, ready to be edited and posted back. */
+  async exportResources(projectId: string, clientId: string) {
+    await this.getOwned(projectId, clientId);
+    const rows = await this.prisma.projectResource.findMany({
+      where: { projectId },
+      include: { user: { select: { username: true, name: true, employeeId: true } }, category: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    return exportSheet('Resources', RESOURCE_COLUMNS, rows as unknown as ResourceSheetRow[]);
+  }
+
+  /** The blank template: the same columns, minus the ones an import cannot set. */
+  resourceImportTemplate() {
+    return importTemplate('Resources', RESOURCE_COLUMNS, RESOURCE_IMPORT_NOTES);
+  }
+
+  /**
+   * Bulk add/update of a project's resource plan, matched on the consultant.
+   *
+   * Every row goes through the ordinary `addResource` / `updateResource`, so an
+   * import is a fast way to type, not a second way in. Rows run **serially**:
+   * two rows naming the same new consultant must see each other, which a
+   * `Promise.all` would not. The consultant has to be a real staff user of the
+   * tenant — a name that matches nobody is refused, not stored as free text,
+   * or every typo would add a phantom member to the plan.
+   */
+  async importResources(projectId: string, clientId: string, actor: Actor, file?: Express.Multer.File): Promise<ImportResult> {
+    const project = await this.getOwned(projectId, clientId);
+    const records = readSheet(file);
+    const result: ImportResult = { created: 0, updated: 0, skipped: 0, errors: [] };
+
+    const column = (header: string) => RESOURCE_COLUMNS.find((c) => c.header === header)!;
+    const [CONSULTANT, ROLE, CATEGORY, ALLOC, HOURS, START, END, BILLABLE] = [
+      'Consultant', 'Role', 'Category', 'Allocation %', 'Daily hours', 'Start date', 'End date', 'Billable',
+    ].map(column);
+
+    const categories = await this.prisma.resourceCategory.findMany({ where: { clientId }, select: { id: true, name: true } });
+    const categoryByName = new Map(categories.map((c) => [c.name.trim().toLowerCase(), c.id]));
+
+    const wholeNumber = (v: unknown, label: string, min: number, max?: number) => {
+      const text = asText(v);
+      if (!text) return undefined;
+      const n = Number(text);
+      if (!Number.isInteger(n) || n < min || (max !== undefined && n > max)) {
+        throw new BadRequestException(`${label}: "${text}" must be a whole number ${max !== undefined ? `from ${min} to ${max}` : `of at least ${min}`}`);
+      }
+      return n;
+    };
+
+    for (const [i, record] of records.entries()) {
+      const line = i + 2; // the header is row 1, so a sheet row is its index + 2
+      try {
+        const read = rowReader(record);
+        const consultant = asText(read(CONSULTANT));
+        // A trailing blank row is the normal shape of a hand-edited sheet, not an error.
+        if (!consultant && !Object.values(record).some((v) => asText(v))) continue;
+        if (!consultant) throw new BadRequestException('Consultant is required');
+
+        // Username is unique; Employee ID is unique per tenant. Matching either
+        // could still reach two people (one's username is another's employee ID),
+        // so an ambiguous hit is refused and named rather than guessed.
+        const users = await this.prisma.user.findMany({
+          where: {
+            clientId, customerCompanyId: null,
+            OR: [{ username: { equals: consultant, mode: 'insensitive' } }, { employeeId: consultant }],
+          },
+          select: { id: true, username: true },
+        });
+        if (users.length === 0) throw new BadRequestException(`Consultant "${consultant}" is not a staff user`);
+        if (users.length > 1) {
+          throw new BadRequestException(`Consultant "${consultant}" matches ${users.map((u) => u.username).join(' and ')} — use the username`);
+        }
+        const user = users[0];
+
+        // A blank cell on an update means "leave it alone", so only the columns
+        // the sheet actually carries are sent.
+        const dto: UpdateResourceDto = {};
+        const role = asText(read(ROLE));
+        if (role) dto.role = role;
+        const category = asText(read(CATEGORY));
+        if (category) {
+          const id = categoryByName.get(category.toLowerCase());
+          if (!id) throw new BadRequestException(`Category "${category}" is not on the Resource Costs screen`);
+          dto.categoryId = id;
+        }
+        const alloc = wholeNumber(read(ALLOC), 'Allocation %', 0, 100);
+        if (alloc !== undefined) dto.allocationPct = alloc;
+        const hours = wholeNumber(read(HOURS), 'Daily hours', 1);
+        if (hours !== undefined) dto.dailyHours = hours;
+        const start = asDate(read(START), 'Start date');
+        if (start) dto.startDate = start;
+        const end = asDate(read(END), 'End date');
+        if (end) dto.endDate = end;
+        const billable = asText(read(BILLABLE)).toLowerCase();
+        if (billable) {
+          if (['yes', 'y', 'true', '1'].includes(billable)) dto.billable = true;
+          else if (['no', 'n', 'false', '0'].includes(billable)) dto.billable = false;
+          else throw new BadRequestException(`Billable: "${asText(read(BILLABLE))}" must be Yes or No`);
+        }
+
+        const existing = await this.prisma.projectResource.findMany({ where: { projectId, userId: user.id }, select: { id: true } });
+        if (existing.length > 1) {
+          throw new BadRequestException(`${user.username} is on this plan ${existing.length} times — edit those rows on the Resources tab`);
+        }
+        if (existing.length === 1) {
+          await this.updateResource(existing[0].id, dto, clientId);
+          result.updated += 1;
+        } else {
+          await this.addResource(projectId, {
+            ...dto,
+            userId: user.id,
+            consultantName: user.username,
+            // Same defaults the Add Member form opens with.
+            startDate: dto.startDate ?? project.startDate?.toISOString().slice(0, 10),
+            endDate: dto.endDate ?? project.endDate?.toISOString().slice(0, 10),
+          }, clientId, actor);
+          result.created += 1;
+        }
+      } catch (e) {
+        result.skipped += 1;
+        result.errors.push({ row: line, message: errorText(e) });
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * A member is planned inside the project's own window: never starting before the
+   * project starts, never ending after it ends, and never ending before starting.
+   * Compared as calendar days, so the stored midnight-UTC stamps can't tip a boundary.
+   */
+  private assertResourceWindow(
+    project: { startDate: Date | null; endDate: Date | null },
+    start?: string | Date | null,
+    end?: string | Date | null,
+  ) {
+    const day = (v?: string | Date | null) => (v ? new Date(v).toISOString().slice(0, 10) : undefined);
+    const [s, e, ps, pe] = [day(start), day(end), day(project.startDate), day(project.endDate)];
+    if (s && ps && s < ps) throw new BadRequestException(`Start date cannot be before the project starts (${ps})`);
+    if (e && pe && e > pe) throw new BadRequestException(`End date cannot be after the project ends (${pe})`);
+    if (s && pe && s > pe) throw new BadRequestException(`Start date cannot be after the project ends (${pe})`);
+    if (e && ps && e < ps) throw new BadRequestException(`End date cannot be before the project starts (${ps})`);
+    if (s && e && e < s) throw new BadRequestException('End date cannot be before the start date');
+  }
+
   private async getOwnedResource(id: string, clientId: string) {
     const r = await this.prisma.projectResource.findFirst({ where: { id, project: { clientId } } });
     if (!r) throw new NotFoundException('Resource not found');
@@ -1059,32 +1423,89 @@ export class ProjectsService {
   // ---- Timesheets ---------------------------------------------------------
 
   async addTimesheet(projectId: string, dto: CreateTimesheetDto, clientId: string, actor: Actor) {
-    await this.getOwned(projectId, clientId);
+    const project = await this.getOwned(projectId, clientId);
+    this.assertTimesheetDate(project, dto.date);
+    const userId = dto.userId || actor.id;
+    await assertCostedMember(this.prisma, userId, [projectId]);
+    // The hours go on one of the project's own leaf tasks; its title is stored as the activity.
+    const task = await assertLoggableTask(this.prisma, projectId, dto.taskId);
+    // One entry per consultant · task · day — the weekly Timesheet page keeps the
+    // same rule. More hours on a day that already has an entry are added to it
+    // (2h + 3h is one 5h entry) and its note gains the new one; it stays that
+    // entry, with the rate it was first logged at.
+    const day = new Date(`${dto.date.slice(0, 10)}T00:00:00.000Z`);
+    const note = dto.workPerformed?.trim() || null;
+    const sameCell = await this.prisma.projectTimesheet.findMany({
+      where: { projectId, userId, taskId: task.id, date: day },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (sameCell.some((e) => e.status === 'APPROVED')) {
+      throw new ConflictException(`${task.title} on ${dto.date.slice(0, 10)} is already approved for this consultant — an Admin has to reopen it before more hours go on it`);
+    }
+    if (sameCell.length) {
+      const [keep, ...extra] = sameCell;
+      const notes = [...new Set([...sameCell.map((e) => e.workPerformed), note].filter((n): n is string => !!n))];
+      const [merged] = await this.prisma.$transaction([
+        this.prisma.projectTimesheet.update({
+          where: { id: keep.id },
+          data: {
+            hours: sameCell.reduce((t, e) => t + Number(e.hours), 0) + dto.hours,
+            workPerformed: notes.join('; ') || null,
+            status: 'SUBMITTED',                     // what a Log Time entry is
+          },
+          include: { user: { select: { id: true, username: true } } },
+        }),
+        ...(extra.length ? [this.prisma.projectTimesheet.deleteMany({ where: { id: { in: extra.map((e) => e.id) } } })] : []),
+      ]);
+      return merged;
+    }
+    const rateOf = await timesheetRates(this.prisma, userId, [projectId]);
     return this.prisma.projectTimesheet.create({
       data: {
         projectId,
-        userId: dto.userId || actor.id,
+        userId,
+        ...rateOf(projectId),
         consultantName: dto.consultantName?.trim() || null,
-        date: new Date(dto.date),
-        taskId: dto.taskId || null,
-        activity: dto.activity?.trim() || null,
+        date: day,
+        taskId: task.id,
+        activity: task.title,
         hours: dto.hours,
-        workPerformed: dto.workPerformed?.trim() || null,
+        workPerformed: note,
         createdBy: actor.id,
       },
       include: { user: { select: { id: true, username: true } } },
     });
   }
 
-  async updateTimesheet(timesheetId: string, dto: UpdateTimesheetDto, clientId: string) {
-    await this.getOwnedTimesheet(timesheetId, clientId);
+  async updateTimesheet(timesheetId: string, dto: UpdateTimesheetDto, clientId: string, actor: Actor) {
+    const existing = await this.getOwnedTimesheet(timesheetId, clientId);
+    // Approval is what turns hours into project cost, so only an Admin may grant it —
+    // or take it back, else an agent could un-approve an entry and re-shape it.
+    const touchesApproval = dto.status !== undefined && dto.status !== existing.status
+      && (dto.status === 'APPROVED' || existing.status === 'APPROVED');
+    if (touchesApproval && !isAdmin(actor)) throw new ForbiddenException('Only an Admin can approve a timesheet or change an approved one');
+    // Only a re-dated entry is checked, so approving one logged before the project was re-dated still works.
+    if (dto.date !== undefined) this.assertTimesheetDate(await this.getOwned(existing.projectId, clientId), dto.date);
+    const retask = dto.taskId !== undefined ? await assertLoggableTask(this.prisma, existing.projectId, dto.taskId) : null;
+    // Moving an entry to another day or task must not land it on a cell that already has one.
+    if (dto.date !== undefined || retask) {
+      const taken = await this.prisma.projectTimesheet.findFirst({
+        where: {
+          id: { not: timesheetId }, projectId: existing.projectId, userId: existing.userId,
+          taskId: retask?.id ?? existing.taskId,
+          date: dto.date !== undefined ? new Date(`${dto.date.slice(0, 10)}T00:00:00.000Z`) : existing.date,
+        },
+        select: { id: true },
+      });
+      if (taken) throw new ConflictException('That consultant already has an entry for this task on that day — add the hours to it instead');
+    }
     return this.prisma.projectTimesheet.update({
       where: { id: timesheetId },
       data: {
         ...(dto.date !== undefined ? { date: new Date(dto.date) } : {}),
         ...(dto.hours !== undefined ? { hours: dto.hours } : {}),
-        ...(dto.taskId !== undefined ? { taskId: dto.taskId || null } : {}),
-        ...(dto.activity !== undefined ? { activity: dto.activity?.trim() || null } : {}),
+        // A re-pointed entry takes its new task's title; the activity is never free text.
+        ...(retask ? { taskId: retask.id, activity: retask.title } : {}),
         ...(dto.workPerformed !== undefined ? { workPerformed: dto.workPerformed?.trim() || null } : {}),
         ...(dto.status !== undefined ? { status: dto.status } : {}),
       },
@@ -1092,10 +1513,30 @@ export class ProjectsService {
     });
   }
 
-  async removeTimesheet(timesheetId: string, clientId: string) {
-    await this.getOwnedTimesheet(timesheetId, clientId);
+  /**
+   * Logged time is deleted by the consultant who logged it, the project's manager or an
+   * Admin. Approved time is project cost, so only the manager or an Admin may remove it.
+   */
+  async removeTimesheet(timesheetId: string, clientId: string, actor: Actor) {
+    const existing = await this.getOwnedTimesheet(timesheetId, clientId);
+    const project = await this.getOwned(existing.projectId, clientId);
+    const manages = isAdmin(actor) || project.managerUserId === actor.id;
+    if (!manages && existing.userId !== actor.id) {
+      throw new ForbiddenException('Only the consultant who logged this time, the project manager or an Admin can delete it');
+    }
+    if (!manages && existing.status === 'APPROVED') {
+      throw new ForbiddenException('This time is approved — only the project manager or an Admin can delete it');
+    }
     await this.prisma.projectTimesheet.delete({ where: { id: timesheetId } });
     return { message: 'Timesheet entry removed' };
+  }
+
+  /** Time is logged on a day the project runs — not before it starts, not after it ends. */
+  private assertTimesheetDate(project: { startDate: Date | null; endDate: Date | null }, date: string | Date) {
+    const day = (v: string | Date) => new Date(v).toISOString().slice(0, 10);
+    const d = day(date);
+    if (project.startDate && d < day(project.startDate)) throw new BadRequestException(`Date cannot be before the project starts (${day(project.startDate)})`);
+    if (project.endDate && d > day(project.endDate)) throw new BadRequestException(`Date cannot be after the project ends (${day(project.endDate)})`);
   }
 
   private async getOwnedTimesheet(id: string, clientId: string) {
@@ -1269,5 +1710,26 @@ export class ProjectsService {
     });
     if (!m) throw new NotFoundException('Milestone not found');
     return m;
+  }
+
+  /**
+   * A milestone name is unique inside its project, ignoring case and surrounding
+   * spaces — two "Testing" groups would split one stage gate's tasks and progress in
+   * two. A pre-check, not a DB constraint: the containers' `prisma db push` owns the
+   * schema. Returns the trimmed name to store.
+   */
+  private async assertMilestoneNameFree(projectId: string, raw: string, exceptId?: string) {
+    const name = raw.trim();
+    if (!name) throw new BadRequestException('Milestone name is required');
+    const clash = await this.prisma.projectMilestone.findFirst({
+      where: {
+        projectId,
+        name: { equals: name, mode: 'insensitive' },
+        ...(exceptId ? { id: { not: exceptId } } : {}),
+      },
+      select: { name: true },
+    });
+    if (clash) throw new ConflictException(`A milestone named "${clash.name}" already exists in this project`);
+    return name;
   }
 }

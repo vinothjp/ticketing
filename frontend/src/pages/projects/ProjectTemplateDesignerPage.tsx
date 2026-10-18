@@ -58,6 +58,18 @@ export default function ProjectTemplateDesignerPage() {
   const setTask = (mi: number, ti: number, patch: Partial<BTask>) =>
     setMilestones((ms) => ms.map((m, i) => (i === mi ? { ...m, tasks: m.tasks.map((t, j) => (j === ti ? { ...t, ...patch } : t)) } : m)));
 
+  // A project refuses two milestones with the same name (ignoring case and spaces),
+  // so a template may not carry two either — the server enforces it too.
+  const nameKey = (n: string) => n.trim().toLowerCase();
+  const dupNames = new Set(
+    milestones.map((m) => nameKey(m.name)).filter((k, i, all) => k && all.indexOf(k) !== i),
+  );
+  const submit = () => {
+    const dup = milestones.find((m) => dupNames.has(nameKey(m.name)));
+    if (dup) { toast.error(`Two milestones are named "${dup.name.trim()}" — give each its own name`); return; }
+    save.mutate();
+  };
+
   const save = useMutation({
     mutationFn: () => {
       const payload = {
@@ -116,9 +128,13 @@ export default function ProjectTemplateDesignerPage() {
             <CardContent className="space-y-3 py-4">
               <div className="flex items-center gap-2">
                 <GripVertical className="size-4 shrink-0 text-muted-foreground" />
-                <Input className="font-medium" value={m.name} onChange={(e) => setMilestoneName(mi, e.target.value)} placeholder={`Milestone ${mi + 1} name`} />
+                <Input className="font-medium" value={m.name} onChange={(e) => setMilestoneName(mi, e.target.value)} placeholder={`Milestone ${mi + 1} name`}
+                  aria-invalid={dupNames.has(nameKey(m.name)) || undefined} />
                 <Button size="icon" variant="ghost" className="size-8 shrink-0 text-destructive hover:text-destructive" onClick={() => removeMilestone(mi)}><Trash2 className="size-4" /></Button>
               </div>
+              {dupNames.has(nameKey(m.name)) && (
+                <p className="pl-6 text-xs text-destructive">Another milestone already has this name.</p>
+              )}
 
               <div className="space-y-2 pl-6">
                 {m.tasks.map((t, ti) => (
@@ -145,7 +161,7 @@ export default function ProjectTemplateDesignerPage() {
       </div>
 
       <div className="mt-6 flex gap-2">
-        <Button disabled={!name.trim() || save.isPending} onClick={() => save.mutate()}>
+        <Button disabled={!name.trim() || save.isPending} onClick={submit}>
           {save.isPending ? 'Saving…' : editing ? 'Save template' : 'Create template'}
         </Button>
         <Button variant="outline" onClick={() => navigate('/admin/project-templates')}>Cancel</Button>

@@ -9,6 +9,7 @@ import {
   type ProjectDetail, type ProjectTask,
 } from '../projectMeta';
 
+
 // Live "time remaining to due date" (calendar time), like the ticket SLA countdown.
 function fmtDueIn(due: string | null | undefined, nowMs: number, done: boolean): { label: string; tone: 'ok' | 'bad' | 'muted' } {
   if (done) return { label: 'Done', tone: 'muted' };

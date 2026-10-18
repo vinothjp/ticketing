@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Link2, X, Search, Plus } from 'lucide-react';
+import { Link2, X, Search, Plus, Hash, AlignLeft, CircleDot } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 import api from '../../../lib/api';
 import { Button } from '@/components/ui/button';
@@ -10,6 +12,22 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { invalidateProject, type ProjectDetail } from '../projectMeta';
+
+/**
+ * A column heading: its icon, then its label. Muted and small, so the headings
+ * read as chrome and the values below them carry the weight. Mirrors the
+ * Change Management list.
+ */
+function HeadLabel({ icon: Icon, children, className = '' }: {
+  icon: LucideIcon; children: ReactNode; className?: string;
+}) {
+  return (
+    <span className={`flex items-center gap-1.5 text-xs font-semibold text-muted-foreground ${className}`}>
+      <Icon className="size-3.5 shrink-0" />
+      {children}
+    </span>
+  );
+}
 
 interface TicketRow {
   id: string;
@@ -92,14 +110,14 @@ export default function TicketsTab({ project }: { project: ProjectDetail }) {
         </DialogContent>
       </Dialog>
 
-      <div className="border-t">
+      <div className="overflow-hidden rounded-lg border">
         <Table>
           <TableHeader>
-            <TableRow>
-              <TableHead>Number</TableHead>
-              <TableHead>Subject</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
+            <TableRow className="bg-muted/50 hover:bg-muted/50">
+              <TableHead className="w-px border-r"><HeadLabel icon={Hash}>Number</HeadLabel></TableHead>
+              <TableHead className="border-r"><HeadLabel icon={AlignLeft}>Subject</HeadLabel></TableHead>
+              <TableHead className="w-px border-r"><HeadLabel icon={CircleDot}>Status</HeadLabel></TableHead>
+              <TableHead className="w-px text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -108,13 +126,13 @@ export default function TicketsTab({ project }: { project: ProjectDetail }) {
             )}
             {project.tickets.map((t) => (
               <TableRow key={t.id}>
-                <TableCell className="text-xs text-muted-foreground">
+                <TableCell className="border-r text-xs text-muted-foreground">
                   <Link to={`/tickets/${t.id}`} className="hover:underline">{t.ticketNumber}</Link>
                 </TableCell>
-                <TableCell className="font-medium">
+                <TableCell className="border-r font-medium">
                   <Link to={`/tickets/${t.id}`} className="hover:underline">{t.subject}</Link>
                 </TableCell>
-                <TableCell><Badge variant="outline">{t.ticketStatus}</Badge></TableCell>
+                <TableCell className="border-r"><Badge variant="outline">{t.ticketStatus}</Badge></TableCell>
                 <TableCell className="text-right">
                   <Button size="sm" variant="outline" onClick={() => unlinkMutation.mutate(t.id)}>
                     <X className="size-4" /> Unlink

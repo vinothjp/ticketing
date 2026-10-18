@@ -72,15 +72,23 @@ export interface ProjectSummary {
   name: string;
   key?: string | null;
   status: string;
+  isActive: boolean;
   priority?: string | null;
   managerUserId?: string | null;
   managerName?: string | null;
   startDate?: string | null;
   endDate?: string | null;
   progress: number;
+  /** Running projects only (active, not Completed/Cancelled); same rule as the dashboard tiles. */
+  health?: ProjectHealth | null;
   createdAt: string;
   _count?: { tasks: number; resources: number; tickets: number };
 }
+
+export type ProjectHealth = 'GREEN' | 'AMBER' | 'RED';
+/** The dashboard tiles link here with `?health=on-track|at-risk|off-track`. */
+export const HEALTH_PARAM: Record<string, ProjectHealth> = { 'on-track': 'GREEN', 'at-risk': 'AMBER', 'off-track': 'RED' };
+export const HEALTH_LABEL: Record<ProjectHealth, string> = { GREEN: 'On track', AMBER: 'At risk', RED: 'Off track' };
 
 export interface ProjectMilestone {
   id: string;
@@ -275,6 +283,30 @@ export interface ProjectDetail extends ProjectSummary {
 // Task key, e.g. "ERP-3". Falls back to "T" when the project has no key set.
 export const taskKey = (projectKey: string | null | undefined, taskNumber: number | null | undefined) =>
   taskNumber != null ? `${(projectKey || 'T').toUpperCase()}-${taskNumber}` : '';
+
+/**
+ * The WBS tree flattened in pre-order (1, 1.1, 1.1.1, 1.1.2, 1.2, 2 …) — the order WbsView renders.
+ * Siblings sort by sortOrder, then taskNumber, matching the backend numbering; a task whose parent
+ * is missing is treated as a root, as WbsView does.
+ */
+export function wbsOrder(tasks: ProjectTask[]): { task: ProjectTask; depth: number }[] {
+  const ids = new Set(tasks.map((t) => t.id));
+  const kids = new Map<string | null, ProjectTask[]>();
+  for (const t of tasks) {
+    const p = t.parentTaskId && ids.has(t.parentTaskId) ? t.parentTaskId : null;
+    if (!kids.has(p)) kids.set(p, []);
+    kids.get(p)!.push(t);
+  }
+  const out: { task: ProjectTask; depth: number }[] = [];
+  const walk = (parent: string | null, depth: number) => {
+    const list = (kids.get(parent) ?? []).sort(
+      (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || (a.taskNumber ?? 0) - (b.taskNumber ?? 0),
+    );
+    for (const t of list) { out.push({ task: t, depth }); walk(t.id, depth + 1); }
+  };
+  walk(null, 0);
+  return out;
+}
 
 export interface UserOption { id: string; username: string; }
 export interface CustomerCompanyOption { id: string; name: string; }

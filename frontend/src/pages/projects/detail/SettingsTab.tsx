@@ -16,7 +16,8 @@ import { UPLOAD_TYPE_CATALOG, ATTACHMENT_SUBMODULES, DEFAULT_UPLOAD_EXTS } from 
 import { GANTT_COLORS, resolveGanttColors, defaultGanttColors, type GanttColorMap } from './ganttColors';
 
 const FEATURES: { key: string; label: string; desc: string; default: boolean }[] = [
-  { key: 'timeTracking', label: 'Time tracking', desc: 'Let members log time spent on tasks.', default: false },
+  // On for every project created since it became the default; older projects keep what they had.
+  { key: 'timeTracking', label: 'Show timesheet', desc: "Show the Timesheet tab, where members log time against the project's tasks.", default: false },
   { key: 'sprints', label: 'Go agile with Sprints', desc: 'Enable the Backlog and Sprints board.', default: true },
   { key: 'cascadingDates', label: 'Cascading dates', desc: 'Push later tasks forward automatically when a task is extended.', default: true },
 ];

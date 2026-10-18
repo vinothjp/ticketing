@@ -293,7 +293,7 @@ export default function TicketDetailPage() {
   };
 
   // Project association (staff only).
-  const { data: projectOptions = [] } = useQuery<{ id: string; name: string; projectNumber: string }[]>({
+  const { data: projectOptions = [] } = useQuery<{ id: string; name: string; projectNumber: string; isActive: boolean }[]>({
     queryKey: ['projects'],
     queryFn: async () => (await api.get('/api/projects')).data,
     enabled: isStaff,
@@ -690,7 +690,7 @@ export default function TicketDetailPage() {
                         <Select value="" onValueChange={(v) => linkProject.mutate(v)}>
                           <SelectTrigger className="w-full"><SelectValue placeholder="Associate a project… (optional)" /></SelectTrigger>
                           <SelectContent>
-                            {projectOptions.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                            {projectOptions.filter((p) => p.isActive).map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
                           </SelectContent>
                         </Select>
                       )}

@@ -538,19 +538,4 @@ export class ClientVisitsService {
 
     return visit;
   }
-
-  async remove(clientId: string, id: string) {
-    const existingVisit = await this.prisma.clientVisit.findFirst({
-      where: { id, clientId }
-    });
-    if (!existingVisit) throw new NotFoundException('Client visit not found');
-
-    if (existingVisit.contractDeducted) {
-      await this.drawDown(existingVisit.customerCompanyId, existingVisit.deductedCpId, -1);
-    }
-
-    return this.prisma.clientVisit.delete({
-      where: { id }
-    });
-  }
 }

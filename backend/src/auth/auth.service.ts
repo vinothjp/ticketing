@@ -2,6 +2,7 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
+  ServiceUnavailableException,
   Logger,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -69,23 +70,31 @@ export class AuthService {
     const isSuperAdmin = roles.includes('SuperAdmin');
 
     // ── SuperAdmin 2FA gate ─────────────────────────────────
-    if (isSuperAdmin && this.isOtpServiceConfigured()) {
-      const challenge = await this.requestOtp(user.email, user.username ?? user.name ?? 'Super Admin');
-      if (challenge?.challengeId) {
-        // Remember the user behind this challenge so verify-otp can issue tokens
-        this.otpChallenges.set(challenge.challengeId, {
-          userId: user.id,
-          expiresAt: Date.now() + 6 * 60 * 1000, // 6 min (slightly longer than OTP TTL)
-        });
-        return {
-          requiresOtp: true,
-          challengeId: challenge.challengeId,
-          otpSentTo: this.maskEmail(user.email),
-        };
+    // Fails closed: no code sent = no sign-in. SUPER_ADMIN_OTP=false is the
+    // only bypass (break-glass for a dead mail server).
+    if (isSuperAdmin && this.config.get('SUPER_ADMIN_OTP') !== 'false') {
+      if (!this.isOtpServiceConfigured()) {
+        throw new ServiceUnavailableException(
+          'Super Admin sign-in needs an emailed code, but the OTP service is not configured.',
+        );
       }
-      // If OTP service is down, fall through to normal login so SuperAdmin
-      // isn't locked out — log the failure loudly.
-      this.logger.error('OTP service unreachable — SuperAdmin logged in without 2FA');
+      const challenge = await this.requestOtp(user.email, user.username ?? user.name ?? 'Super Admin');
+      if (!challenge?.challengeId) {
+        this.logger.error('OTP send failed — SuperAdmin sign-in refused');
+        throw new ServiceUnavailableException(
+          'Could not send the Super Admin sign-in code. Check the OTP service and its SMTP settings.',
+        );
+      }
+      // Remember the user behind this challenge so verify-otp can issue tokens
+      this.otpChallenges.set(challenge.challengeId, {
+        userId: user.id,
+        expiresAt: Date.now() + 6 * 60 * 1000, // 6 min (slightly longer than OTP TTL)
+      });
+      return {
+        requiresOtp: true,
+        challengeId: challenge.challengeId,
+        otpSentTo: this.maskEmail(user.email),
+      };
     }
 
     return this.issueTokens(user, roles);
@@ -122,9 +131,11 @@ export class AuthService {
       include: { userRoles: { include: { role: true } } },
     });
 
-    if (!user) throw new UnauthorizedException('User not found');
+    if (!user || !user.isActive) throw new UnauthorizedException('Account is inactive or no longer exists');
 
     const roles = user.userRoles.map((ur) => ur.role.name);
+    // The challenge only ever vouches for a SuperAdmin sign-in
+    if (!roles.includes('SuperAdmin')) throw new UnauthorizedException('Not authorized');
     return this.issueTokens(user, roles);
   }
 

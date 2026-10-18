@@ -28,6 +28,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       OTP_SERVICE_URL: http://otp:3001
       OTP_SERVICE_API_KEY: ${OTP_API_KEY}
+      SUPER_ADMIN_OTP: ${SUPER_ADMIN_OTP:-true}
       PORT: 3000
       RUN_SEED: ${RUN_SEED:-false}
     volumes:

@@ -34,6 +34,8 @@ services:
       CORS_ORIGINS: http://localhost:5175,http://localhost:5173
       # OTP_SERVICE_URL: http://otp:3001
       # OTP_SERVICE_API_KEY: dev-otp-key
+      # Dev only: SuperAdmin 2FA fails closed, so with no OTP service it must be off here
+      SUPER_ADMIN_OTP: "false"
       PORT: 3000
     volumes:
       - ./backend:/app

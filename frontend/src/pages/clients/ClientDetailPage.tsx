@@ -10,12 +10,14 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import ProductIcon from '@/components/ProductIcon';
+import ManagerSelect from '@/components/ManagerSelect';
 import ConsultantGrid from '@/components/ConsultantGrid';
 import SupportHoursChoice from '@/components/SupportHoursChoice';
 import AutoAssignChoice from '@/components/AutoAssignChoice';
 import SupportHoursConfig from '@/components/SupportHoursConfig';
+import ContractServicesConfig from '@/components/ContractServicesConfig';
+import { servicesForm, servicesPayload, type ContractServicesValue } from '@/components/contractServices';
 import PurchaseOrderFields from '@/components/PurchaseOrderFields';
-import { useExcessRequests, useDecideExcess, latestExcessFor } from '@/components/excessHoursQueries';
 import { useAuth } from '../../context/AuthContext';
 import CoverageMeter, { wholeHrs } from '@/components/CoverageMeter';
 import { cn } from '@/lib/utils';
@@ -25,17 +27,22 @@ interface Cov { end: string | null; label: string; pct: number; active: boolean 
 interface Purchased {
   id: string; productId: string; productName: string; productCode: string; status: string; agents: string[];
   warranty: Cov & { months: number }; amc: Cov & { type: 'FREE' | 'PAID' }; hours: Pool; visits: Pool;
+  // False once every module is switched off for this client (their product screen).
+  activeForClient: boolean;
+  productManagerName: string | null;
 }
-interface Client { id: string; name: string; code: string | null; status: string; autoAssignTickets?: boolean }
+interface Client { id: string; name: string; code: string | null; status: string; autoAssignTickets?: boolean; accountManagerId: string | null; accountManagerName: string | null }
 interface CPool { allocated: number | null; used: number; left: number | null; unlimited?: boolean }
 interface Support {
-  period: 'FULL_AMC' | 'MONTHLY'; carryForward: boolean; allowTicketsAfterHours: boolean; allowExcess: boolean; excessApproval: boolean;
-  approverId: string | null; approverName: string | null;
+  period: 'FULL_AMC' | 'MONTHLY'; carryForward: boolean; allowTicketsAfterHours: boolean; allowExcess: boolean;
+  // Per excess hour; null for non-Admins (withheld server-side) or when unset.
+  excessRate: number | null;
   currentAllocated: number | null; carriedIn: number; currentUsed: number; available: number | null;
 }
 interface Contract {
   scope: 'PRODUCT' | 'CUSTOMER'; coverageType: 'WARRANTY' | 'AMC'; start: string | null; end: string | null; hoursUnlimited: boolean; hours: number | null; visits: number | null; monthlyCost: number | null;
   productIds: string[]; period: { pct: number; daysLeft: number | null; active: boolean }; hoursPool: CPool; visitsPool: CPool; support?: Support;
+  services?: { thirdPartyIntegration: boolean; planRollout: boolean; crApplicable: boolean; crMaxPerMonth: number | null; crMaxHours: number | null };
   // The PO this contract was raised against. On CUSTOMER scope one PO covers
   // every product, so it lives here; per-product POs are on ClientProductPage.
   poNumber: string | null; poFileUrl: string | null; poFileName: string | null;
@@ -44,13 +51,19 @@ interface Consultant { id: string; userId: string; username: string | null; prod
 interface CatAgent { track: string; user: { id: string; username: string } }
 interface CatModule { id: string; name: string; consultants: CatAgent[] }
 interface CatProduct { id: string; name: string; imageUrl?: string | null; modules: CatModule[]; consultants: CatAgent[] }
-interface StaffUser { id: string; username: string }
+interface StaffUser { id: string; username: string; name?: string | null; isActive?: boolean }
 
 const today = () => new Date().toISOString().slice(0, 10);
 const statusCls = (s: string) =>
   s === 'ACTIVE' ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
   : s === 'EXPIRED' ? 'bg-destructive/15 text-destructive border-destructive/30'
   : 'bg-muted text-muted-foreground border-border';
+// A live contract with every module switched off for the client reads as
+// inactive — one pill, not an "active" beside an "inactive".
+const productPill = (p: { status: string; activeForClient: boolean }) =>
+  p.status === 'ACTIVE' && !p.activeForClient
+    ? { label: 'inactive', cls: statusCls('INACTIVE'), title: "Every module is switched off for this client, so they can't raise tickets on it" }
+    : { label: p.status.toLowerCase(), cls: statusCls(p.status), title: undefined };
 
 export default function ClientDetailPage() {
   const { companyId } = useParams<{ companyId: string }>();
@@ -68,10 +81,6 @@ export default function ClientDetailPage() {
     qc.invalidateQueries({ queryKey: ['client-products', companyId] });
     qc.invalidateQueries({ queryKey: ['client-contract', companyId] });
     qc.invalidateQueries({ queryKey: ['client-consultants', companyId] });
-    // Saving the pool's settings can raise or withdraw the excess-hours request
-    // server-side, so the approval tab has to be re-read or it stays invisible
-    // until the page is reloaded by hand.
-    qc.invalidateQueries({ queryKey: ['excess-requests', companyId] });
   };
   const run = async (p: Promise<unknown>, ok?: string) => { try { await p; invalidate(); if (ok) toast.success(ok); } catch (e: any) { toast.error(e.response?.data?.message || 'Error'); } };
 
@@ -79,19 +88,22 @@ export default function ClientDetailPage() {
   const [scope, setScope] = useState<'PRODUCT' | 'CUSTOMER'>('PRODUCT');
   const num = (n: number | null): number | '' => (n == null ? '' : n);
   const [cust, setCust] = useState({ coverageType: 'AMC' as 'WARRANTY' | 'AMC', productIds: [] as string[], start: today(), end: '', hoursUnlimited: false, hours: '' as number | '', visits: '' as number | '', monthlyCost: '' as number | '',
-    hoursPeriod: 'FULL_AMC' as 'FULL_AMC' | 'MONTHLY', carryForward: false, allowTicketsAfterHours: true, allowExcess: false, excessApproval: false, excessApproverId: '' });
+    hoursPeriod: 'FULL_AMC' as 'FULL_AMC' | 'MONTHLY', carryForward: false, allowTicketsAfterHours: true, allowExcess: false, excessRate: '' as number | '' });
   // Hydrate from the saved contract once it lands. Keyed on the saved *content*,
   // not the object identity: TanStack refetches on window focus, and re-running
   // this for every new object threw away whatever the admin had typed each time
   // they tabbed away and back.
   const contractKey = contract && JSON.stringify([contract.scope, contract.coverageType, contract.start, contract.end, contract.hoursUnlimited, contract.hours, contract.visits, contract.monthlyCost, contract.productIds,
-    contract.support?.period, contract.support?.carryForward, contract.support?.allowTicketsAfterHours, contract.support?.allowExcess, contract.support?.excessApproval, contract.support?.approverId]);
+    contract.support?.period, contract.support?.carryForward, contract.support?.allowTicketsAfterHours, contract.support?.allowExcess, contract.support?.excessRate, contract.services]);
+  // Third-party integration, plan roll-out and CR terms — saved with Save contract.
+  const [services, setServices] = useState<ContractServicesValue>(servicesForm(null));
   useEffect(() => {
     if (contract) {
       setScope(contract.scope);
       const s = contract.support;
       setCust({ coverageType: contract.coverageType ?? 'AMC', productIds: contract.productIds, start: contract.start?.slice(0, 10) ?? today(), end: contract.end?.slice(0, 10) ?? '', hoursUnlimited: contract.hoursUnlimited ?? false, hours: num(contract.hours), visits: num(contract.visits), monthlyCost: num(contract.monthlyCost),
-        hoursPeriod: s?.period ?? 'FULL_AMC', carryForward: s?.carryForward ?? false, allowTicketsAfterHours: s?.allowTicketsAfterHours ?? true, allowExcess: s?.allowExcess ?? false, excessApproval: s?.excessApproval ?? false, excessApproverId: s?.approverId ?? '' });
+        hoursPeriod: s?.period ?? 'FULL_AMC', carryForward: s?.carryForward ?? false, allowTicketsAfterHours: s?.allowTicketsAfterHours ?? true, allowExcess: s?.allowExcess ?? false, excessRate: num(s?.excessRate ?? null) });
+      setServices(servicesForm(contract.services));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contractKey]);
@@ -134,22 +146,6 @@ export default function ClientDetailPage() {
         : 'Switched to one customer contract — enter the contract terms',
     );
   };
-  /**
-   * The excess-hours trio saves on change rather than waiting for Save contract.
-   * The approval request is raised server-side off the *saved* config, so an
-   * approver still sitting unsaved in the form raises nothing and the tab below
-   * never appears. Only these three fields are sent — a partial contract write
-   * leaves every other term alone — so it cannot commit half-typed dates or
-   * hours, and Save contract still carries them for the normal path.
-   */
-  const saveExcess = (next: { allowExcess: boolean; excessApproval: boolean; excessApproverId: string }) =>
-    run(api.put(`/api/customer-companies/${companyId}/product-contract`, {
-      scope: 'CUSTOMER',
-      allowExcess: next.allowExcess,
-      excessApproval: next.allowExcess && next.excessApproval,
-      excessApproverId: next.allowExcess && next.excessApproval && next.excessApproverId ? next.excessApproverId : null,
-    }));
-
   const saveCustomer = () => {
     if (cust.start && cust.end && cust.end <= cust.start) { toast.error('End date must be after the start date'); return; }
     if (!cust.hoursUnlimited && (cust.hours === '' || Number(cust.hours) <= 0)) { toast.error('Enter support hours greater than 0, or choose Unlimited'); return; }
@@ -163,11 +159,12 @@ export default function ClientDetailPage() {
       hours: cust.hoursUnlimited || cust.hours === '' ? null : Number(cust.hours), visits: cust.visits === '' ? null : Number(cust.visits),
       // Warranty is free — a contract amount only belongs to a paid AMC.
       monthlyCost: cust.coverageType !== 'AMC' || cust.monthlyCost === '' ? null : Number(cust.monthlyCost),
-      // Support-hours config. Approver cleared → explicit null.
+      // Support-hours config. A cleared rate goes as an explicit null.
       hoursPeriod: cust.hoursPeriod, carryForward: cust.hoursPeriod === 'MONTHLY' && cust.carryForward,
       allowTicketsAfterHours: cust.allowTicketsAfterHours,
-      allowExcess: cust.allowExcess, excessApproval: cust.allowExcess && cust.excessApproval,
-      excessApproverId: cust.allowExcess && cust.excessApproval && cust.excessApproverId ? cust.excessApproverId : null,
+      allowExcess: cust.allowExcess,
+      excessRate: cust.excessRate === '' ? null : Number(cust.excessRate),
+      ...servicesPayload(services),
       productIds: cust.productIds,
     }), 'Contract saved');
   };
@@ -181,8 +178,8 @@ export default function ClientDetailPage() {
   const hUsed = monthlyHrs ? sup!.currentUsed : contract?.hoursPool.used ?? 0;
   const hLeft = monthlyHrs ? sup!.available : contract?.hoursPool.left ?? null;
   const hUnlimited = monthlyHrs ? false : contract?.hoursPool.unlimited ?? false;
-  // Consultants reach this screen read-only, to decide an excess-hours request.
-  // Every write behind these controls is Admin-only on the API.
+  // Consultants reach this screen read-only. Every write behind these controls
+  // is Admin-only on the API.
   const { user } = useAuth();
   const isAdmin = !!user?.roles.includes('Admin');
 
@@ -199,13 +196,13 @@ export default function ClientDetailPage() {
       autoAssignTickets ? 'Tickets will be auto-assigned' : 'Tickets will be assigned manually',
     );
   };
-  // The live excess-hours request on the shared contract, decided inline in the
-  // support-hours card. On a shared contract the pool's owner is the company
-  // itself; per-product requests are decided on the product's own screen.
-  const { data: excessRequests = [] } = useExcessRequests(companyId);
-  const excessRequest = latestExcessFor(excessRequests, companyId);
-  const decideExcess = useDecideExcess(companyId);
-  const canDecideExcess = excessRequest?.status === 'PENDING' && (isAdmin || excessRequest.approverUserId === user?.id);
+  // The client's one account manager — saves on pick, like auto-assign.
+  const setAccountManager = (accountManagerId: string | null) =>
+    run(
+      api.patch(`/api/customer-companies/${companyId}`, { accountManagerId })
+        .then(() => qc.invalidateQueries({ queryKey: ['client', companyId] })),
+      accountManagerId ? 'Account manager assigned' : 'Account manager removed',
+    );
 
   // Renew — enabled only in the last 30 days before expiry (or once expired).
   const canRenew = !!contract?.end && (!contract.period.active || (contract.period.daysLeft ?? 999) <= 30);
@@ -246,6 +243,10 @@ export default function ClientDetailPage() {
         <h1 className="text-2xl font-bold text-foreground">{client?.name ?? 'Client'}</h1>
         {client?.code && <span className="text-sm text-muted-foreground">{client.code}</span>}
         {client && <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${statusCls(client.status)}`}>{client.status.toLowerCase()}</span>}
+        {client && (
+          <ManagerSelect label="Account manager" value={client.accountManagerId} valueName={client.accountManagerName}
+            staff={staff} readOnly={!isAdmin} onChange={setAccountManager} />
+        )}
         <div className="ml-auto flex items-center gap-4">
           <span className="text-sm font-medium text-muted-foreground">Contract type</span>
           <RadioGroup value={scope} onValueChange={onScope} disabled={!contractLoaded || !isAdmin} className="flex gap-5">
@@ -290,9 +291,10 @@ export default function ClientDetailPage() {
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className="truncate font-semibold text-foreground">{p.productName}</span>
-                          <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${statusCls(p.status)}`}>{p.status.toLowerCase()}</span>
+                          <span title={productPill(p).title} className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${productPill(p).cls}`}>{productPill(p).label}</span>
                         </div>
                         <div className="mt-0.5 text-xs text-muted-foreground">Primary agents: {p.agents.length ? p.agents.join(', ') : 'none'}</div>
+                        <div className="text-xs text-muted-foreground">Product manager: {p.productManagerName ?? 'not assigned'}</div>
                         <div className="mt-1 text-[11px] font-medium text-primary">Manage consultants →</div>
                       </div>
                       <span onClick={(e) => e.stopPropagation()} className="mt-0.5 shrink-0" title={selected ? 'Remove from contract' : 'Add to contract'}>
@@ -343,9 +345,7 @@ export default function ClientDetailPage() {
           {/* Terms (left) and how the hours are governed (right), as two cards of
               equal height — `items-stretch` + `h-full`, with the actions pinned
               to the left card's floor by `mt-auto` so both columns end on the
-              same line. Every staff member reads this; only an Admin writes it,
-              and the shared contract's excess request is decided in the card on
-              the right rather than in a panel of its own. */}
+              same line. Every staff member reads this; only an Admin writes it. */}
           <div className="grid items-stretch gap-4 lg:grid-cols-2">
             <section className="flex h-full flex-col gap-3 rounded-lg border bg-card p-4">
               <h2 className="text-base font-semibold text-foreground">Terms</h2>
@@ -405,22 +405,20 @@ export default function ClientDetailPage() {
                 </p>
               ) : (
                 <SupportHoursConfig
-                  value={{ hoursPeriod: cust.hoursPeriod, carryForward: cust.carryForward, allowTicketsAfterHours: cust.allowTicketsAfterHours, allowExcess: cust.allowExcess, excessApproval: cust.excessApproval, excessApproverId: cust.excessApproverId }}
-                  onChange={(patch) => {
-                    const next = { ...cust, ...patch };
-                    setCust(next);
-                    // Only the three that gate the approval request write at once.
-                    if ('allowExcess' in patch || 'excessApproval' in patch || 'excessApproverId' in patch) saveExcess(next);
-                  }}
-                  staff={staff}
+                  value={{ hoursPeriod: cust.hoursPeriod, carryForward: cust.carryForward, allowTicketsAfterHours: cust.allowTicketsAfterHours, allowExcess: cust.allowExcess, excessRate: cust.excessRate }}
+                  // Saved with the rest of the contract by Save contract.
+                  onChange={(patch) => setCust((c) => ({ ...c, ...patch }))}
                   live={contract?.support ?? null}
                   readOnly={!isAdmin}
-                  approverName={contract?.support?.approverName}
-                  request={excessRequest}
-                  canDecide={canDecideExcess}
-                  deciding={decideExcess.isPending}
-                  onDecide={(approve) => excessRequest && decideExcess.mutate({ id: excessRequest.id, approve })} />
+                  showRate={isAdmin} />
               )}
+              {/* What else the contract covers. Outside the Unlimited branch above on
+                  purpose: it has nothing to do with how hours are counted. */}
+              <div className="mt-1 border-t pt-3">
+                <h3 className="text-sm font-semibold text-foreground">Contract services</h3>
+                <ContractServicesConfig value={services} readOnly={!isAdmin}
+                  onChange={(patch) => setServices((s) => ({ ...s, ...patch }))} />
+              </div>
             </section>
           </div>
         </section>
@@ -442,7 +440,7 @@ export default function ClientDetailPage() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="truncate font-semibold text-foreground">{p.productName}</span>
-                    <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${statusCls(p.status)}`}>{p.status.toLowerCase()}</span>
+                    <span title={productPill(p).title} className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${productPill(p).cls}`}>{productPill(p).label}</span>
                   </div>
                   <div className="mt-0.5 grid grid-cols-2 gap-x-3 text-xs text-muted-foreground">
                     <span>{p.amc.type === 'FREE' ? 'Warranty (free)' : 'AMC (paid)'}: {p.amc.active ? p.amc.label : 'ended'}</span>
@@ -450,6 +448,7 @@ export default function ClientDetailPage() {
                     <span>Visits: {p.visits.allocated == null ? '—' : `${p.visits.left}/${p.visits.allocated}`}</span>
                   </div>
                   <div className="mt-0.5 text-xs text-muted-foreground">Primary agents: {p.agents.length ? p.agents.join(', ') : 'none'}</div>
+                        <div className="text-xs text-muted-foreground">Product manager: {p.productManagerName ?? 'not assigned'}</div>
                 </div>
                 <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
               </button>

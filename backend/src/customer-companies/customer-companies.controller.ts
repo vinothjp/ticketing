@@ -12,7 +12,7 @@ import { CustomerProductsService } from './customer-products.service';
 import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto, CustomerAdminDto } from './dto/customer-company.dto';
 import {
   AssignProductDto, UpdateProductTermsDto, RenewAmcDto, GrantRequestDto, DeclineRequestDto, SetContractDto,
-  RenewContractDto, AddCustomerConsultantDto, LogUsageDto, DecideExcessDto, SetPoNumberDto,
+  RenewContractDto, AddCustomerConsultantDto, LogUsageDto, SetPoNumberDto, SetModuleActiveDto, SetProductManagerDto,
 } from './dto/customer-product.dto';
 import { sendWorkbook, stamp } from '../lib/spreadsheet';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -60,38 +60,6 @@ export class CustomerCompaniesController {
     private supportHours: SupportHoursService,
     private customerProducts: CustomerProductsService,
   ) {}
-
-  // ---- Excess support-hours approvals ------------------------------------
-  // Readable by any internal staff (the client screens are read-only for
-  // consultants); the decision itself is checked in the service, where only the
-  // named approver or a tenant Admin gets through.
-
-  /** Open requests this user must decide, across every client — for the bell//badge. */
-  @Get('excess-requests/mine')
-  @UseGuards(StaffGuard)
-  myExcessRequests(@Request() req: AuthedRequest) {
-    return this.customerProducts.myPendingExcessRequests(req.user.clientId, req.user.id);
-  }
-
-  @Post('excess-requests/:reqId/approve')
-  @UseGuards(StaffGuard)
-  approveExcess(
-    @Param('reqId') reqId: string,
-    @Body() body: DecideExcessDto,
-    @Request() req: AuthedRequest,
-  ) {
-    return this.customerProducts.decideExcessRequest(reqId, req.user.clientId, req.user, true, body?.note);
-  }
-
-  @Post('excess-requests/:reqId/reject')
-  @UseGuards(StaffGuard)
-  rejectExcess(
-    @Param('reqId') reqId: string,
-    @Body() body: DecideExcessDto,
-    @Request() req: AuthedRequest,
-  ) {
-    return this.customerProducts.decideExcessRequest(reqId, req.user.clientId, req.user, false, body?.note);
-  }
 
   // ---- Provider: product requests queue (declared before :id routes) ----
   @Get('product-requests')
@@ -204,6 +172,18 @@ export class CustomerCompaniesController {
     return this.customerProducts.logUsage(cpId, dto, req.user.clientId);
   }
 
+  @Patch('purchased-products/:cpId/manager')
+  @Roles('Admin')
+  setProductManager(@Param('cpId') cpId: string, @Body() dto: SetProductManagerDto, @Request() req: AuthedRequest) {
+    return this.customerProducts.setProductManager(cpId, dto.userId, req.user.clientId);
+  }
+
+  @Patch('purchased-products/:cpId/modules/:moduleId')
+  @Roles('Admin')
+  setModuleActive(@Param('cpId') cpId: string, @Param('moduleId') moduleId: string, @Body() dto: SetModuleActiveDto, @Request() req: AuthedRequest) {
+    return this.customerProducts.setModuleActive(cpId, moduleId, dto.isActive, req.user.clientId);
+  }
+
   @Delete('purchased-products/:cpId')
   @Roles('Admin')
   removePurchasedProduct(@Param('cpId') cpId: string, @Request() req: AuthedRequest) {
@@ -211,12 +191,6 @@ export class CustomerCompaniesController {
   }
 
   // ---- Provider: customer-level consultants (auto-assignment overrides) ----
-  @Get(':id/excess-requests')
-  @Roles('Admin', 'Viewer')
-  excessRequests(@Param('id') id: string, @Request() req: AuthedRequest) {
-    return this.customerProducts.listExcessRequests(req.user.clientId, id);
-  }
-
   @Get(':id/consultants')
   @Roles('Admin', 'Viewer')
   listConsultants(@Param('id') id: string, @Request() req: AuthedRequest) {

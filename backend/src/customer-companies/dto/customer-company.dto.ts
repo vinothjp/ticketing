@@ -49,6 +49,8 @@ export class UpdateCompanyDto extends SupportHoursFields {
   // Scope-independent, so it is written here rather than through SetContractDto,
   // whose settings block only runs for a CUSTOMER-scope contract.
   @IsOptional() @IsBoolean() autoAssignTickets?: boolean;
+  // The client's one account manager (internal staff); null clears it.
+  @IsOptional() @IsString() accountManagerId?: string | null;
 }
 
 export class CreateContactDto {

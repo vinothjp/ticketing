@@ -192,9 +192,8 @@ export default function Layout({ children }: { children: ReactNode }) {
             }
             // Agents keep Client Visits: the API gives them their own assigned
             // visits so they can report hours and status back. They also get
-            // Clients, read-only — a consultant named as an excess-hours approver
-            // decides those requests on the client's product screen, so the page
-            // has to be reachable from their login.
+            // Clients, read-only — consultants read a client's terms, managers
+            // and consultant routing there, though only an Admin changes them.
             if (group.label === 'Workspace' && !isAdmin && !isCustomer) {
               return {
                 ...group,

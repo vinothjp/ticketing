@@ -21,6 +21,8 @@ interface MyProduct {
   purchaseDate: string | null; agents: string[];
   warranty: Coverage & { months: number }; amc: AmcCoverage;
   hours: Pool; visits: Pool; paidTerms: PaidTerms;
+  // False once the provider has switched off every module of it for you.
+  activeForClient: boolean;
 }
 interface CatalogueItem { id: string; name: string; code: string; description?: string | null }
 interface ProductReq { id: string; product: { name: string; code: string }; status: string; note?: string | null; decisionNote?: string | null; createdAt: string }
@@ -222,7 +224,11 @@ export default function MyProductsPage() {
       ) : customerScope ? null : (
         <div className="grid gap-4 md:grid-cols-2">
           {products.map((p) => {
-            const b = statusBadge(p.status);
+            // An active product the provider switched every module off for reads as
+            // inactive — one badge, not two.
+            const b = p.status === 'ACTIVE' && p.activeForClient === false
+              ? { label: 'Inactive', cls: 'bg-muted text-muted-foreground border-border' }
+              : statusBadge(p.status);
             const amcWarn = p.amc.active && p.amc.pct >= 90;
             const isFree = p.amc.type === 'FREE';
             const showPaidCta = p.status !== 'ACTIVE' || (isFree && amcWarn);

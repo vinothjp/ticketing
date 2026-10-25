@@ -11,6 +11,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { assertUserDeletable } from '../users/user-links';
 import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto, CustomerAdminDto } from './dto/customer-company.dto';
 import { CUSTOMER_ADMIN_ROLE, assertNoCustomerAdmin } from './customer-admin';
+import { productOffForClient } from './module-switch';
+import { assertAssignableManager, managerName, MANAGER_SELECT } from './client-managers';
 import { CLIENT_COLUMNS, CLIENT_IMPORT_NOTES, CLIENT_STATUSES, CLIENT_STATUS_LABELS } from './client-sheet';
 import {
   exportSheet, importTemplate, readSheet, rowReader, asText, asEnum, errorText,
@@ -93,12 +95,14 @@ export class CustomerCompaniesService {
 
   /** One client's core details (for the client workspace page). */
   async getOne(id: string, clientId: string) {
-    const c = await this.getOwned(id, clientId);
+    const c = await this.prisma.customerCompany.findFirst({ where: { id, clientId }, include: { accountManager: MANAGER_SELECT } });
+    if (!c) throw new NotFoundException('Customer company not found');
     return {
       id: c.id, name: c.name, code: c.code, status: c.status, contactEmail: c.contactEmail,
       contactPerson: c.contactPerson, contactNumber: c.contactNumber, logoUrl: c.logoUrl,
       contractScope: c.contractScope, contractStart: c.contractStart, contractEnd: c.contractEnd, contractHours: c.contractHours,
       autoAssignTickets: c.autoAssignTickets,
+      accountManagerId: c.accountManagerId, accountManagerName: managerName(c.accountManager),
     };
   }
 
@@ -255,11 +259,17 @@ export class CustomerCompaniesService {
     // Only products whose AMC is still active — expired/terminated ones drop off.
     const links = await this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId, status: 'ACTIVE' } });
     if (links.length === 0) return [];
-    return this.prisma.product.findMany({
+    const products = await this.prisma.product.findMany({
       where: { clientId, isActive: true, id: { in: links.map((l) => l.productId) } },
       orderBy: [{ sortOrder: 'asc' }],
       select: { id: true, name: true, code: true, autoAssign: true, modules: { select: { id: true, name: true, tracks: true }, orderBy: [{ sortOrder: 'asc' }] } },
     });
+    // Modules switched off for this client on their product screen drop out,
+    // and a product with every module switched off drops out with them.
+    const off = new Map(links.map((l) => [l.productId, l.inactiveModuleIds]));
+    return products
+      .filter((p) => !productOffForClient(p.modules.map((m) => m.id), off.get(p.id) ?? []))
+      .map((p) => ({ ...p, modules: p.modules.filter((m) => !off.get(p.id)?.includes(m.id)) }));
   }
 
   /**
@@ -441,7 +451,8 @@ export class CustomerCompaniesService {
       });
       if (dup) throw new ConflictException('A customer company with this name already exists');
     }
-    const { productIds, supportPeriodStart, supportPeriodEnd, ...rest } = dto;
+    const { productIds, supportPeriodStart, supportPeriodEnd, accountManagerId, ...rest } = dto;
+    if (accountManagerId) await assertAssignableManager(this.prisma, accountManagerId, clientId, 'account manager');
     // Re-arm the "hours low" alert whenever the pool is (re)configured, so a new
     // period or a raised cap can trigger a fresh alert.
     const poolChanged = ['agreedSupportHours', 'supportPeriodStart', 'supportPeriodEnd', 'supportAlertThresholdPct']
@@ -453,6 +464,8 @@ export class CustomerCompaniesService {
         ...(supportPeriodStart !== undefined ? { supportPeriodStart: supportPeriodStart ? new Date(supportPeriodStart) : null } : {}),
         ...(supportPeriodEnd !== undefined ? { supportPeriodEnd: supportPeriodEnd ? new Date(supportPeriodEnd) : null } : {}),
         ...(poolChanged ? { supportAlertSentAt: null } : {}),
+        // Absent leaves it be; empty or null clears it.
+        ...(accountManagerId !== undefined ? { accountManagerId: accountManagerId || null } : {}),
         updatedBy: actorId,
       },
     });

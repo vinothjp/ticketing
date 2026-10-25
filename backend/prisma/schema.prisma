@@ -241,13 +241,32 @@ model CustomerCompany {
   // Whether time may be logged past the allowance, and whether doing so needs a
   // named approver's sign-off. The approver is an internal staff/admin user.
   contractAllowExcess      Boolean  @default(false)
+  // What an hour beyond the allowance is charged at (needs contractAllowExcess).
+  // Money: withheld from non-Admins server-side, like contractMonthlyCost.
+  contractExcessRate       Decimal?
+  // DORMANT — the excess-hours approval flow was removed. Nothing reads or writes
+  // these (nor SupportHoursExcessRequest); they are kept only because dropping
+  // them from the schema would make start-up `db push --accept-data-loss` delete
+  // the data on every deployed database.
   contractExcessApproval   Boolean  @default(false)
   // Whether the customer may still raise tickets once the allowance is spent.
   // Defaults to true — support does not stop the moment the hours run out unless
   // the tenant says so.
   contractAllowTicketsAfterHours Boolean @default(true)
+  // What else the shared contract covers. Stored terms only — nothing counts
+  // CRs against these yet. With CR not applicable the two limits are cleared.
+  contractThirdPartyIntegration Boolean @default(false)
+  contractPlanRollout      Boolean  @default(false)
+  contractCrApplicable     Boolean  @default(false)
+  contractCrMaxPerMonth    Int?
+  // A CR estimated above this many hours is chargeable.
+  contractCrMaxHours       Decimal?
   contractExcessApproverId String?
   contractExcessApprover   User?    @relation("ContractExcessApprover", fields: [contractExcessApproverId], references: [id], onDelete: SetNull)
+  // The one internal staff user who owns this client relationship. Unrelated to
+  // the `Manager` role, which is the Employee Master reporting line.
+  accountManagerId         String?
+  accountManager           User?    @relation("ClientAccountManager", fields: [accountManagerId], references: [id], onDelete: SetNull)
   // Whether tickets this client raises are auto-routed to a free consultant at
   // all. Off = every ticket lands unassigned for a manager to pick. Applies
   // whatever the contractScope is, hence no contract* prefix. Unrelated to the
@@ -347,6 +366,8 @@ model User {
   projectTimesheets ProjectTimesheet[]
   contractExcessApprovals CustomerCompany[]        @relation("ContractExcessApprover")
   productExcessApprovals  CustomerCompanyProduct[] @relation("ProductExcessApprover")
+  accountManagedClients   CustomerCompany[]        @relation("ClientAccountManager")
+  managedClientProducts   CustomerCompanyProduct[] @relation("ClientProductManager")
 
   @@unique([clientId, employeeId])
 }
@@ -540,11 +561,24 @@ model CustomerCompanyProduct {
   amcHoursPeriod       String   @default("FULL_AMC")  // FULL_AMC | MONTHLY
   amcCarryForward      Boolean  @default(false)
   amcAllowExcess       Boolean  @default(false)
+  // Per-product mirror of contractExcessRate.
+  amcExcessRate        Decimal?
+  // DORMANT — see contractExcessApproval.
   amcExcessApproval    Boolean  @default(false)
   // Per-product mirror of contractAllowTicketsAfterHours.
   amcAllowTicketsAfterHours Boolean @default(true)
+  // Per-product mirror of contractThirdPartyIntegration … contractCrMaxHours.
+  amcThirdPartyIntegration Boolean @default(false)
+  amcPlanRollout       Boolean  @default(false)
+  amcCrApplicable      Boolean  @default(false)
+  amcCrMaxPerMonth     Int?
+  amcCrMaxHours        Decimal?
   amcExcessApproverId  String?
   amcExcessApprover    User?    @relation("ProductExcessApprover", fields: [amcExcessApproverId], references: [id], onDelete: SetNull)
+  // The one internal staff user who owns this product for this client — a
+  // client-product role, so each client can name a different one. Either scope.
+  productManagerId     String?
+  productManager       User?    @relation("ClientProductManager", fields: [productManagerId], references: [id], onDelete: SetNull)
   // Per-product purchase order + its invoice, the twin of the shared contract's
   // contractPo* fields. A client on PRODUCT scope raises one PO per product, so
   // these are what that screen edits; on CUSTOMER scope one PO covers everything
@@ -552,6 +586,10 @@ model CustomerCompanyProduct {
   poNumber             String?
   poFileUrl            String?
   poFileName           String?
+  // Modules of this product switched off for THIS client — they can't be picked
+  // on the client's new tickets. Plain ids: a module deleted from the product
+  // just stops matching. Not a term, so a scope switch's reset leaves it alone.
+  inactiveModuleIds    String[] @default([])
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -1088,6 +1126,7 @@ model TicketWorklog {
 // entry: approving unlocks over-cap logging for that pool, it does not book any
 // hours. One live row per pool per period, so a month that restores the
 // allowance also demands fresh approval rather than riding an old one.
+// DORMANT — the excess-hours approval flow was removed; see contractExcessApproval.
 model SupportHoursExcessRequest {
   id                String   @id @default(uuid())
   clientId          String

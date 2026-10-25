@@ -5,6 +5,7 @@ import { CrOptionsService } from './cr-options.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CreateChangeRequestDto, UpdateChangeRequestDto } from './dto/change-request.dto';
 import { CHANGE_STAGES, CAB_STAGE, CAB_TYPES, stageIndex } from './change-stage';
+import { assertCrWithinContract } from './cr-limits';
 
 type Actor = { id: string; username?: string; roles?: string[] };
 type CustomerActor = { id: string; clientId: string; customerCompanyId: string };
@@ -64,6 +65,8 @@ export class ChangeRequestsService {
     if (missing.length) {
       throw new BadRequestException(`Fill these in before sending for approval: ${missing.join(', ')}`);
     }
+    // Re-sending one the customer rejected makes it count against the month again.
+    await assertCrWithinContract(this.prisma, clientId, cr, { ...cr, approvalStatus: 'PENDING' }, { createdAt: cr.createdAt, excludeId: id });
     const updated = await this.prisma.changeRequest.update({
       where: { id },
       data: { approvalStatus: 'PENDING', approvalReason: null, decidedById: null, decidedAt: null, updatedBy: actor.id },
@@ -168,6 +171,14 @@ export class ChangeRequestsService {
     // form may still have been holding when the radio was flipped.
     const changeSource = dto.changeSource === 'INTERNAL' ? 'INTERNAL' : 'CUSTOMER';
     const internal = changeSource === 'INTERNAL';
+    // The client's contract may not cover CRs, or this month's may be used up.
+    await assertCrWithinContract(this.prisma, clientId, null, {
+      changeSource,
+      customerCompanyId: internal ? null : trimOrNull(dto.customerCompanyId),
+      status: trimOrNull(dto.status) ?? 'New',
+      approvalStatus: 'NONE',
+      cabApprovalStatus: 'NONE',
+    }, { createdAt: new Date() });
 
     return this.prisma.$transaction(async (tx) => {
       const client = await tx.client.update({
@@ -323,6 +334,18 @@ export class ChangeRequestsService {
     if (has('functionalConsultant')) data.functionalConsultant = trimOrNull(dto.functionalConsultant);
     if (has('technicalConsultant')) data.technicalConsultant = trimOrNull(dto.technicalConsultant);
     if (has('projectManager')) data.projectManager = trimOrNull(dto.projectManager);
+    // A CR that starts counting here — moved to another client, switched from
+    // internal, back from Rejected/Cancelled, or a CAB rejection reset by a new
+    // change type — is checked against its client's contract.
+    await assertCrWithinContract(this.prisma, clientId, cr, {
+      changeSource: source ?? cr.changeSource,
+      customerCompanyId: source === 'INTERNAL'
+        ? null
+        : has('customerCompanyId') ? trimOrNull(dto.customerCompanyId) : cr.customerCompanyId,
+      status: has('status') ? trimOrNull(dto.status) ?? 'New' : cr.status,
+      approvalStatus: source === 'INTERNAL' ? 'NONE' : cr.approvalStatus,
+      cabApprovalStatus: data.cabApprovalStatus === 'NONE' ? 'NONE' : cr.cabApprovalStatus,
+    }, { createdAt: cr.createdAt, excludeId: id });
     if (has('crDate')) data.crDate = toDate(dto.crDate);
     if (has('crStartDate')) data.crStartDate = merged.crStartDate;
     if (has('crEndDate')) data.crEndDate = merged.crEndDate;
@@ -435,6 +458,7 @@ export class ChangeRequestsService {
     if (!decision) throw new BadRequestException('Decision must be APPROVED or REJECTED');
     const reason = decision === 'REJECTED' ? trimOrNull(dto.reason) : null;
     if (decision === 'REJECTED' && !reason) throw new BadRequestException('A rejection reason is required');
+    await assertCrWithinContract(this.prisma, clientId, cr, { ...cr, cabApprovalStatus: decision }, { createdAt: cr.createdAt, excludeId: id });
     const updated = await this.prisma.changeRequest.update({
       where: { id },
       data: { cabApprovalStatus: decision, cabReason: reason, cabDecidedById: actor.id, cabDecidedAt: new Date(), updatedBy: actor.id },

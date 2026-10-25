@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { CustomerCompanyProduct, CustomerCompany, Prisma } from '@prisma/client';
 import { unlink } from 'fs/promises';
 import { join } from 'path';
@@ -9,6 +9,8 @@ import {
   AssignProductDto, UpdateProductTermsDto, RenewAmcDto, CreateProductRequestDto, GrantRequestDto, SetContractDto,
   RenewContractDto, AddCustomerConsultantDto,
 } from './dto/customer-product.dto';
+import { productOffForClient } from './module-switch';
+import { assertAssignableManager, managerName, MANAGER_SELECT } from './client-managers';
 
 const DAY = 86_400_000;
 /**
@@ -68,9 +70,13 @@ const BLANK_CONTRACT = {
   contractHoursPeriod: 'FULL_AMC',
   contractCarryForward: false,
   contractAllowExcess: false,
-  contractExcessApproval: false,
+  contractExcessRate: null,
   contractAllowTicketsAfterHours: true,
-  contractExcessApprover: { disconnect: true },
+  contractThirdPartyIntegration: false,
+  contractPlanRollout: false,
+  contractCrApplicable: false,
+  contractCrMaxPerMonth: null,
+  contractCrMaxHours: null,
   contractExpiryAlertSentAt: null,
   contractExpiryReminderDays: null,
 } satisfies Prisma.CustomerCompanyUpdateInput;
@@ -97,14 +103,30 @@ const BLANK_PRODUCT_TERMS = {
   amcHoursPeriod: 'FULL_AMC',
   amcCarryForward: false,
   amcAllowExcess: false,
-  amcExcessApproval: false,
+  amcExcessRate: null,
   amcAllowTicketsAfterHours: true,
-  amcExcessApproverId: null,
+  amcThirdPartyIntegration: false,
+  amcPlanRollout: false,
+  amcCrApplicable: false,
+  amcCrMaxPerMonth: null,
+  amcCrMaxHours: null,
   expiryAlertSentAt: null,
   expiryReminderDays: null,
   hoursAlertSentAt: null,
   warrantyAlertSentAt: null,
 } satisfies Prisma.CustomerCompanyProductUncheckedUpdateManyInput;
+
+/** The contract's services block — the same shape for a shared contract and a product. */
+const servicesView = (s: {
+  thirdPartyIntegration: boolean; planRollout: boolean;
+  crApplicable: boolean; crMaxPerMonth: number | null; crMaxHours: Prisma.Decimal | null;
+}) => ({
+  thirdPartyIntegration: s.thirdPartyIntegration,
+  planRollout: s.planRollout,
+  crApplicable: s.crApplicable,
+  crMaxPerMonth: s.crApplicable ? s.crMaxPerMonth : null,
+  crMaxHours: s.crApplicable && s.crMaxHours != null ? Number(s.crMaxHours) : null,
+});
 
 @Injectable()
 export class CustomerProductsService {
@@ -180,7 +202,7 @@ export class CustomerProductsService {
    * customer contract when the customer is on CUSTOMER scope, otherwise the named
    * product's active (paid/free) pool. `hours` is read per the pool's period —
    * a per-month allowance under MONTHLY, a whole-term one under FULL_AMC. Returns
-   * null when nothing governs (unknown company/product). Carries the excess config.
+   * null when nothing governs (unknown company/product). Carries the excess switch.
    */
   private async resolvePoolConfig(clientId: string, companyId: string, productId: string | null) {
     const company = await this.prisma.customerCompany.findFirst({ where: { id: companyId, clientId } });
@@ -190,7 +212,6 @@ export class CustomerProductsService {
         scope: 'CONTRACT' as const, ownerId: company.id, clientId,
         period: company.contractHoursPeriod, unlimited: company.contractHoursUnlimited, hours: company.contractHours,
         carryForward: company.contractCarryForward, allowExcess: company.contractAllowExcess,
-        excessApproval: company.contractExcessApproval, excessApproverId: company.contractExcessApproverId,
         allowTicketsAfterHours: company.contractAllowTicketsAfterHours,
       };
     }
@@ -203,7 +224,6 @@ export class CustomerProductsService {
       period: cp.amcHoursPeriod, unlimited: paid ? cp.paidAmcHoursUnlimited : cp.freeAmcHoursUnlimited,
       hours: paid ? cp.paidAmcHours : cp.freeAmcHours,
       carryForward: cp.amcCarryForward, allowExcess: cp.amcAllowExcess,
-      excessApproval: cp.amcExcessApproval, excessApproverId: cp.amcExcessApproverId,
       allowTicketsAfterHours: cp.amcAllowTicketsAfterHours,
     };
   }
@@ -270,17 +290,15 @@ export class CustomerProductsService {
   private async buildSupportView(cfg: {
     scope: 'CONTRACT' | 'PRODUCT'; ownerId: string; clientId: string;
     period: string; unlimited: boolean; hours: number | null;
-    carryForward: boolean; allowExcess: boolean; excessApproval: boolean; excessApproverId: string | null;
+    carryForward: boolean; allowExcess: boolean; excessRate: Prisma.Decimal | null;
     allowTicketsAfterHours: boolean;
-  }) {
-    const approver = cfg.excessApproverId
-      ? await this.prisma.user.findUnique({ where: { id: cfg.excessApproverId }, select: { username: true } })
-      : null;
+  }, hideMoney = false) {
     const base = {
       period: cfg.period, carryForward: cfg.carryForward,
-      allowExcess: cfg.allowExcess, excessApproval: cfg.excessApproval,
+      allowExcess: cfg.allowExcess,
+      // What an excess hour is charged at — money, so withheld from non-Admins.
+      excessRate: hideMoney || cfg.excessRate == null ? null : Number(cfg.excessRate),
       allowTicketsAfterHours: cfg.allowTicketsAfterHours,
-      approverId: cfg.excessApproverId, approverName: approver?.username ?? null,
     };
     if (cfg.period !== 'MONTHLY' || cfg.unlimited || cfg.hours == null) {
       return { ...base, currentAllocated: null, carriedIn: 0, currentUsed: 0, available: null };
@@ -289,131 +307,14 @@ export class CustomerProductsService {
     return { ...base, currentAllocated: m.allocated, carriedIn: m.carriedIn, currentUsed: m.used, available: m.available };
   }
 
-  // ---- Excess-hours approvals -------------------------------------------
-
-  /**
-   * Every excess request raised for a client, newest first. Shown on the client's
-   * Products & consultants screens, where the approver decides them.
-   */
-  listExcessRequests(clientId: string, companyId: string) {
-    return this.prisma.supportHoursExcessRequest.findMany({
-      where: { clientId, customerCompanyId: companyId },
-      orderBy: { createdAt: 'desc' },
-    });
-  }
-
-  /** Open requests this user is the named approver on, across every client. */
-  myPendingExcessRequests(clientId: string, userId: string) {
-    return this.prisma.supportHoursExcessRequest.findMany({
-      where: { clientId, approverUserId: userId, status: 'PENDING' },
-      orderBy: { createdAt: 'desc' },
-      include: { company: { select: { name: true } } },
-    });
-  }
-
-  /**
-   * Approve or decline an excess request. Only the **named approver** decides it,
-   * with a tenant Admin able to step in — an agent who merely happens to see the
-   * client screen must not be able to sign off someone else's approval.
-   *
-   * Approving unlocks over-cap logging on that pool for the period; it books no
-   * hours. Either way the consultant who asked is notified, since they are
-   * blocked until this lands.
-   */
-  async decideExcessRequest(
-    reqId: string,
-    clientId: string,
-    viewer: { id: string; roles: string[] },
-    approve: boolean,
-    note?: string,
-  ) {
-    const request = await this.prisma.supportHoursExcessRequest.findFirst({
-      where: { id: reqId, clientId },
-      include: { company: { select: { name: true } } },
-    });
-    if (!request) throw new NotFoundException('Request not found');
-    const isAdmin = viewer.roles.includes('Admin');
-    if (!isAdmin && request.approverUserId !== viewer.id) {
-      throw new ForbiddenException('Only the named approver can decide this request');
-    }
-    if (request.status !== 'PENDING') {
-      throw new BadRequestException(`This request has already been ${request.status.toLowerCase()}`);
-    }
-
-    const decider = await this.prisma.user.findUnique({
-      where: { id: viewer.id }, select: { username: true },
-    });
-    const updated = await this.prisma.supportHoursExcessRequest.update({
-      where: { id: reqId },
-      data: {
-        status: approve ? 'APPROVED' : 'REJECTED',
-        decisionNote: note?.trim() || null,
-        decidedAt: new Date(),
-        // Stamp who actually decided — an Admin stepping in is part of the record.
-        approverUserId: request.approverUserId ?? viewer.id,
-        approverName: decider?.username ?? request.approverName,
-      },
-    });
-    if (request.requestedById) {
-      await this.notifications.notify({
-        clientId,
-        userId: request.requestedById,
-        type: 'SUPPORT_HOURS_EXCESS',
-        title: approve ? 'Excess support hours approved' : 'Excess support hours declined',
-        body: approve
-          ? `${decider?.username ?? 'The approver'} approved logging beyond the ${request.allocated}h allowance for ${request.company?.name ?? 'the client'} — you can log your time now.`
-          : `${decider?.username ?? 'The approver'} declined logging beyond the ${request.allocated}h allowance for ${request.company?.name ?? 'the client'}.${note?.trim() ? ` Reason: ${note.trim()}` : ''}`,
-        link: request.scope === 'PRODUCT'
-          ? `/admin/clients/${request.customerCompanyId}/products/${request.ownerId}`
-          : `/admin/clients/${request.customerCompanyId}`,
-      });
-    }
-    return updated;
-  }
-
-  /** A support-hours approver must be an internal staff user of the tenant. */
-  private async assertStaffUser(userId: string, clientId: string) {
-    const u = await this.prisma.user.findFirst({ where: { id: userId, clientId, customerCompanyId: null } });
-    if (!u) throw new BadRequestException('The approver must be an internal staff user of this tenant');
-  }
-
-  /**
-   * Ping the configured approver that a client has hit its support-hours cap.
-   *
-   * The link matters: the approver may be a consultant who would otherwise have
-   * to hunt for the client, so the bell opens the exact screen carrying the
-   * Approve/Reject controls for that pool.
-   */
-  private async notifyExcessApprover(
-    cfg: { clientId: string; excessApproverId: string | null; scope?: 'CONTRACT' | 'PRODUCT'; ownerId?: string },
-    companyId: string,
-    cap: number,
-    /** Overrides the default "allowance reached" wording — a request raised when
-     *  the approver was named has not reached anything yet. */
-    body?: string,
-  ) {
-    if (!cfg.excessApproverId) return;
-    const company = await this.prisma.customerCompany.findUnique({ where: { id: companyId }, select: { name: true } });
-    await this.notifications.notify({
-      clientId: cfg.clientId, userId: cfg.excessApproverId, type: 'SUPPORT_HOURS_EXCESS',
-      title: 'Excess support-hours approval needed',
-      body: body
-        ?? `${company?.name ?? 'A client'} has reached its ${cap}h support-hours allowance — a request to log beyond it needs your approval.`,
-      link: cfg.scope === 'PRODUCT' && cfg.ownerId
-        ? `/admin/clients/${companyId}/products/${cfg.ownerId}`
-        : `/admin/clients/${companyId}`,
-    });
-  }
-
   /**
    * Enforce the support-hours allowance before time is logged. Within the pool →
-   * allowed. Over it → refused unless the pool allows excess; if excess needs
-   * approval, the over-cap log is refused and the approver is notified. Unlimited
+   * allowed. Over it → refused unless the pool allows excess, in which case the
+   * hours are logged as they are (charged at the pool's excess rate). Unlimited
    * or unmapped pools are never capped. Public so the ticket-worklog path can call it.
    */
   async assertHoursWithinAllowance(
     clientId: string, companyId: string | null | undefined, productId: string | null | undefined, addHours: number,
-    actorId?: string,
   ) {
     if (!companyId || !(addHours > 0)) return;
     const cfg = await this.resolvePoolConfig(clientId, companyId, productId ?? null);
@@ -424,203 +325,6 @@ export class CustomerProductsService {
     if (!cfg.allowExcess) {
       throw new BadRequestException('Support-hours allowance exhausted — enable excess hours to log more time.');
     }
-    if (cfg.excessApproval) {
-      await this.assertExcessApproved(cfg, companyId, pool.allocated, pool.used, productId ?? null, actorId);
-    }
-  }
-
-  /**
-   * Naming an approver IS the request. The moment a pool is saved with Limited
-   * hours, excess logging on, approval required and an approver named, a PENDING
-   * request is raised for that pool's current period and the approver notified —
-   * so the pool's own screen shows "Waiting for <approver>" straight away, and
-   * turns into "Approved by …" / "Declined by …" once they decide, instead of
-   * staying blank until some consultant happens to hit the cap.
-   *
-   * Scope-blind on purpose: it reads `resolvePoolConfig`, so a shared customer
-   * contract and a per-product AMC behave identically — the rule is the same
-   * wherever the Limited hours are configured.
-   *
-   * Idempotent, and driven entirely by the saved config:
-   *  - config incomplete (Unlimited pool, excess off, approval off, no approver)
-   *    → a PENDING row is withdrawn, since nothing is being asked any more. A
-   *    decided row is left alone: it is a record, not a pending question.
-   *  - a PENDING row already there → re-targeted if the approver changed, and
-   *    the new approver notified; otherwise left as it is, so re-saving the
-   *    same settings does not spam anyone.
-   *  - already APPROVED/REJECTED for this period → left alone. Only a new period
-   *    (a MONTHLY pool rolling over) asks again.
-   */
-  private async ensureExcessApprovalRequest(
-    clientId: string,
-    companyId: string,
-    productId: string | null,
-    actorId?: string,
-  ) {
-    const cfg = await this.resolvePoolConfig(clientId, companyId, productId);
-    if (!cfg) return;
-    const periodLabel = this.excessPeriodLabel(cfg.period);
-    // Flipping a pool between "for the whole AMC" and "per month" changes which
-    // period governs, stranding the other one's open question — it could never be
-    // answered usefully but would sit in the approver's queue forever. Decided
-    // rows stay: they record a decision that was genuinely made at the time.
-    await this.prisma.supportHoursExcessRequest.deleteMany({
-      where: {
-        scope: cfg.scope, ownerId: cfg.ownerId, status: 'PENDING',
-        periodLabel: { not: periodLabel },
-      },
-    });
-    const existing = await this.prisma.supportHoursExcessRequest.findUnique({
-      where: { scope_ownerId_periodLabel: { scope: cfg.scope, ownerId: cfg.ownerId, periodLabel } },
-    });
-
-    // An Unlimited pool has no allowance to exceed, so there is nothing to ask.
-    // The permission is only as live as the config that asked for it. Turning
-    // excess off, or moving the pool to Unlimited, retires the question — and a
-    // decided row is retired with it, or toggling the setting off and on again
-    // would silently re-activate an old approval nobody re-asked for.
-    const wanted = !cfg.unlimited && cfg.allowExcess && cfg.excessApproval && !!cfg.excessApproverId;
-    if (!wanted) {
-      if (existing) await this.prisma.supportHoursExcessRequest.delete({ where: { id: existing.id } });
-      return;
-    }
-    // Same question, same person — nothing to do, so re-saving the settings
-    // never duplicates a row or re-notifies anyone.
-    if (existing && existing.approverUserId === cfg.excessApproverId) return;
-    // The approver changed. A still-open question is simply re-addressed; one
-    // already decided is dropped and asked afresh, because the new approver has
-    // agreed to nothing and the old decision was theirs to give, not to inherit.
-    if (existing && existing.status !== 'PENDING') {
-      await this.prisma.supportHoursExcessRequest.delete({ where: { id: existing.id } });
-    }
-
-    const company = await this.prisma.customerCompany.findUnique({
-      where: { id: companyId }, select: { name: true },
-    });
-    const [approver, product] = await Promise.all([
-      this.prisma.user.findUnique({ where: { id: cfg.excessApproverId! }, select: { username: true } }),
-      productId ? this.prisma.product.findUnique({ where: { id: productId }, select: { name: true } }) : null,
-    ]);
-    const cap = Number(cfg.hours ?? 0);
-    const notifyBody =
-      `${company?.name ?? 'A client'} has ${cap}h of support hours` +
-      `${product?.name ? ` on ${product.name}` : ''} and needs your approval before time can be logged beyond it.`;
-
-    if (existing?.status === 'PENDING') {
-      await this.prisma.supportHoursExcessRequest.update({
-        where: { id: existing.id },
-        data: { approverUserId: cfg.excessApproverId, approverName: approver?.username ?? null },
-      });
-      await this.notifyExcessApprover(cfg, companyId, cap, notifyBody);
-      return;
-    }
-
-    const pool = await this.productSupportHours(clientId, companyId, productId ?? '');
-    const requester = actorId
-      ? await this.prisma.user.findUnique({ where: { id: actorId }, select: { username: true } })
-      : null;
-    await this.prisma.supportHoursExcessRequest.create({
-      data: {
-        clientId, customerCompanyId: companyId,
-        scope: cfg.scope, ownerId: cfg.ownerId, periodLabel,
-        allocated: cap,
-        // Where the pool stood when the approval was asked for.
-        usedAtRequest: pool.used ?? 0,
-        productName: product?.name ?? null,
-        requestedById: actorId ?? null,
-        requestedByName: requester?.username ?? null,
-        approverUserId: cfg.excessApproverId,
-        approverName: approver?.username ?? null,
-      },
-    });
-    await this.notifyExcessApprover(cfg, companyId, cap, notifyBody);
-  }
-
-  /**
-   * The period an excess approval belongs to. A MONTHLY pool gets a fresh
-   * allowance every calendar month, so it must be re-approved each month rather
-   * than riding an approval given in January; a whole-term pool has one window,
-   * so it uses the 'ALL' sentinel (not null — Postgres would treat every NULL as
-   * distinct and the unique index would stop catching duplicates).
-   */
-  private excessPeriodLabel(period: string) {
-    return period === 'MONTHLY' ? this.periodLabel() : 'ALL';
-  }
-
-  /**
-   * Over-cap logging on an approval-gated pool: allowed only once the named
-   * approver has signed off for this pool and period. Anything else raises or
-   * reuses a PENDING request and refuses, so the consultant is told where the
-   * decision sits rather than just being blocked.
-   *
-   * The request is a **permission, not a time entry** — approving unlocks the
-   * pool and the consultant then logs their hours normally. Nothing is booked on
-   * their behalf, so nothing is booked without them seeing the final figure.
-   */
-  private async assertExcessApproved(
-    cfg: {
-      clientId: string; scope: 'CONTRACT' | 'PRODUCT'; ownerId: string;
-      period: string; excessApproverId: string | null;
-    },
-    companyId: string,
-    allocated: number,
-    used: number,
-    productId: string | null,
-    actorId?: string,
-  ) {
-    const periodLabel = this.excessPeriodLabel(cfg.period);
-    const existing = await this.prisma.supportHoursExcessRequest.findUnique({
-      where: {
-        scope_ownerId_periodLabel: { scope: cfg.scope, ownerId: cfg.ownerId, periodLabel },
-      },
-    });
-    if (existing?.status === 'APPROVED') return;
-    if (existing?.status === 'PENDING') {
-      throw new BadRequestException(
-        `Logging beyond the allowance is awaiting sign-off from ${existing.approverName ?? 'the approver'}.`,
-      );
-    }
-    if (existing?.status === 'REJECTED') {
-      throw new BadRequestException(
-        existing.decisionNote
-          ? `Logging beyond the allowance was declined: ${existing.decisionNote}`
-          : 'Logging beyond the allowance was declined by the approver.',
-      );
-    }
-
-    const [approver, product, requester] = await Promise.all([
-      cfg.excessApproverId
-        ? this.prisma.user.findUnique({ where: { id: cfg.excessApproverId }, select: { username: true } })
-        : null,
-      productId
-        ? this.prisma.product.findUnique({ where: { id: productId }, select: { name: true } })
-        : null,
-      actorId
-        ? this.prisma.user.findUnique({ where: { id: actorId }, select: { username: true } })
-        : null,
-    ]);
-    await this.prisma.supportHoursExcessRequest.create({
-      data: {
-        clientId: cfg.clientId,
-        customerCompanyId: companyId,
-        scope: cfg.scope,
-        ownerId: cfg.ownerId,
-        periodLabel,
-        allocated,
-        // The position as it stood when the request was raised, so the approver
-        // decides on the figures they were shown even if more time lands later.
-        usedAtRequest: used,
-        productName: product?.name ?? null,
-        requestedById: actorId ?? null,
-        requestedByName: requester?.username ?? null,
-        approverUserId: cfg.excessApproverId,
-        approverName: approver?.username ?? null,
-      },
-    });
-    await this.notifyExcessApprover(cfg, companyId, allocated);
-    throw new BadRequestException(
-      `Support-hours allowance exhausted — a request has been sent to ${approver?.username ?? 'the approver'} for sign-off.`,
-    );
   }
 
   /**
@@ -663,13 +367,16 @@ export class CustomerProductsService {
 
   /** Customer-facing view: warranty + AMC countdowns, live hours/visits left, agents. */
   private async toView(
-    cp: CustomerCompanyProduct & { product?: { name: string; code: string } | null },
+    cp: CustomerCompanyProduct & {
+      product?: { name: string; code: string; modules?: { id: string }[] } | null;
+      productManager?: { name: string | null; username: string } | null;
+    },
     clientId: string,
     agents: string[] = [],
     ticketHours = 0,
-    // Consultants read these screens too (read-only, to decide excess-hours
-    // approvals). What a client pays is not theirs to see, so the figure is
-    // withheld here rather than only hidden in the UI.
+    // Consultants read these screens too (read-only). What a client pays — the
+    // contract amount and the excess-hours rate — is not theirs to see, so the
+    // figures are withheld here rather than only hidden in the UI.
     hideMoney = false,
   ) {
     const now = Date.now();
@@ -733,6 +440,12 @@ export class CustomerProductsService {
       poNumber: cp.poNumber,
       poFileUrl: cp.poFileUrl,
       poFileName: cp.poFileName,
+      inactiveModuleIds: cp.inactiveModuleIds,
+      // Every module switched off for this client makes the product itself
+      // inactive for them — see module-switch.ts.
+      activeForClient: !productOffForClient((cp.product?.modules ?? []).map((m) => m.id), cp.inactiveModuleIds),
+      productManagerId: cp.productManagerId,
+      productManagerName: managerName(cp.productManager),
       // Paid-AMC terms shown so the customer knows what a subscription buys.
       paidTerms: {
         months: cp.paidAmcMonths,
@@ -745,9 +458,12 @@ export class CustomerProductsService {
       support: await this.buildSupportView({
         scope: 'PRODUCT', ownerId: cp.id, clientId,
         period: cp.amcHoursPeriod, unlimited: hoursUnlimited, hours: allocHours,
-        carryForward: cp.amcCarryForward, allowExcess: cp.amcAllowExcess,
-        excessApproval: cp.amcExcessApproval, excessApproverId: cp.amcExcessApproverId,
+        carryForward: cp.amcCarryForward, allowExcess: cp.amcAllowExcess, excessRate: cp.amcExcessRate,
         allowTicketsAfterHours: cp.amcAllowTicketsAfterHours,
+      }, hideMoney),
+      services: servicesView({
+        thirdPartyIntegration: cp.amcThirdPartyIntegration, planRollout: cp.amcPlanRollout,
+        crApplicable: cp.amcCrApplicable, crMaxPerMonth: cp.amcCrMaxPerMonth, crMaxHours: cp.amcCrMaxHours,
       }),
     };
   }
@@ -851,12 +567,20 @@ export class CustomerProductsService {
   // ---- provider: assign / edit / renew / remove ------------------------------
 
   async assignProduct(companyId: string, dto: AssignProductDto, clientId: string, actorId?: string) {
-    // Under a shared contract the covered products are chosen by `setContract`,
-    // which owns the one timeline; assigning per-product terms here would write
-    // coverage no screen reads.
-    this.assertScope(await this.ownedCompany(companyId, clientId), 'PRODUCT');
+    const company = await this.ownedCompany(companyId, clientId);
     const product = await this.prisma.product.findFirst({ where: { id: dto.productId, clientId } });
     if (!product) throw new NotFoundException('Product not found');
+
+    // Under a shared contract the contract owns the one timeline, so assigning
+    // only records that it covers the product — the same row `setContract`'s
+    // `productIds` writes. Per-product terms here would be a pool nothing reads.
+    if (company.contractScope === 'CUSTOMER') {
+      return this.prisma.customerCompanyProduct.upsert({
+        where: { customerCompanyId_productId: { customerCompanyId: companyId, productId: dto.productId } },
+        update: { status: 'ACTIVE' },
+        create: { customerCompanyId: companyId, productId: dto.productId, status: 'ACTIVE' },
+      });
+    }
 
     // Coverage is ONE timeline: Warranty (free) OR AMC (paid), chosen by coverageType.
     // The DB keeps free* = warranty pool, paid* = AMC pool; amcType FREE = under
@@ -869,7 +593,6 @@ export class CustomerProductsService {
     // Warranty is free support, so it starts Unlimited unless the caller says
     // otherwise; a paid AMC keeps the existing "type a figure" default.
     const pool = this.resolveHoursPool(dto.supportHoursUnlimited, dto.supportHours, !paid, null);
-    if (dto.excessApproverId) await this.assertStaffUser(dto.excessApproverId, clientId);
     const data = {
       status: 'ACTIVE',
       purchaseDate: start,
@@ -899,9 +622,13 @@ export class CustomerProductsService {
       amcHoursPeriod: dto.hoursPeriod ?? 'FULL_AMC',
       amcCarryForward: dto.carryForward ?? false,
       amcAllowExcess: dto.allowExcess ?? false,
-      amcExcessApproval: dto.excessApproval ?? false,
+      amcExcessRate: dto.excessRate ?? null,
       amcAllowTicketsAfterHours: dto.allowTicketsAfterHours ?? true,
-      amcExcessApproverId: dto.excessApproverId || null,
+      amcThirdPartyIntegration: dto.thirdPartyIntegration ?? false,
+      amcPlanRollout: dto.planRollout ?? false,
+      amcCrApplicable: dto.crApplicable ?? false,
+      amcCrMaxPerMonth: dto.crApplicable ? dto.crMaxPerMonth ?? null : null,
+      amcCrMaxHours: dto.crApplicable ? dto.crMaxHours ?? null : null,
     };
     const cp = await this.prisma.customerCompanyProduct.upsert({
       where: { customerCompanyId_productId: { customerCompanyId: companyId, productId: dto.productId } },
@@ -915,9 +642,6 @@ export class CustomerProductsService {
     if (cp.amcHoursPeriod === 'MONTHLY' && !effUnlimited && effHours != null) {
       await this.resetLedgerForRenewal('PRODUCT', cp.id, clientId, effHours);
     }
-    // A product can be assigned with its excess settings already filled in, so
-    // this door raises the approval request too — see ensureExcessApprovalRequest.
-    await this.ensureExcessApprovalRequest(clientId, companyId, dto.productId, actorId);
     return cp;
   }
 
@@ -956,7 +680,6 @@ export class CustomerProductsService {
           paid ? cp.paidAmcHours : cp.freeAmcHours,
         )
       : null;
-    if (dto.excessApproverId) await this.assertStaffUser(dto.excessApproverId, clientId);
     const updated = await this.prisma.customerCompanyProduct.update({
       where: { id: cpId },
       data: {
@@ -974,15 +697,19 @@ export class CustomerProductsService {
         ...(end.getTime() !== cp.amcEnd?.getTime() ? { expiryAlertSentAt: null, expiryReminderDays: null } : {}),
         hoursAlertSentAt: null,
         ...(switched ? { hoursUsed: 0, visitsUsed: 0 } : {}),
-        // Support-hours config (absent=keep, explicit-null clears the approver).
+        // Support-hours config (absent=keep, explicit-null clears the rate).
         ...(dto.hoursPeriod !== undefined ? { amcHoursPeriod: dto.hoursPeriod } : {}),
         ...(dto.carryForward !== undefined ? { amcCarryForward: dto.carryForward } : {}),
         ...(dto.allowExcess !== undefined ? { amcAllowExcess: dto.allowExcess } : {}),
-        ...(dto.excessApproval !== undefined ? { amcExcessApproval: dto.excessApproval } : {}),
+        ...(dto.excessRate !== undefined ? { amcExcessRate: dto.excessRate } : {}),
         ...(dto.allowTicketsAfterHours !== undefined ? { amcAllowTicketsAfterHours: dto.allowTicketsAfterHours } : {}),
-        ...(dto.excessApproverId !== undefined
-          ? { amcExcessApprover: dto.excessApproverId ? { connect: { id: dto.excessApproverId } } : { disconnect: true } }
-          : {}),
+        ...(dto.thirdPartyIntegration !== undefined ? { amcThirdPartyIntegration: dto.thirdPartyIntegration } : {}),
+        ...(dto.planRollout !== undefined ? { amcPlanRollout: dto.planRollout } : {}),
+        ...(dto.crApplicable !== undefined ? { amcCrApplicable: dto.crApplicable } : {}),
+        ...(dto.crMaxPerMonth !== undefined ? { amcCrMaxPerMonth: dto.crMaxPerMonth } : {}),
+        ...(dto.crMaxHours !== undefined ? { amcCrMaxHours: dto.crMaxHours } : {}),
+        // CR switched off → its limits go too, whatever the caller sent.
+        ...(dto.crApplicable === false ? { amcCrMaxPerMonth: null, amcCrMaxHours: null } : {}),
         ...(paid
           ? {
               ...(dto.contractAmount !== undefined ? { amcMonthlyCost: dto.contractAmount } : {}),
@@ -1002,8 +729,6 @@ export class CustomerProductsService {
     if (updated.amcHoursPeriod === 'MONTHLY' && !effUnlimited && effHours != null) {
       await this.refreshLedgerAllocation('PRODUCT', updated.id, clientId, effHours, updated.amcCarryForward);
     }
-    // Naming an approver raises the request — see ensureExcessApprovalRequest.
-    await this.ensureExcessApprovalRequest(clientId, updated.customerCompanyId, updated.productId, actorId);
     return updated;
   }
 
@@ -1120,6 +845,43 @@ export class CustomerProductsService {
     return updated;
   }
 
+  /**
+   * Switch one of the product's modules on or off for this client alone. Off
+   * means the client's new tickets can't name it; their consultants for it, and
+   * tickets already raised against it, are untouched. Either contract scope —
+   * the consultant grid it sits on serves both.
+   */
+  async setModuleActive(cpId: string, moduleId: string, isActive: boolean, clientId: string) {
+    let cp = await this.ownedCp(cpId, clientId);
+    const mod = await this.prisma.productModule.findFirst({ where: { id: moduleId, productId: cp.productId } });
+    if (!mod) throw new NotFoundException('Module not found on this product');
+    // Compare-and-set: the write lands only if the list is still what was read,
+    // so two switches clicked in quick succession can't overwrite each other.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const current = cp.inactiveModuleIds;
+      const rest = current.filter((id) => id !== moduleId);
+      const inactiveModuleIds = isActive ? rest : [...rest, moduleId];
+      if (inactiveModuleIds.length === current.length && inactiveModuleIds.every((id, i) => id === current[i])) {
+        return { inactiveModuleIds };
+      }
+      const { count } = await this.prisma.customerCompanyProduct.updateMany({
+        where: { id: cpId, inactiveModuleIds: { equals: current } },
+        data: { inactiveModuleIds },
+      });
+      if (count) return { inactiveModuleIds };
+      cp = await this.ownedCp(cpId, clientId);
+    }
+    throw new ConflictException('The module switches changed while saving — please try again.');
+  }
+
+  /** Name (or clear) the one product manager for this client's product. Either scope. */
+  async setProductManager(cpId: string, userId: string | null | undefined, clientId: string) {
+    await this.ownedCp(cpId, clientId);
+    if (userId) await assertAssignableManager(this.prisma, userId, clientId, 'product manager');
+    await this.prisma.customerCompanyProduct.update({ where: { id: cpId }, data: { productManagerId: userId || null } });
+    return { productManagerId: userId || null };
+  }
+
   async removeProduct(cpId: string, clientId: string) {
     const cp = await this.ownedCp(cpId, clientId);
     await this.prisma.customerCompanyProduct.delete({ where: { id: cpId } });
@@ -1177,9 +939,12 @@ export class CustomerProductsService {
       support: await this.buildSupportView({
         scope: 'CONTRACT', ownerId: c.id, clientId: c.clientId,
         period: c.contractHoursPeriod, unlimited: c.contractHoursUnlimited, hours: allocHours,
-        carryForward: c.contractCarryForward, allowExcess: c.contractAllowExcess,
-        excessApproval: c.contractExcessApproval, excessApproverId: c.contractExcessApproverId,
+        carryForward: c.contractCarryForward, allowExcess: c.contractAllowExcess, excessRate: c.contractExcessRate,
         allowTicketsAfterHours: c.contractAllowTicketsAfterHours,
+      }, hideMoney),
+      services: servicesView({
+        thirdPartyIntegration: c.contractThirdPartyIntegration, planRollout: c.contractPlanRollout,
+        crApplicable: c.contractCrApplicable, crMaxPerMonth: c.contractCrMaxPerMonth, crMaxHours: c.contractCrMaxHours,
       }),
     };
   }
@@ -1287,19 +1052,20 @@ export class CustomerProductsService {
       // switching onto warranty clears a stale one whatever the caller sent.
       if (coverageType !== 'AMC') data.contractMonthlyCost = null;
       else if (dto.monthlyCost !== undefined) data.contractMonthlyCost = dto.monthlyCost;
-      // Support-hours config (period / carry-forward / excess / approver), same
+      // Support-hours config (period / carry-forward / excess / rate), same
       // absent=keep, explicit-null=clear rule as the rest of the contract terms.
       if (dto.hoursPeriod !== undefined) data.contractHoursPeriod = dto.hoursPeriod;
       if (dto.carryForward !== undefined) data.contractCarryForward = dto.carryForward;
       if (dto.allowExcess !== undefined) data.contractAllowExcess = dto.allowExcess;
-      if (dto.excessApproval !== undefined) data.contractExcessApproval = dto.excessApproval;
+      if (dto.excessRate !== undefined) data.contractExcessRate = dto.excessRate;
       if (dto.allowTicketsAfterHours !== undefined) data.contractAllowTicketsAfterHours = dto.allowTicketsAfterHours;
-      if (dto.excessApproverId !== undefined) {
-        if (dto.excessApproverId) await this.assertStaffUser(dto.excessApproverId, clientId);
-        data.contractExcessApprover = dto.excessApproverId
-          ? { connect: { id: dto.excessApproverId } }
-          : { disconnect: true };
-      }
+      if (dto.thirdPartyIntegration !== undefined) data.contractThirdPartyIntegration = dto.thirdPartyIntegration;
+      if (dto.planRollout !== undefined) data.contractPlanRollout = dto.planRollout;
+      if (dto.crApplicable !== undefined) data.contractCrApplicable = dto.crApplicable;
+      if (dto.crMaxPerMonth !== undefined) data.contractCrMaxPerMonth = dto.crMaxPerMonth;
+      if (dto.crMaxHours !== undefined) data.contractCrMaxHours = dto.crMaxHours;
+      // CR switched off → its limits go too, whatever the caller sent.
+      if (dto.crApplicable === false) { data.contractCrMaxPerMonth = null; data.contractCrMaxHours = null; }
       await this.prisma.customerCompany.update({ where: { id: companyId }, data });
       // Keep the current month's ledger allocation in step with a MONTHLY figure.
       const effPeriod = dto.hoursPeriod ?? (switched ? 'FULL_AMC' : company.contractHoursPeriod);
@@ -1328,31 +1094,6 @@ export class CustomerProductsService {
       // admin now has to enter, so each starts blank. The purchases themselves
       // stay — losing them would drop the client's coverage, not reset it.
       if (switched) await this.resetProductTerms(companyId);
-    }
-    // Switching scope moves which pool governs, so the pools left behind stop
-    // deciding anything. Their still-open questions are withdrawn — otherwise a
-    // PENDING request sits in an approver's queue forever, addressed to a pool
-    // no screen renders any more. Decided rows are kept: they are the record of
-    // a decision that really was made, and the pool's own screen still shows them.
-    if (company.contractScope !== dto.scope) {
-      await this.prisma.supportHoursExcessRequest.deleteMany({
-        where: {
-          customerCompanyId: companyId,
-          status: 'PENDING',
-          scope: dto.scope === 'CUSTOMER' ? 'PRODUCT' : 'CONTRACT',
-        },
-      });
-    }
-    // Then raise for whichever pools govern now — see ensureExcessApprovalRequest.
-    if (dto.scope === 'CUSTOMER') {
-      await this.ensureExcessApprovalRequest(clientId, companyId, null, actorId);
-    } else {
-      const covered = await this.prisma.customerCompanyProduct.findMany({
-        where: { customerCompanyId: companyId }, select: { productId: true },
-      });
-      for (const cp of covered) {
-        await this.ensureExcessApprovalRequest(clientId, companyId, cp.productId, actorId);
-      }
     }
     return this.getContract(companyId, clientId);
   }
@@ -1506,7 +1247,7 @@ export class CustomerProductsService {
   async listCompanyProducts(companyId: string, clientId: string, hideMoney = false) {
     await this.ownedCompany(companyId, clientId);
     const [rows, agents, logged] = await Promise.all([
-      this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId: companyId }, include: { product: true }, orderBy: { createdAt: 'asc' } }),
+      this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId: companyId }, include: { product: { include: { modules: { select: { id: true } } } }, productManager: MANAGER_SELECT }, orderBy: { createdAt: 'asc' } }),
       this.agentsByProduct(companyId, clientId),
       this.ticketHours(companyId, clientId),
     ]);
@@ -1523,7 +1264,7 @@ export class CustomerProductsService {
 
   async listMyProducts(clientId: string, companyId: string) {
     const [rows, agents, logged] = await Promise.all([
-      this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId: companyId, customerCompany: { clientId } }, include: { product: true }, orderBy: { createdAt: 'asc' } }),
+      this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId: companyId, customerCompany: { clientId } }, include: { product: { include: { modules: { select: { id: true } } } }, productManager: MANAGER_SELECT }, orderBy: { createdAt: 'asc' } }),
       this.agentsByProduct(companyId, clientId),
       this.ticketHours(companyId, clientId),
     ]);
@@ -1851,11 +1592,6 @@ export class CustomerProductsService {
       const exists = await this.prisma.supportHoursLedger.findUnique({
         where: { scope_ownerId_periodLabel: { scope: 'CONTRACT', ownerId: c.id, periodLabel: label } },
       });
-      // A MONTHLY pool's approval is per calendar month, so the new month needs
-      // its own ask — without this the approval tab goes blank on the 1st until
-      // somebody happens to re-save the settings. Idempotent, so running it on
-      // every sweep is safe.
-      await this.ensureExcessApprovalRequest(c.clientId, c.id, null);
       if (exists) continue;
       await this.ledgerRowFor('CONTRACT', c.id, c.clientId, c.contractHours!, c.contractCarryForward);
       created++;
@@ -1877,7 +1613,6 @@ export class CustomerProductsService {
       const exists = await this.prisma.supportHoursLedger.findUnique({
         where: { scope_ownerId_periodLabel: { scope: 'PRODUCT', ownerId: cp.id, periodLabel: label } },
       });
-      await this.ensureExcessApprovalRequest(cp.customerCompany.clientId, cp.customerCompanyId, cp.productId);
       if (exists) continue;
       await this.ledgerRowFor('PRODUCT', cp.id, cp.customerCompany.clientId, hours, cp.amcCarryForward);
       created++;

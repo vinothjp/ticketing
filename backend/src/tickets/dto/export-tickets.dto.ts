@@ -1,4 +1,4 @@
-import { IsArray, IsOptional, IsUUID, ArrayMaxSize } from 'class-validator';
+import { IsArray, IsOptional, IsUUID, ArrayMaxSize, Matches } from 'class-validator';
 
 /**
  * What the list screen is currently showing. The whole ticket list is already
@@ -15,4 +15,16 @@ export class ExportTicketsDto {
   @ArrayMaxSize(5000)
   @IsUUID('4', { each: true })
   ids?: string[];
+
+  /**
+   * The created-date range the screen is filtered to (`YYYY-MM-DD`). It only
+   * names the file — the ids above are what decide the rows.
+   */
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  from?: string;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  to?: string;
 }

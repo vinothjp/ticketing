@@ -1,20 +1,21 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, ChevronDown, Download } from 'lucide-react';
+import { Plus, ChevronDown, Download, X } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { downloadFilePost, blobErrorMessage } from '../../lib/download';
 import { useAuth } from '../../context/AuthContext';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
   DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
-import { getPriorityMeta, getSlaMeta, isOverdueTicket, isCreatedTodayTicket, getApprovalMeta, monthKey, monthLabel, type TicketSummary } from './ticketHelpers';
+import { getPriorityMeta, getSlaMeta, isOverdueTicket, isCreatedTodayTicket, getApprovalMeta, monthKey, monthLabel, dayKey, monthRange, type TicketSummary } from './ticketHelpers';
 import { useDateFormat } from '@/lib/dateFormat';
 
 interface TemplateSummary { id: string; name: string; }
@@ -88,7 +89,28 @@ export default function TicketListPage() {
   // Local state like the other filters, not a URL param: the template dropdown
   // below owns the query string and rewrites it wholesale, so a ?month= would be
   // wiped the moment a template is picked.
+  //
+  // The month and the date range are one filter, not two: the range is what
+  // applies, and picking a month just fills it in. Typing a date by hand turns
+  // the dropdown to 'custom', so the two can never disagree about what is shown.
   const [month, setMonth] = useState('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const badRange = !!dateFrom && !!dateTo && dateFrom > dateTo;
+
+  const pickMonth = (v: string) => {
+    // Radix emits '' when its value briefly has no matching item; a real pick never is.
+    if (!v || v === 'custom' || v === month) return;
+    const [from, to] = v === 'all' ? ['', ''] : monthRange(v);
+    setMonth(v);
+    setDateFrom(from);
+    setDateTo(to);
+  };
+  const setRange = (from: string, to: string) => {
+    setDateFrom(from);
+    setDateTo(to);
+    setMonth(from || to ? 'custom' : 'all');
+  };
 
   const { data: tickets = [], isLoading } = useQuery<TicketSummary[]>({
     queryKey: ['tickets'],
@@ -132,12 +154,17 @@ export default function TicketListPage() {
     [tickets],
   );
 
-  // The month sits upstream of every other filter, so it scopes the tab counts
-  // as well as the rows — a count of 69 above four rows would just read wrong.
-  const scoped = useMemo(
-    () => (month === 'all' ? tickets : tickets.filter((t) => monthKey(new Date(t.createdAt)) === month)),
-    [tickets, month],
-  );
+  // The created-date range sits upstream of every other filter, so it scopes the
+  // tab counts as well as the rows — a count of 69 above four rows would just
+  // read wrong. Both ends are inclusive; a From after To shows nothing.
+  const scoped = useMemo(() => {
+    if (badRange) return [];
+    if (!dateFrom && !dateTo) return tickets;
+    return tickets.filter((t) => {
+      const day = dayKey(new Date(t.createdAt));
+      return (!dateFrom || day >= dateFrom) && (!dateTo || day <= dateTo);
+    });
+  }, [tickets, dateFrom, dateTo, badRange]);
 
   const byType = useMemo(
     () => (typeFilter ? scoped.filter((t) => t.template?.name === typeFilter) : scoped),
@@ -203,11 +230,16 @@ export default function TicketListPage() {
   // built in the browser carries no column widths, so every date column opened
   // as ######## in Excel, and the figures would have been the list payload's
   // rather than the booked worklog hours every other ticket screen quotes. The
-  // month, view, filters and sort stay client-side — the server narrows the
+  // date range, view, filters and sort stay client-side — the server narrows the
   // rows it would have returned anyway, so the download is this table.
   const exportSheet = useMutation({
     mutationFn: () =>
-      downloadFilePost('/api/tickets/export', { ids: sorted.map((t) => t.id) }, 'tickets.xlsx'),
+      downloadFilePost(
+        '/api/tickets/export',
+        // The range only names the file; the ids decide the rows.
+        { ids: sorted.map((t) => t.id), from: dateFrom || undefined, to: dateTo || undefined },
+        'tickets.xlsx',
+      ),
     onError: async (e) => toast.error(await blobErrorMessage(e, 'Export failed')),
   });
 
@@ -255,13 +287,39 @@ export default function TicketListPage() {
             <span className={cn('rounded-full px-1.5 text-xs', view === v.key ? 'bg-primary/15' : 'bg-muted text-muted-foreground')}>{v.count}</span>
           </button>
         ))}
-        <Select value={month} onValueChange={setMonth}>
-          <SelectTrigger className="ml-auto w-44"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All months</SelectItem>
-            {monthOptions.map((m) => <SelectItem key={m} value={m}>{monthLabel(m)}</SelectItem>)}
-          </SelectContent>
-        </Select>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <Input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setRange(e.target.value, dateTo)}
+            className={cn('w-auto', badRange && 'border-destructive')}
+            aria-label="Created from"
+            title="Created from"
+          />
+          <span className="text-muted-foreground">-</span>
+          <Input
+            type="date"
+            value={dateTo}
+            onChange={(e) => setRange(dateFrom, e.target.value)}
+            className={cn('w-auto', badRange && 'border-destructive')}
+            aria-label="Created to"
+            title="Created to"
+          />
+          {(dateFrom || dateTo) && (
+            <Button variant="ghost" size="icon" onClick={() => setRange('', '')} aria-label="Clear dates" title="Clear dates">
+              <X className="size-4" />
+            </Button>
+          )}
+          {badRange && <span className="text-xs text-destructive">From is after To</span>}
+          <Select value={month} onValueChange={pickMonth}>
+            <SelectTrigger className="w-44"><SelectValue placeholder="All months" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All months</SelectItem>
+              {monthOptions.map((m) => <SelectItem key={m} value={m}>{monthLabel(m)}</SelectItem>)}
+              <SelectItem value="custom" disabled>Custom range</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {/* Filters + sort (tickets only) — single row */}

@@ -4,6 +4,8 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CreateClientVisitDto, UpdateClientVisitDto, VISIT_STATUS_LABELS } from './dto/client-visit.dto';
+import { exportSheet } from '../lib/spreadsheet';
+import { CLIENT_VISIT_COLUMNS } from './client-visit-sheet';
 
 /** The one status that books a visit against the customer's visit allowance. */
 const DEDUCTING_STATUS = 'VISITED';
@@ -25,6 +27,17 @@ const sameDay = (a: Date, b: Date) =>
 export type VisitActor = { id: string; roles: string[] };
 
 const isAdmin = (a: VisitActor) => a.roles.includes('Admin');
+
+/** The list screen's filters, all optional; `from` / `to` are `YYYY-MM-DD`. */
+export type VisitFilters = {
+  customerCompanyId?: string;
+  consultantId?: string;
+  productId?: string;
+  ticketId?: string;
+  status?: string;
+  from?: string;
+  to?: string;
+};
 
 /**
  * What a consultant may change on their own visit: they report back on the work,
@@ -315,7 +328,12 @@ export class ClientVisitsService {
     }
   }
 
-  async findAll(clientId: string, filters: { customerCompanyId?: string, consultantId?: string, productId?: string, ticketId?: string, status?: string, from?: string, to?: string }, actor: VisitActor) {
+  /**
+   * The list's filter, shared with the export so the download is always exactly
+   * the rows on screen. `to` covers the whole of its day: a visit stamped with a
+   * time on the last day must not fall out of a range that names that day.
+   */
+  private listWhere(clientId: string, filters: VisitFilters, actor: VisitActor) {
     const where: any = { clientId };
     // A consultant's list is their own visits, whatever they ask for.
     if (!isAdmin(actor)) where.consultantId = actor.id;
@@ -327,8 +345,35 @@ export class ClientVisitsService {
     if (filters.from || filters.to) {
       where.visitDate = {};
       if (filters.from) where.visitDate.gte = new Date(filters.from);
-      if (filters.to) where.visitDate.lte = new Date(filters.to);
+      if (filters.to) {
+        const end = new Date(filters.to);
+        end.setUTCDate(end.getUTCDate() + 1);
+        where.visitDate.lt = end;
+      }
     }
+    return where;
+  }
+
+  /** The filtered list as a spreadsheet — the same rows, in the same order. */
+  async exportSheet(clientId: string, filters: VisitFilters, actor: VisitActor) {
+    const visits = await this.findAll(clientId, filters, actor);
+    const ticketIds = [...new Set(visits.map((v) => v.ticketId).filter((id): id is string => !!id))];
+    const tickets = ticketIds.length
+      ? await this.prisma.ticket.findMany({
+          where: { clientId, id: { in: ticketIds } },
+          select: { id: true, ticketNumber: true },
+        })
+      : [];
+    const numberOf = new Map(tickets.map((t) => [t.id, t.ticketNumber]));
+    return exportSheet(
+      'Client visits',
+      CLIENT_VISIT_COLUMNS,
+      visits.map((v) => ({ ...v, ticketNumber: v.ticketId ? numberOf.get(v.ticketId) ?? null : null })),
+    );
+  }
+
+  async findAll(clientId: string, filters: VisitFilters, actor: VisitActor) {
+    const where = this.listWhere(clientId, filters, actor);
 
     return this.prisma.clientVisit.findMany({
       where,

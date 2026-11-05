@@ -73,6 +73,18 @@ export function monthKey(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
+/** A sortable 'YYYY-MM-DD' key for the day a date falls on, in local time — the shape a date input holds. */
+export function dayKey(d: Date) {
+  return `${monthKey(d)}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** The first and last day of a monthKey, as dayKeys. */
+export function monthRange(key: string): [string, string] {
+  const [year, month] = key.split('-').map(Number);
+  const last = new Date(year, month, 0).getDate();
+  return [`${key}-01`, `${key}-${String(last).padStart(2, '0')}`];
+}
+
 /**
  * 'August 2026' from a monthKey. Spelled out from a fixed list rather than
  * `toLocaleString`, which follows whichever machine the user is sitting at —

@@ -26,7 +26,7 @@ import { RejectTicketDto } from './dto/reject-ticket.dto';
 import { ReopenTicketDto } from './dto/reopen-ticket.dto';
 import { CreateWorklogDto } from './dto/worklog.dto';
 import { ExportTicketsDto } from './dto/export-tickets.dto';
-import { sendWorkbook, stamp } from '../lib/spreadsheet';
+import { sendWorkbook, rangeStamp } from '../lib/spreadsheet';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
 import { StaffGuard } from '../auth/staff.guard';
@@ -65,7 +65,7 @@ export class TicketsController {
     @Res() res: Response,
   ) {
     const book = await this.ticketsService.exportSheet(req.user.clientId, req.user, dto.ids);
-    sendWorkbook(res, `tickets-${stamp()}.xlsx`, book);
+    sendWorkbook(res, `tickets-${rangeStamp(dto.from, dto.to)}.xlsx`, book);
   }
 
   @Get(':id')

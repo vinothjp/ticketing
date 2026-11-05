@@ -90,6 +90,25 @@ export function sendWorkbook(res: Response, filename: string, buffer: Buffer) {
 /** `YYYY-MM-DD` today, for a download's filename. */
 export const stamp = () => new Date().toISOString().slice(0, 10);
 
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+const dmy = (iso: string) => iso.split('-').reverse().join('-');
+
+/**
+ * The part of a download's filename that names the date range the screen was
+ * filtered to — `01-09-2026_to_30-09-2026`, `from_01-09-2026` or `to_30-09-2026`,
+ * day first as the screens show dates — falling back to today's `stamp()` when
+ * no range is set. Anything not shaped `YYYY-MM-DD` is ignored, since the value
+ * lands inside a response header.
+ */
+export function rangeStamp(from?: string, to?: string) {
+  const f = from && ISO_DAY.test(from) ? dmy(from) : '';
+  const t = to && ISO_DAY.test(to) ? dmy(to) : '';
+  if (f && t) return `${f}_to_${t}`;
+  if (f) return `from_${f}`;
+  if (t) return `to_${t}`;
+  return stamp();
+}
+
 /**
  * The first sheet of an uploaded workbook, as one record per row. Multer is
  * configured for memory or disk depending on the route, so both are handled.

@@ -1,4 +1,5 @@
-import { IsOptional, IsString, IsInt, IsNumber, Min, Max, IsEmail, IsArray, IsDateString, IsBoolean, MinLength } from 'class-validator';
+import { IsOptional, IsString, IsInt, IsNumber, Min, Max, IsEmail, IsArray, IsDateString, IsBoolean, MinLength, IsIn } from 'class-validator';
+import { CLIENT_TYPES, type ClientType } from '../client-type';
 
 // Agreed support-hours pool. Shared by create + update so both validate the same way.
 class SupportHoursFields {
@@ -16,6 +17,9 @@ export class CreateCompanyDto extends SupportHoursFields {
   @IsOptional() @IsString() contactNumber?: string;
   @IsOptional() @IsInt() @Min(1) @Max(50) maxContacts?: number;
   @IsOptional() @IsString() status?: string;
+  // What the client bought — the New Client form requires it; the import leaves it
+  // to the column default (AMC). Changed afterwards only through PUT :id/client-type.
+  @IsOptional() @IsIn(CLIENT_TYPES) clientType?: ClientType;
   // Products this company uses (limits what they can raise tickets for).
   @IsOptional() @IsArray() @IsString({ each: true }) productIds?: string[];
   // The client's one CustomerAdmin: either a new login (the three fields) or an

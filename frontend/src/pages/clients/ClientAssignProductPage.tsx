@@ -16,7 +16,7 @@ interface CatAgent { track: string; isPrimary?: boolean; user: { id: string; use
 interface CatModule { id: string; name: string; consultants: CatAgent[] }
 interface CatProduct { id: string; name: string; imageUrl?: string | null; modules: CatModule[]; consultants: CatAgent[] }
 interface Purchased { productId: string }
-interface Client { id: string; name: string; contractScope?: 'PRODUCT' | 'CUSTOMER' }
+interface Client { id: string; name: string; clientType?: 'IMPLEMENTATION' | 'AMC'; contractScope?: 'PRODUCT' | 'CUSTOMER' }
 interface StaffUser { id: string; username: string }
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -38,7 +38,9 @@ export default function ClientAssignProductPage() {
   // On one shared customer contract the per-product dates/hours/visits are never
   // used — the contract owns them — so this form only picks the product and its
   // consultants, the same way ClientProductPage hides its Coverage/Terms.
-  const customerScoped = client?.contractScope === 'CUSTOMER';
+  // An Implementation client has no terms to enter either: only the product is recorded.
+  const impl = client?.clientType === 'IMPLEMENTATION';
+  const customerScoped = impl || client?.contractScope === 'CUSTOMER';
 
   const owned = new Set(products.map((p) => p.productId));
   const assignable = catalog.filter((c) => !owned.has(c.id));
@@ -155,7 +157,12 @@ export default function ClientAssignProductPage() {
           </Select>
         </div>
 
-        {customerScoped ? (
+        {impl ? (
+          <p className="max-w-2xl rounded-lg border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+            This is an <span className="font-medium text-foreground">Implementation</span> client, so there are no warranty or
+            AMC terms to enter — only the product and its consultants are recorded.
+          </p>
+        ) : customerScoped ? (
           <p className="max-w-2xl rounded-lg border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
             This client is on <span className="font-medium text-foreground">one customer contract</span>, so coverage dates,
             support hours and visits come from that contract — there are no per-product terms to set. Tick the product under

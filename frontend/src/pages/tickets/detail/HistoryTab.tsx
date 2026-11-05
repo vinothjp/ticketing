@@ -37,6 +37,15 @@ const ICON: Record<string, typeof Circle> = {
   MESSAGE_SENT: Mail,
   MESSAGE_RECEIVED: Mail,
   ATTACHMENT_ADDED: Paperclip,
+  // A client's request to reopen, and how it was decided.
+  REOPEN_REQUESTED: RefreshCw,
+  REOPEN_APPROVED: Stamp,
+  REOPEN_REJECTED: Ban,
+  REOPEN_WITHDRAWN: Ban,
+  // The change-request approval gate (company admin, then provider Admin).
+  CUSTOMER_APPROVED: Stamp,
+  APPROVED: Stamp,
+  REJECTED: Ban,
 };
 
 /**

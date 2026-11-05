@@ -13,6 +13,7 @@ import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto, CustomerAdminDto 
 import {
   AssignProductDto, UpdateProductTermsDto, RenewAmcDto, GrantRequestDto, DeclineRequestDto, SetContractDto,
   RenewContractDto, AddCustomerConsultantDto, LogUsageDto, SetPoNumberDto, SetModuleActiveDto, SetProductManagerDto,
+  SetClientTypeDto, SetClientServicesDto,
 } from './dto/customer-product.dto';
 import { sendWorkbook, stamp } from '../lib/spreadsheet';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -98,6 +99,22 @@ export class CustomerCompaniesController {
   @Roles('Admin')
   setContract(@Param('id') id: string, @Body() dto: SetContractDto, @Request() req: AuthedRequest) {
     return this.customerProducts.setContract(id, dto, req.user.clientId, req.user.id);
+  }
+
+  // What the client bought. Its own route rather than a field on PATCH :id,
+  // because going to IMPLEMENTATION clears every AMC term — the Edit Client
+  // dialog confirms before it calls this.
+  @Put(':id/client-type')
+  @Roles('Admin')
+  setClientType(@Param('id') id: string, @Body() dto: SetClientTypeDto, @Request() req: AuthedRequest) {
+    return this.customerProducts.setClientType(id, dto.type, req.user.clientId);
+  }
+
+  // An Implementation client's contract services (CR applicable and limits).
+  @Patch(':id/services')
+  @Roles('Admin')
+  setClientServices(@Param('id') id: string, @Body() dto: SetClientServicesDto, @Request() req: AuthedRequest) {
+    return this.customerProducts.setClientServices(id, dto, req.user.clientId);
   }
 
   @Post(':id/contract-usage')

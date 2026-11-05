@@ -14,7 +14,7 @@ export default function ContractServicesConfig({ value, onChange, readOnly }: {
       <Row label="Third-party integration">
         <YesNo value={value.thirdPartyIntegration} disabled={readOnly} onChange={(v) => onChange({ thirdPartyIntegration: v })} />
       </Row>
-      <Row label="Plan roll-out">
+      <Row label="Plant roll-out">
         <YesNo value={value.planRollout} disabled={readOnly} onChange={(v) => onChange({ planRollout: v })} />
       </Row>
       <Row label="CR applicable">

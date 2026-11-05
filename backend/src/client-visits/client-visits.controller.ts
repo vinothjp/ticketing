@@ -8,8 +8,11 @@ import {
   UseGuards,
   Query,
   Request,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { ClientVisitsService } from './client-visits.service';
+import { sendWorkbook, rangeStamp } from '../lib/spreadsheet';
 import { CreateClientVisitDto, UpdateClientVisitDto } from './dto/client-visit.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
@@ -55,6 +58,35 @@ export class ClientVisitsController {
       from,
       to,
     }, req.user);
+  }
+
+  /**
+   * The list as a spreadsheet, filtered by the same query the screen sends —
+   * so whatever the screen shows is what downloads, and a consultant still gets
+   * only their own visits. Declared before `:id`, or that route swallows it.
+   */
+  @Get('export')
+  async exportVisits(
+    @Request() req: AuthedRequest,
+    @Res() res: Response,
+    @Query('customerCompanyId') customerCompanyId?: string,
+    @Query('consultantId') consultantId?: string,
+    @Query('productId') productId?: string,
+    @Query('ticketId') ticketId?: string,
+    @Query('status') status?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const book = await this.clientVisitsService.exportSheet(req.user.clientId, {
+      customerCompanyId,
+      consultantId,
+      productId,
+      ticketId,
+      status,
+      from,
+      to,
+    }, req.user);
+    sendWorkbook(res, `client-visits-${rangeStamp(from, to)}.xlsx`, book);
   }
 
   @Get(':id')

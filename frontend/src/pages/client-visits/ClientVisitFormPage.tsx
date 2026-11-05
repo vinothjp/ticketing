@@ -92,7 +92,7 @@ export function ClientVisitFormPage() {
   const awaitingNewDate = visit?.status === 'RESCHEDULE_REQUESTED';
 
   const selectedCompany = customerCompanies.find((c) => c.id === customerCompanyId);
-  const productRequired = selectedCompany?.contractScope === 'PRODUCT';
+  const productRequired = selectedCompany?.contractScope === 'PRODUCT' && selectedCompany.clientType !== 'IMPLEMENTATION';
 
   // Product + consultant choices are whatever this client actually has — the
   // products assigned to them and the consultants assigned to them on the

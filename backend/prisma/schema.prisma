@@ -197,6 +197,12 @@ model CustomerCompany {
   // Set when the "hours running low" alert fires, so it only goes out once per
   // period; cleared whenever the hours/period/threshold are edited.
   supportAlertSentAt       DateTime?
+  // What the client bought. AMC = implementation + a support contract (everything
+  // below). IMPLEMENTATION = services only: no contract scope, coverage, terms,
+  // support-hours pool, visits allowance, reminders or renewals — the pool
+  // resolver answers null for it. Its contract-services fields (contractCrApplicable
+  // and friends) still apply, read at client level. Set on the client dialogs only.
+  clientType               String   @default("AMC")        // IMPLEMENTATION | AMC
   // Product contract scope. PRODUCT = each product carries its own warranty/AMC
   // terms; CUSTOMER = one shared contract (dates + hours) covering many products.
   contractScope            String   @default("PRODUCT")   // PRODUCT | CUSTOMER
@@ -710,6 +716,9 @@ model Template {
   defaultPriority     String?
   sortOrder           Int            @default(0)
   isActive            Boolean        @default(true)
+  // Tickets an agent or customer raises on this template start PENDING and wait
+  // for a tenant Admin to approve them; an Admin's own tickets go straight through.
+  requiresApproval    Boolean        @default(false)
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
   createdBy           String?
@@ -881,6 +890,21 @@ model Ticket {
   reopenReason          String?
   reopenedAt            DateTime?
   reopenedById          String?
+
+  // A customer's request to reopen a resolved/closed ticket, decided by the
+  // client product's project manager (`CustomerCompanyProduct.productManagerId`,
+  // resolved when the request is made and held in `reopenApproverUserId`) or any
+  // tenant Admin. Null approver = no project manager set, so the Admins decide.
+  // NONE | PENDING | APPROVED | REJECTED | WITHDRAWN. The ticket only reopens on
+  // APPROVED; the trail of every request lives in TicketActivity.
+  reopenRequestStatus   String       @default("NONE")
+  reopenRequestReason   String?
+  reopenRequestedAt     DateTime?
+  reopenRequestedById   String?
+  reopenApproverUserId  String?
+  reopenDecidedAt       DateTime?
+  reopenDecidedById     String?
+  reopenDecisionNote    String?
 
   // Client acknowledgement of the resolution. The customer contact confirms the
   // fix, and that acknowledgement is what closes the ticket.

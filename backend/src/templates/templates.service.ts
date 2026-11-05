@@ -255,6 +255,7 @@ export class TemplatesService {
         color: dto.color,
         defaultPriority: dto.defaultPriority,
         isActive: dto.isActive ?? true,
+        requiresApproval: dto.requiresApproval ?? false,
         sortOrder: (last?.sortOrder ?? -1) + 1,
         createdBy: actorId,
         updatedBy: actorId,
@@ -295,6 +296,7 @@ export class TemplatesService {
         }),
         ...(dto.sortOrder !== undefined && { sortOrder: dto.sortOrder }),
         ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+        ...(dto.requiresApproval !== undefined && { requiresApproval: dto.requiresApproval }),
         updatedBy: actorId,
       },
     });

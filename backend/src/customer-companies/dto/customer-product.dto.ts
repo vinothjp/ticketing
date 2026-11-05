@@ -1,4 +1,5 @@
 import { IsString, IsOptional, IsInt, IsNumber, Min, IsDateString, IsNotEmpty, IsIn, IsArray, IsBoolean } from 'class-validator';
+import { CLIENT_TYPES, type ClientType } from '../client-type';
 
 // Set a company's product contract scope. CUSTOMER carries the shared dates/hours
 // + the list of covered products; PRODUCT just flips back to per-product terms.
@@ -144,3 +145,21 @@ export class AddCustomerConsultantDto {
 // Provider grants a request, setting the same terms as a direct assignment.
 export class GrantRequestDto extends ProductTermsFields {}
 
+
+/** Switch what a client bought. Its own route: going to IMPLEMENTATION clears every AMC term. */
+export class SetClientTypeDto {
+  @IsIn(CLIENT_TYPES) type!: ClientType;
+}
+
+/**
+ * An Implementation client's contract services — the only contract fields it
+ * keeps. Same meaning as on SetContractDto; turning CR applicable off clears both
+ * limits on the server.
+ */
+export class SetClientServicesDto {
+  @IsOptional() @IsBoolean() thirdPartyIntegration?: boolean;
+  @IsOptional() @IsBoolean() planRollout?: boolean;
+  @IsOptional() @IsBoolean() crApplicable?: boolean;
+  @IsOptional() @IsInt() @Min(0) crMaxPerMonth?: number | null;
+  @IsOptional() @IsNumber() @Min(0) crMaxHours?: number | null;
+}

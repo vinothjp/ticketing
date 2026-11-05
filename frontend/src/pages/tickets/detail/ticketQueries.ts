@@ -1,0 +1,106 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
+import api from '../../../lib/api';
+
+export interface Worklog {
+  id: string;
+  hours: number | string;
+  workDate: string;
+  note?: string | null;
+  consultantName?: string | null;
+  /** The task this time was spent on, if the logger linked one. */
+  taskId?: string | null;
+  taskTitle?: string | null;
+}
+
+export interface TicketComment {
+  id: string;
+  taskId?: string | null;
+  authorUserId?: string | null;
+  authorName?: string | null;
+  body: string;
+  createdAt: string;
+}
+
+/**
+ * The ticket's logged time. This is the **only** thing that charges the
+ * customer's support-hours pool, and every figure any screen quotes as time
+ * spent — the task grid included — is a sum of these rows. Entries are written
+ * by the log-time prompt a task's status change raises on its edit screen; the
+ * task's own `hoursSpent` column is an audit of how long it stood in progress
+ * and is never charged, or the same work would be counted twice.
+ */
+export function useWorklogs(ticketId: string) {
+  return useQuery<Worklog[]>({
+    queryKey: ['ticket-worklogs', ticketId],
+    queryFn: async () => (await api.get(`/api/tickets/${ticketId}/worklogs`)).data,
+  });
+}
+
+/**
+ * What a written or deleted worklog invalidates. Logged time is billable, so it
+ * moves far more than this ticket's own list — the header chip, the support-hours
+ * pool and the customer's own product screens all read it. Both doors share this
+ * one set for the same reason the backend funnels through `writeWorklog` /
+ * `dropWorklog`: so the two can't drift.
+ */
+export function useWorklogInvalidate(ticketId: string) {
+  const qc = useQueryClient();
+  return () => {
+    qc.invalidateQueries({ queryKey: ['ticket-worklogs', ticketId] });
+    // The ticket carries the running total the header chip shows.
+    qc.invalidateQueries({ queryKey: ['tickets', ticketId] });
+    // Logged time changes the customer's support-hours usage — the ticket header's
+    // pool chip, the ticket form's "hrs spent" field and the My Products pools all
+    // read it.
+    qc.invalidateQueries({ queryKey: ['support-usage'] });
+    qc.invalidateQueries({ queryKey: ['ticket-support-hours'] });
+    qc.invalidateQueries({ queryKey: ['my-products'] });
+    qc.invalidateQueries({ queryKey: ['my-product-contract'] });
+  };
+}
+
+export interface NewWorklog {
+  hours: number;
+  workDate?: string;
+  note?: string;
+  /** The task the hours went on. Required by the UI, optional to the API. */
+  taskId?: string;
+}
+
+/**
+ * Book time against the ticket. The error toast is what surfaces the server's
+ * allowance refusals — an exhausted support-hours pool, or an excess request
+ * still awaiting its approver — so keep the message the server sent.
+ */
+export function useAddWorklog(ticketId: string) {
+  const invalidate = useWorklogInvalidate(ticketId);
+  return useMutation({
+    mutationFn: (body: NewWorklog) => api.post(`/api/tickets/${ticketId}/worklogs`, body),
+    onSuccess: invalidate,
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error logging time'),
+  });
+}
+
+/** Remove a booked entry. Usage is an on-read aggregate, so this corrects itself. */
+export function useDeleteWorklog(ticketId: string) {
+  const invalidate = useWorklogInvalidate(ticketId);
+  return useMutation({
+    mutationFn: (worklogId: string) => api.delete(`/api/tickets/${ticketId}/worklogs/${worklogId}`),
+    onSuccess: invalidate,
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error removing entry'),
+  });
+}
+
+/**
+ * Every comment on the ticket in one cache entry, ticket-level and per-task
+ * alike. Each mounted thread filters the slice it owns, so the Comments tab can
+ * render a group per task without a request each, and a count taken here can
+ * never disagree with the list it labels.
+ */
+export function useTicketComments(ticketId: string) {
+  return useQuery<TicketComment[]>({
+    queryKey: ['ticket-comments', ticketId],
+    queryFn: async () => (await api.get(`/api/tickets/${ticketId}/comments`)).data,
+  });
+}

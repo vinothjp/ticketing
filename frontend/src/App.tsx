@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from './context/AuthContext';
+import { PreferencesProvider } from './context/PreferencesContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import RoleGate from './components/RoleGate';
 import Layout from './components/Layout';
@@ -12,65 +13,179 @@ import DashboardPage from './pages/DashboardPage';
 import UsersPage from './pages/UsersPage';
 import RolesPage from './pages/RolesPage';
 import OrganizationPage from './pages/OrganizationPage';
+import CustomerCompaniesPage from './pages/CustomerCompaniesPage';
+import TenantSmtpConfigPage from './pages/SmtpConfigPage';
 import ClientsPage from './pages/super-admin/ClientsPage';
 import ClientFormPage from './pages/super-admin/ClientFormPage';
 import FormsPage from './pages/super-admin/FormsPage';
 import SmtpConfigPage from './pages/super-admin/SmtpConfigPage';
+import TemplatesListPage from './pages/templates/TemplatesListPage';
+import TemplateDesignerPage from './pages/templates/TemplateDesignerPage';
+import OptionListPage from './pages/OptionListPage';
+import SlaPolicyPage from './pages/SlaPolicyPage';
+import ChannelsPage from './pages/ChannelsPage';
+import CreateTicketPage from './pages/tickets/CreateTicketPage';
+import TicketListPage from './pages/tickets/TicketListPage';
+import TicketDetailPage from './pages/tickets/TicketDetailPage';
+import KnowledgeBasePage from './pages/KnowledgeBasePage';
+import KbArticlePage from './pages/kb/KbArticlePage';
+import KbArticleEditorPage from './pages/kb/KbArticleEditorPage';
+import ProjectListPage from './pages/projects/ProjectListPage';
+import ProjectDetailPage from './pages/projects/ProjectDetailPage';
+import ProjectCreatePage from './pages/projects/ProjectCreatePage';
+import ProjectAnalyticsPage from './pages/projects/ProjectAnalyticsPage';
+import ResourceCostsPage from './pages/ResourceCostsPage';
+import EmployeeListPage from './pages/employees/EmployeeListPage';
+import EmployeeDetailPage from './pages/employees/EmployeeDetailPage';
+import AssetOverviewPage from './pages/assets/AssetOverviewPage';
+import AssetListPage from './pages/assets/AssetListPage';
+import AssetFormPage from './pages/assets/AssetFormPage';
+import TimesheetPage from './pages/timesheet/TimesheetPage';
+import { ClientVisitsPage } from './pages/client-visits/ClientVisitsPage';
+import { ClientVisitFormPage } from './pages/client-visits/ClientVisitFormPage';
+import ChangeRequestListPage from './pages/change-requests/ChangeRequestListPage';
+import ChangeRequestCreatePage from './pages/change-requests/ChangeRequestCreatePage';
+import ChangeRequestDetailPage from './pages/change-requests/ChangeRequestDetailPage';
+import CustomerChangeRequestsPage from './pages/change-requests/CustomerChangeRequestsPage';
+import CustomerChangeRequestDetailPage from './pages/change-requests/CustomerChangeRequestDetailPage';
+import CustomerTeamPage from './pages/CustomerTeamPage';
+import ProjectTemplatesListPage from './pages/projects/ProjectTemplatesListPage';
+import ProjectTemplateDesignerPage from './pages/projects/ProjectTemplateDesignerPage';
+import ProductsPage from './pages/ProductsPage';
+import ProductEditorPage from './pages/ProductEditorPage';
+import MyProductsPage from './pages/MyProductsPage';
+import ProductRequestsPage from './pages/ProductRequestsPage';
+import ClientDetailPage from './pages/clients/ClientDetailPage';
+import ClientProductPage from './pages/clients/ClientProductPage';
+import ClientAssignProductPage from './pages/clients/ClientAssignProductPage';
+import CommunicationsPage from './pages/communications/CommunicationsPage';
+import CommunicationEditorPage from './pages/communications/CommunicationEditorPage';
+import CommunicationViewPage from './pages/communications/CommunicationViewPage';
+import GalleryPage from './pages/gallery/GalleryPage';
+import AlbumPage from './pages/gallery/AlbumPage';
 
 const queryClient = new QueryClient();
 const isSuperAdmin = (roles: string[]) => roles.includes('SuperAdmin');
+const isTenantAdmin = (roles: string[]) => roles.includes('Admin');
+// SMTP settings: admins + agents (Viewer), never customers.
+const isStaff = (roles: string[]) => roles.includes('Admin') || roles.includes('Viewer');
+// A customer company's own admin — self-service team management.
+const isCustomerAdmin = (roles: string[]) => roles.includes('CustomerAdmin');
 
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <BrowserRouter>
-          <Toaster richColors position="top-right" />
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-            <Route path="/reset-password" element={<ResetPasswordPage />} />
+        <PreferencesProvider>
+          <BrowserRouter>
+            <Toaster richColors position="top-right" />
+            <Routes>
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+              <Route path="/reset-password" element={<ResetPasswordPage />} />
 
-            <Route
-              path="/platform/*"
-              element={
-                <ProtectedRoute>
-                  <RoleGate allow={isSuperAdmin} redirectTo="/dashboard">
-                    <Layout>
-                      <Routes>
-                        <Route path="clients" element={<ClientsPage />} />
-                        <Route path="clients/new" element={<ClientFormPage />} />
-                        <Route path="clients/:id" element={<ClientFormPage />} />
-                        <Route path="forms" element={<FormsPage />} />
-                        <Route path="smtp-config" element={<SmtpConfigPage />} />
-                        <Route path="*" element={<Navigate to="/platform/clients" replace />} />
-                      </Routes>
-                    </Layout>
-                  </RoleGate>
-                </ProtectedRoute>
-              }
-            />
+              <Route
+                path="/platform/*"
+                element={
+                  <ProtectedRoute>
+                    <RoleGate allow={isSuperAdmin} redirectTo="/dashboard">
+                      <Layout>
+                        <Routes>
+                          <Route path="clients" element={<ClientsPage />} />
+                          <Route path="clients/new" element={<ClientFormPage />} />
+                          <Route path="clients/:id" element={<ClientFormPage />} />
+                          <Route path="forms" element={<FormsPage />} />
+                          <Route path="smtp-config" element={<SmtpConfigPage />} />
+                          <Route path="*" element={<Navigate to="/platform/clients" replace />} />
+                        </Routes>
+                      </Layout>
+                    </RoleGate>
+                  </ProtectedRoute>
+                }
+              />
 
-            <Route
-              path="/*"
-              element={
-                <ProtectedRoute>
-                  <RoleGate allow={(roles) => !isSuperAdmin(roles)} redirectTo="/platform/clients">
-                    <Layout>
-                      <Routes>
-                        <Route path="/dashboard" element={<DashboardPage />} />
-                        <Route path="/users" element={<UsersPage />} />
-                        <Route path="/roles" element={<RolesPage />} />
-                        <Route path="/organization" element={<OrganizationPage />} />
-                        <Route path="*" element={<Navigate to="/dashboard" replace />} />
-                      </Routes>
-                    </Layout>
-                  </RoleGate>
-                </ProtectedRoute>
-              }
-            />
-          </Routes>
-        </BrowserRouter>
+              <Route
+                path="/*"
+                element={
+                  <ProtectedRoute>
+                    <RoleGate allow={(roles) => !isSuperAdmin(roles)} redirectTo="/platform/clients">
+                      <Layout>
+                        <Routes>
+                          <Route path="/dashboard" element={<DashboardPage />} />
+                          <Route path="/tickets/new" element={<CreateTicketPage />} />
+                          <Route path="/tickets/:id" element={<TicketDetailPage />} />
+                          <Route path="/tickets" element={<TicketListPage />} />
+                          <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
+                          <Route path="/my-team" element={<RoleGate allow={isCustomerAdmin} redirectTo="/tickets"><CustomerTeamPage /></RoleGate>} />
+                          <Route path="/my-products" element={<RoleGate allow={isCustomerAdmin} redirectTo="/tickets"><MyProductsPage /></RoleGate>} />
+                          <Route path="/my-change-requests" element={<RoleGate allow={isCustomerAdmin} redirectTo="/tickets"><CustomerChangeRequestsPage /></RoleGate>} />
+                          <Route path="/my-change-requests/:id" element={<RoleGate allow={isCustomerAdmin} redirectTo="/tickets"><CustomerChangeRequestDetailPage /></RoleGate>} />
+                          <Route path="/knowledge-base/new" element={<RoleGate allow={isStaff} redirectTo="/knowledge-base"><KbArticleEditorPage /></RoleGate>} />
+                          <Route path="/knowledge-base/:id" element={<KbArticlePage />} />
+                          <Route path="/knowledge-base/:id/edit" element={<RoleGate allow={isStaff} redirectTo="/knowledge-base"><KbArticleEditorPage /></RoleGate>} />
+                          <Route path="/projects" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectListPage /></RoleGate>} />
+                          <Route path="/projects/new" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectCreatePage /></RoleGate>} />
+                          <Route path="/projects/analytics" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectAnalyticsPage /></RoleGate>} />
+                          <Route path="/timesheet" element={<RoleGate allow={isStaff} redirectTo="/tickets"><TimesheetPage /></RoleGate>} />
+                          <Route path="/gallery" element={<RoleGate allow={isStaff} redirectTo="/tickets"><GalleryPage /></RoleGate>} />
+                          <Route path="/gallery/:id" element={<RoleGate allow={isStaff} redirectTo="/tickets"><AlbumPage /></RoleGate>} />
+                          <Route path="/communications" element={<RoleGate allow={isStaff} redirectTo="/tickets"><CommunicationsPage /></RoleGate>} />
+                          <Route path="/communications/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/communications"><CommunicationEditorPage /></RoleGate>} />
+                          <Route path="/communications/:id/edit" element={<RoleGate allow={isTenantAdmin} redirectTo="/communications"><CommunicationEditorPage /></RoleGate>} />
+                          <Route path="/communications/:id" element={<RoleGate allow={isStaff} redirectTo="/tickets"><CommunicationViewPage /></RoleGate>} />
+                          <Route path="/client-visits" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ClientVisitsPage /></RoleGate>} />
+                          <Route path="/client-visits/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientVisitFormPage /></RoleGate>} />
+                          <Route path="/client-visits/:id/edit" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientVisitFormPage /></RoleGate>} />
+                          <Route path="/projects/:id" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProjectDetailPage /></RoleGate>} />
+                          <Route path="/change-requests" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ChangeRequestListPage /></RoleGate>} />
+                          <Route path="/change-requests/new" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ChangeRequestCreatePage /></RoleGate>} />
+                          {/* Folded into the unified Option List screen — keep the old paths working. */}
+                          <Route path="/change-requests/options" element={<Navigate to="/admin/options" replace />} />
+                          <Route path="/change-requests/:id" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ChangeRequestDetailPage /></RoleGate>} />
+                          {/* Admin-only sections — non-admins are redirected to their tickets */}
+                          <Route path="/users" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><UsersPage /></RoleGate>} />
+                          <Route path="/admin/customer-companies" element={<RoleGate allow={isStaff} redirectTo="/tickets"><CustomerCompaniesPage /></RoleGate>} />
+                          <Route path="/admin/clients/:companyId" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ClientDetailPage /></RoleGate>} />
+                          <Route path="/admin/clients/:companyId/assign" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientAssignProductPage /></RoleGate>} />
+                          <Route path="/admin/clients/:companyId/products/:cpId" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ClientProductPage /></RoleGate>} />
+                          <Route path="/roles" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><RolesPage /></RoleGate>} />
+                          <Route path="/organization" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><OrganizationPage /></RoleGate>} />
+                          <Route path="/admin/templates" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><TemplatesListPage /></RoleGate>} />
+                          <Route path="/admin/templates/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><TemplateDesignerPage /></RoleGate>} />
+                          <Route path="/admin/templates/:id" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><TemplateDesignerPage /></RoleGate>} />
+                          <Route path="/admin/options" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><OptionListPage /></RoleGate>} />
+                          <Route path="/admin/picklists" element={<Navigate to="/admin/options" replace />} />
+                          <Route path="/admin/products" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductsPage /></RoleGate>} />
+                          <Route path="/admin/products/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductEditorPage /></RoleGate>} />
+                          <Route path="/admin/products/:id/edit" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductEditorPage /></RoleGate>} />
+                          <Route path="/admin/product-requests" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductRequestsPage /></RoleGate>} />
+                          <Route path="/admin/project-templates" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProjectTemplatesListPage /></RoleGate>} />
+                          <Route path="/admin/project-templates/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProjectTemplateDesignerPage /></RoleGate>} />
+                          <Route path="/admin/project-templates/:id" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProjectTemplateDesignerPage /></RoleGate>} />
+                          <Route path="/admin/sla" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><SlaPolicyPage /></RoleGate>} />
+                          <Route path="/admin/channels" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ChannelsPage /></RoleGate>} />
+                          <Route path="/admin/resource-costs" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ResourceCostsPage /></RoleGate>} />
+                          <Route path="/admin/employees" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><EmployeeListPage /></RoleGate>} />
+                          <Route path="/admin/employees/:userId" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><EmployeeDetailPage /></RoleGate>} />
+                          {/* The register itself is the landing screen; the
+                              by-type tiles are a view of it, reached from the
+                              list's own button. */}
+                          <Route path="/admin/assets" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><AssetListPage /></RoleGate>} />
+                          <Route path="/admin/assets/types" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><AssetOverviewPage /></RoleGate>} />
+                          <Route path="/admin/assets/list" element={<Navigate to="/admin/assets" replace />} />
+                          <Route path="/admin/assets/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><AssetFormPage /></RoleGate>} />
+                          <Route path="/admin/assets/:id/edit" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><AssetFormPage /></RoleGate>} />
+                          <Route path="/admin/smtp-config" element={<RoleGate allow={isStaff} redirectTo="/tickets"><TenantSmtpConfigPage /></RoleGate>} />
+                          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+                        </Routes>
+                      </Layout>
+                    </RoleGate>
+                  </ProtectedRoute>
+                }
+              />
+            </Routes>
+          </BrowserRouter>
+        </PreferencesProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

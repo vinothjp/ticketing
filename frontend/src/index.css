@@ -6,6 +6,10 @@
 :root {
   --radius: 0.625rem;
 
+  /* Width the fixed sidebar occupies. Layout.tsx keeps it in step with the nav
+     preference; overlays portalled to <body> read it to stay clear of the nav. */
+  --app-content-left: 0px;
+
   --background: hsl(0 0% 100%);
   --foreground: hsl(222 47% 11%);
 

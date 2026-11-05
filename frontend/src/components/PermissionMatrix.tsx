@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import api from '../lib/api';
 import { cn } from '@/lib/utils';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -12,14 +13,25 @@ interface Permission {
   canExport: boolean; canImport: boolean;
 }
 
-const ACTIONS: (keyof Omit<Permission, 'roleId' | 'formId'>)[] = [
+type Action = keyof Omit<Permission, 'roleId' | 'formId'>;
+
+const ACTIONS: Action[] = [
   'canCreate', 'canUpdate', 'canView', 'canDelete', 'canExport', 'canImport',
 ];
 
-const ACTION_LABELS: Record<string, string> = {
+const ACTION_LABELS: Record<Action, string> = {
   canCreate: 'Create', canUpdate: 'Update', canView: 'View',
   canDelete: 'Delete', canExport: 'Export', canImport: 'Import',
 };
+
+/**
+ * The first column is `sticky left-0`, so the checkbox cells scroll underneath
+ * it. That only reads as a panel if its background is **opaque** — a
+ * translucent `bg-muted/30` (or a `bg-inherit` over an unstyled row) lets the
+ * matrix show straight through, which is why the zebra striping is gone and
+ * every sticky cell paints `bg-card`. Rows are separated by a border instead.
+ */
+const STICKY_CELL = 'sticky left-0 z-20 bg-card';
 
 export default function PermissionMatrix() {
   const qc = useQueryClient();
@@ -33,16 +45,13 @@ export default function PermissionMatrix() {
     mutationFn: (dto: Partial<Permission> & { roleId: string; formId: string }) =>
       api.post('/api/permissions', dto),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['permission-matrix'] }),
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Could not save permission'),
   });
 
   const getPermission = (roleId: string, formId: string): Permission | undefined =>
     data?.permissions.find(p => p.roleId === roleId && p.formId === formId);
 
-  const handleToggle = (
-    roleId: string, formId: string,
-    action: keyof Omit<Permission, 'roleId' | 'formId'>,
-    current: boolean,
-  ) => {
+  const handleToggle = (roleId: string, formId: string, action: Action, current: boolean) => {
     const existing = getPermission(roleId, formId);
     upsertMutation.mutate({
       roleId, formId,
@@ -66,22 +75,34 @@ export default function PermissionMatrix() {
   }
 
   return (
-    <div className="overflow-x-auto rounded-xl border bg-card">
+    <div className="overflow-x-auto rounded-lg border">
       <table className="w-full border-collapse text-sm">
         <thead>
-          <tr>
-            <th className="sticky left-0 z-10 bg-card px-3 py-2 text-left align-bottom text-muted-foreground">Form</th>
+          <tr className="bg-muted/50">
+            <th className={cn(STICKY_CELL, 'border-b border-r px-3 py-2 text-left align-bottom text-xs font-semibold text-muted-foreground')}>
+              Form
+            </th>
             {roles.map(role => (
-              <th key={role.id} colSpan={5} className="border-b border-l px-3 py-2 text-center font-semibold text-foreground">
+              <th
+                key={role.id}
+                colSpan={ACTIONS.length}
+                className="border-b border-l-2 px-3 py-2 text-center font-semibold whitespace-nowrap text-foreground"
+              >
                 {role.name}
               </th>
             ))}
           </tr>
-          <tr>
-            <th className="sticky left-0 z-10 bg-card px-3 py-2"></th>
+          <tr className="bg-muted/50">
+            <th className={cn(STICKY_CELL, 'border-b border-r')}></th>
             {roles.map(role =>
-              ACTIONS.map(action => (
-                <th key={`${role.id}-${action}`} className="border-b border-l px-2 py-1.5 text-center text-xs font-medium text-muted-foreground">
+              ACTIONS.map((action, i) => (
+                <th
+                  key={`${role.id}-${action}`}
+                  className={cn(
+                    'border-b px-2 py-1.5 text-center text-xs font-medium whitespace-nowrap text-muted-foreground',
+                    i === 0 ? 'border-l-2' : 'border-l',
+                  )}
+                >
                   {ACTION_LABELS[action]}
                 </th>
               ))
@@ -89,17 +110,23 @@ export default function PermissionMatrix() {
           </tr>
         </thead>
         <tbody>
-          {forms.map((form, i) => (
-            <tr key={form.id} className={cn(i % 2 === 1 && 'bg-muted/30')}>
-              <td className="sticky left-0 z-10 bg-inherit px-3 py-2 font-medium text-foreground">{form.displayName}</td>
+          {forms.map(form => (
+            <tr key={form.id} className="border-t">
+              <td className={cn(STICKY_CELL, 'border-r px-3 py-2 font-medium whitespace-nowrap text-foreground')}>
+                {form.displayName}
+              </td>
               {roles.map(role => {
                 const perm = getPermission(role.id, form.id);
-                return ACTIONS.map(action => {
+                return ACTIONS.map((action, i) => {
                   const checked = perm?.[action] ?? false;
                   return (
-                    <td key={`${role.id}-${form.id}-${action}`} className="border-l px-2 py-2 text-center">
+                    <td
+                      key={`${role.id}-${form.id}-${action}`}
+                      className={cn('px-2 py-2 text-center', i === 0 ? 'border-l-2' : 'border-l')}
+                    >
                       <Checkbox
                         checked={checked}
+                        aria-label={`${ACTION_LABELS[action]} ${form.displayName} as ${role.name}`}
                         onCheckedChange={() => handleToggle(role.id, form.id, action, checked)}
                       />
                     </td>

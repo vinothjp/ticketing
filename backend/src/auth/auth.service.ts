@@ -56,7 +56,13 @@ export class AuthService {
     }
 
     const roles = user.userRoles.map((ur) => ur.role.name);
-    const payload = { sub: user.id, username: user.username, roles, clientId: user.clientId };
+    const payload = {
+      sub: user.id,
+      username: user.username,
+      roles,
+      clientId: user.clientId,
+      customerCompanyId: user.customerCompanyId,
+    };
 
     const accessToken = this.jwtService.sign(payload, {
       secret: this.config.get('JWT_SECRET'),
@@ -77,6 +83,7 @@ export class AuthService {
         email: user.email,
         roles,
         clientId: user.clientId,
+        customerCompanyId: user.customerCompanyId,
       },
     };
   }
@@ -104,7 +111,7 @@ export class AuthService {
       try {
         const frontendUrl = this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:5173';
         const resetUrl = `${frontendUrl}/reset-password?token=${token}`;
-        await this.mailer.sendPasswordResetEmail(user.email, user.username, resetUrl);
+        await this.mailer.sendPasswordResetEmail(user.email, user.username, resetUrl, user.clientId);
       } catch (err) {
         // Don't let a broken SMTP config break password reset for users —
         // log it for the Super Admin to notice and fix in the SMTP settings.
@@ -164,7 +171,11 @@ export class AuthService {
     if (!clientId) return null;
     const client = await this.prisma.client.findUnique({
       where: { id: clientId },
-      select: { name: true, logoUrl: true },
+      // Hand-built projection: a column added to Client reaches the app only if
+      // it is named here. `dateFormat` rides along because every logged-in user
+      // — staff and customer contacts alike — needs it to render a date, and
+      // this is the one client read they all have.
+      select: { name: true, logoUrl: true, dateFormat: true, timeFormat: true },
     });
     return client;
   }

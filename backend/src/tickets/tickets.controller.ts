@@ -1,0 +1,256 @@
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  UseGuards,
+  Request,
+  UseInterceptors,
+  UploadedFiles,
+  Res,
+} from '@nestjs/common';
+import type { Response } from 'express';
+import { FilesInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { extname, join } from 'path';
+import { randomUUID } from 'crypto';
+import { TicketsService } from './tickets.service';
+import { CreateTicketDto } from './dto/create-ticket.dto';
+import { UpdateTicketDto } from './dto/update-ticket.dto';
+import { AssignTechniciansDto } from './dto/assign-technicians.dto';
+import { SetResolutionDto } from './dto/set-resolution.dto';
+import { RejectTicketDto } from './dto/reject-ticket.dto';
+import { ReopenTicketDto } from './dto/reopen-ticket.dto';
+import { CreateWorklogDto } from './dto/worklog.dto';
+import { ExportTicketsDto } from './dto/export-tickets.dto';
+import { sendWorkbook, rangeStamp } from '../lib/spreadsheet';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { TenantGuard } from '../auth/tenant.guard';
+import { StaffGuard } from '../auth/staff.guard';
+import { CustomerAdminGuard } from '../auth/customer-admin.guard';
+import { CustomerContactGuard } from '../auth/customer-contact.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
+import { FIELD_CATALOG } from './field-catalog';
+
+type AuthedRequest = { user: { id: string; clientId: string; roles: string[]; customerCompanyId?: string | null } };
+
+@UseGuards(JwtAuthGuard, TenantGuard)
+@Controller('api/tickets')
+export class TicketsController {
+  constructor(private ticketsService: TicketsService) {}
+
+  @Get()
+  findAll(@Request() req: AuthedRequest) {
+    return this.ticketsService.findAll(req.user.clientId, req.user);
+  }
+
+  /**
+   * The list as a spreadsheet. Declared before the `:id` routes, the convention
+   * every export on this codebase follows so a param route can't swallow it.
+   *
+   * A POST because the body carries the ids the screen is showing — a list of
+   * UUIDs is far past what a query string can hold — and the rows are still read
+   * through the list's own visibility rule, so this exports nothing the caller
+   * could not already open. No guard beyond the controller's: whoever can see
+   * the ticket list can download the rows in it, customers included.
+   */
+  @Post('export')
+  async exportTickets(
+    @Body() dto: ExportTicketsDto,
+    @Request() req: AuthedRequest,
+    @Res() res: Response,
+  ) {
+    const book = await this.ticketsService.exportSheet(req.user.clientId, req.user, dto.ids);
+    sendWorkbook(res, `tickets-${rangeStamp(dto.from, dto.to)}.xlsx`, book);
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.findOne(id, req.user.clientId, req.user);
+  }
+
+  @Get(':id/activity')
+  getActivity(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.getActivity(id, req.user.clientId, req.user);
+  }
+
+  // ---- Worklog / support-hours time tracking (staff only) ----
+  // The pool the ticket's logged time is drawn from — the product's own AMC/
+  // warranty hours, or the customer's shared contract. Read-only.
+  @Get(':id/support-hours')
+  @UseGuards(StaffGuard)
+  ticketSupportHours(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.ticketSupportHours(id, req.user.clientId, req.user);
+  }
+
+  @Get(':id/worklogs')
+  @UseGuards(StaffGuard)
+  listWorklogs(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.listWorklogs(id, req.user.clientId, req.user);
+  }
+
+  @Post(':id/worklogs')
+  @UseGuards(StaffGuard)
+  addWorklog(@Param('id') id: string, @Body() dto: CreateWorklogDto, @Request() req: AuthedRequest) {
+    return this.ticketsService.addWorklog(id, dto, req.user.clientId, req.user.id, req.user);
+  }
+
+  @Delete(':id/worklogs/:worklogId')
+  @UseGuards(StaffGuard)
+  deleteWorklog(@Param('id') id: string, @Param('worklogId') worklogId: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.deleteWorklog(id, worklogId, req.user.clientId, req.user);
+  }
+
+  @Put(':id/resolution')
+  @UseGuards(StaffGuard)
+  setResolution(
+    @Param('id') id: string,
+    @Body() dto: SetResolutionDto,
+    @Request() req: AuthedRequest,
+  ) {
+    return this.ticketsService.setResolution(id, req.user.clientId, dto, req.user.id, req.user);
+  }
+
+  // Reopening is the client's judgement that the fix didn't hold, so a provider
+  // admin or consultant cannot revive a customer's ticket on their behalf. Not a
+  // guard: the rule depends on whether the ticket has a customer, so it lives in
+  // the service where the row is loaded.
+  @Post(':id/reopen')
+  reopen(@Param('id') id: string, @Body() dto: ReopenTicketDto, @Request() req: AuthedRequest) {
+    return this.ticketsService.reopen(id, req.user.clientId, dto, req.user.id, req.user);
+  }
+
+  // A customer ticket reopens only on approval: the client (the employee who
+  // raised it, or their company admin) asks, and the client product's project
+  // manager or a tenant Admin decides. Who may decide is checked in the service
+  // — the project manager is a per-ticket fact, not a role a guard can read.
+  @Post(':id/reopen-request')
+  @UseGuards(CustomerContactGuard)
+  requestReopen(@Param('id') id: string, @Body() dto: ReopenTicketDto, @Request() req: AuthedRequest) {
+    return this.ticketsService.requestReopen(id, req.user.clientId, dto, req.user.id, req.user);
+  }
+
+  @Post(':id/reopen-request/withdraw')
+  @UseGuards(CustomerContactGuard)
+  withdrawReopenRequest(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.withdrawReopenRequest(id, req.user.clientId, req.user.id, req.user);
+  }
+
+  @Post(':id/reopen-request/approve')
+  @UseGuards(StaffGuard)
+  approveReopenRequest(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.approveReopenRequest(id, req.user.clientId, req.user.id, req.user);
+  }
+
+  @Post(':id/reopen-request/reject')
+  @UseGuards(StaffGuard)
+  rejectReopenRequest(@Param('id') id: string, @Body() dto: RejectTicketDto, @Request() req: AuthedRequest) {
+    return this.ticketsService.rejectReopenRequest(id, req.user.clientId, dto, req.user.id, req.user);
+  }
+
+  // The client signs off a resolved ticket, which closes it. Customer contacts
+  // only — staff must not acknowledge on the client's behalf.
+  @Post(':id/acknowledge')
+  @UseGuards(CustomerContactGuard)
+  acknowledge(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.acknowledge(id, req.user.clientId, req.user.id, req.user);
+  }
+
+  // Creation-approval gate — tenant Admin only.
+  @Post(':id/approve')
+  @UseGuards(RolesGuard)
+  @Roles('Admin')
+  approve(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.approve(id, req.user.clientId, req.user.id, req.user);
+  }
+
+  @Post(':id/reject')
+  @UseGuards(RolesGuard)
+  @Roles('Admin')
+  reject(@Param('id') id: string, @Body() dto: RejectTicketDto, @Request() req: AuthedRequest) {
+    return this.ticketsService.reject(id, req.user.clientId, dto, req.user.id, req.user);
+  }
+
+  // Stage 1 — a customer company admin approves/rejects their employee's ticket.
+  @Post(':id/customer-approve')
+  @UseGuards(CustomerAdminGuard)
+  customerApprove(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.customerApprove(id, req.user.clientId, req.user.id, req.user);
+  }
+
+  @Post(':id/customer-reject')
+  @UseGuards(CustomerAdminGuard)
+  customerReject(@Param('id') id: string, @Body() dto: RejectTicketDto, @Request() req: AuthedRequest) {
+    return this.ticketsService.customerReject(id, req.user.clientId, dto, req.user.id, req.user);
+  }
+
+  @Post()
+  create(@Body() dto: CreateTicketDto, @Request() req: AuthedRequest) {
+    return this.ticketsService.create(dto, req.user.clientId, req.user.id, req.user);
+  }
+
+  @Put(':id')
+  @UseGuards(StaffGuard)
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateTicketDto,
+    @Request() req: AuthedRequest,
+  ) {
+    return this.ticketsService.update(id, req.user.clientId, dto, req.user.id, req.user);
+  }
+
+  @Put(':id/technicians')
+  @UseGuards(StaffGuard)
+  assignTechnicians(
+    @Param('id') id: string,
+    @Body() dto: AssignTechniciansDto,
+    @Request() req: AuthedRequest,
+  ) {
+    return this.ticketsService.assignTechnicians(
+      id,
+      req.user.clientId,
+      dto.userIds,
+      req.user.id,
+      req.user,
+    );
+  }
+
+  @Post(':id/attachments')
+  @UseInterceptors(
+    FilesInterceptor('attachments', 10, {
+      storage: diskStorage({
+        destination: join(process.cwd(), 'uploads/tickets'),
+        filename: (req, file, cb) => {
+          cb(null, `${randomUUID()}${extname(file.originalname)}`);
+        },
+      }),
+      limits: { fileSize: 5 * 1024 * 1024 },
+    }),
+  )
+  uploadAttachments(
+    @Param('id') id: string,
+    @UploadedFiles() files: Express.Multer.File[],
+    @Request() req: AuthedRequest,
+  ) {
+    return this.ticketsService.addAttachments(
+      id,
+      req.user.clientId,
+      files,
+      req.user.id,
+      req.user,
+    );
+  }
+}
+
+@UseGuards(JwtAuthGuard, TenantGuard)
+@Controller('api/field-catalog')
+export class FieldCatalogController {
+  @Get()
+  findAll() {
+    return FIELD_CATALOG;
+  }
+}

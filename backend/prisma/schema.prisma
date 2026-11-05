@@ -18,6 +18,16 @@ enum LicenseStatus {
   CANCELLED
 }
 
+enum FieldVisibility {
+  VISIBLE
+  HIDDEN
+}
+
+enum FieldRequirement {
+  MANDATORY
+  OPTIONAL
+}
+
 model Client {
   id           String       @id @default(uuid())
   name         String
@@ -32,7 +42,274 @@ model Client {
   updatedBy    String?
   users        User[]
   roles        Role[]
+  projectTemplates ProjectTemplate[]
+  products     Product[]
   license      License?
+  templates    Template[]
+  picklistOptions PicklistOption[]
+  slaPolicies  SlaPolicy[]
+  messagingChannels MessagingChannel[]
+  tickets      Ticket[]
+  customerCompanies CustomerCompany[]
+  smtpConfig   SmtpConfig?
+  kbArticles   KbArticle[]
+  projects     Project[]
+  resourceCategories ResourceCategory[]
+  changeRequests ChangeRequest[]
+  changeRequestOptions ChangeRequestOption[]
+  optionLists  OptionList[]
+  clientVisits ClientVisit[]
+  assets       Asset[]
+  assetAllocations AssetAllocation[]
+  communications Communication[]
+  galleryAlbums GalleryAlbum[]
+  ticketSequence Int @default(0)
+  kbSequence   Int @default(0)
+  projectSequence Int @default(0)
+  crSequence   Int @default(0)
+  clientVisitSequence Int @default(0) @map("clientLogSequence")
+  // How many days after a ticket is resolved it may still be reopened. Tenant-
+  // editable on the Organization screen; past the window the UI sends the user
+  // to raise a fresh ticket instead.
+  ticketReopenWindowDays Int @default(30)
+  // How many days a resolved ticket waits for the client's acknowledgement
+  // before it closes itself. Tenant-editable on the Organization screen.
+  ticketAutoCloseDays Int @default(3)
+  // How dates are rendered on this tenant's ticket screens. A token pattern
+  // (`dd/MM/yyyy`, `MMM dd, yyyy`, …) chosen on the Organization screen from the
+  // DATE_FORMAT option list, so an admin can add a pattern without a deploy.
+  dateFormat String @default("dd/MM/yyyy")
+  // The other two Organization-module settings, chosen the same way: from the
+  // TIME_FORMAT and CURRENCY option lists. `timeFormat` is live — it is what the
+  // ticket screens append to `dateFormat` for a date-and-time stamp. `currency`
+  // is stored config: nothing reads it yet.
+  timeFormat String @default("HH:mm")
+  currency   String @default("USD")
+}
+
+// A logged client visit against a customer, booked to their contract pool.
+// VISITED rows draw down that pool (hours + visit count);
+// `contractDeducted` records whether this row's draw-down is currently applied,
+// so status flips and deletes can reverse it exactly once.
+model ClientVisit {
+  id                String   @id @default(uuid())
+  clientId          String
+  client            Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  visitNumber       String?  @map("logNumber")
+  visitDate         DateTime
+  customerCompanyId String
+  customerCompany   CustomerCompany @relation(fields: [customerCompanyId], references: [id], onDelete: Cascade)
+  // How many times an admin has re-dated this visit after a consultant asked for
+  // one. Drives the orange "Rescheduled" marker on a visit that is planned again:
+  // `status` says where the visit is now, this says what it has been through.
+  rescheduleCount   Int      @default(0)
+  consultantId      String
+  consultantName    String?  // denormalised at write time so the list needs no join
+  productId         String?
+  productName       String?  // denormalised alongside consultantName
+  hours             Decimal  @default(0)
+  purpose           String
+  notes             String?
+  status            String   @default("PLANNED")  // PLANNED | VISITED | RESCHEDULED
+  ticketId          String?
+  contractDeducted  Boolean  @default(false)
+  deductedCpId      String?  // CustomerCompanyProduct drawn down; null = the shared customer pool
+  createdBy         String?
+  updatedBy         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([clientId, customerCompanyId])
+  @@index([clientId, consultantId])
+
+  @@map("ClientLog")   // renamed model, original table kept
+}
+
+// Knowledge base article. Staff author; customers see published + customer-visible ones.
+model KbArticle {
+  id            String   @id @default(uuid())
+  clientId      String
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  documentNumber String?
+  articleType   String   @default("KNOWLEDGE")  // KNOWLEDGE | PROBLEM
+  title         String
+  category      String?
+  subCategory   String?
+  module        String?
+  subject       String?
+  versionNumber String?
+  body          String                          // "Content"
+  problemDescription String?
+  resolution    String?
+  cause         String?
+  prevention    String?
+  keywords      String[] @default([])
+  urlReferences Json     @default("[]")          // [{ label?, url }]
+  status        String   @default("DRAFT")       // DRAFT | PUBLISHED
+  audience      String   @default("INTERNAL")    // INTERNAL | CUSTOMER
+  knowledgeOwnerId   String?
+  knowledgeOwnerName String?
+  publishedDate DateTime?
+  expiryDate    DateTime?
+  createdBy     String?
+  createdByName String?
+  updatedBy     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  attachments   KbAttachment[]
+
+  @@index([clientId, status])
+}
+
+model KbAttachment {
+  id         String    @id @default(uuid())
+  articleId  String
+  article    KbArticle @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  fileName   String
+  filePath   String
+  mimeType   String
+  size       Int
+  uploadedAt DateTime  @default(now())
+  uploadedBy String?
+}
+
+// An external customer company of the tenant (Client). Each has a handful of
+// contact users who log in and raise tickets; agents see and filter by company.
+model CustomerCompany {
+  id           String   @id @default(uuid())
+  clientId     String
+  client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name         String
+  code         String?
+  contactEmail String?
+  contactPerson String?
+  contactNumber String?
+  // Client logo, stored like Client.logoUrl: "/uploads/logos/<file>".
+  logoUrl      String?
+  status       String   @default("ACTIVE")
+  maxContacts  Int      @default(5)
+  // Agreed support-hours pool for a period. If agreedSupportHours is null the
+  // whole feature is dormant for this company (no banner, no alerts).
+  agreedSupportHours       Decimal?
+  supportPeriodStart       DateTime?
+  supportPeriodEnd         DateTime?
+  supportAlertThresholdPct Int      @default(70)
+  // Set when the "hours running low" alert fires, so it only goes out once per
+  // period; cleared whenever the hours/period/threshold are edited.
+  supportAlertSentAt       DateTime?
+  // What the client bought. AMC = implementation + a support contract (everything
+  // below). IMPLEMENTATION = services only: no contract scope, coverage, terms,
+  // support-hours pool, visits allowance, reminders or renewals — the pool
+  // resolver answers null for it. Its contract-services fields (contractCrApplicable
+  // and friends) still apply, read at client level. Set on the client dialogs only.
+  clientType               String   @default("AMC")        // IMPLEMENTATION | AMC
+  // Product contract scope. PRODUCT = each product carries its own warranty/AMC
+  // terms; CUSTOMER = one shared contract (dates + hours) covering many products.
+  contractScope            String   @default("PRODUCT")   // PRODUCT | CUSTOMER
+  contractCoverageType     String   @default("AMC")        // WARRANTY | AMC
+  contractStart            DateTime?
+  contractEnd              DateTime?
+  // Support-hours pool. `contractHoursUnlimited` is the explicit "no cap" state:
+  // when true `contractHours` is null and nothing is deducted or alerted on.
+  contractHours            Int?
+  contractHoursUnlimited   Boolean  @default(false)
+  contractVisits           Int?
+  contractHoursUsed        Decimal  @default(0)
+  contractVisitsUsed       Int      @default(0)
+  contractMonthlyCost      Decimal?
+  // The purchase order this contract was raised against, and the PO invoice
+  // scanned in beside it. `contractPoFileUrl` is a served path like the logos
+  // ("/uploads/po/<file>"); `contractPoFileName` keeps the name the admin
+  // uploaded, since the stored filename is prefixed and time-stamped and would
+  // be unrecognisable in a link. Shared-contract scope only — the per-product
+  // twin lives on CustomerCompanyProduct.
+  contractPoNumber         String?
+  contractPoFileUrl        String?
+  contractPoFileName       String?
+  // Set when the shared contract's "support hours running low" alert fires;
+  // cleared on any contract change so it re-arms.
+  contractAlertSentAt      DateTime?
+  // When the shared contract's last expiry reminder went out, and which one it
+  // was (90 / 60 / 30 days out) — their own markers, so the hours-low alert above
+  // can never suppress them. Cleared only when the end date moves (an edit or a
+  // renewal), so re-saving other terms doesn't resend a reminder.
+  contractExpiryAlertSentAt DateTime?
+  // 90 / 60 / 30 = that reminder was the last sent; 0 = the "has ended" notice went out.
+  contractExpiryReminderDays Int?
+  excessRequests           SupportHoursExcessRequest[]
+  // How the shared-contract support-hours allowance is read: FULL_AMC = one pool
+  // for the whole term (contractHours), MONTHLY = contractHours is a per-month
+  // allowance tracked by SupportHoursLedger. The coverage window (dates) is one
+  // range regardless — only the hours figure changes meaning.
+  contractHoursPeriod      String   @default("FULL_AMC")  // FULL_AMC | MONTHLY
+  // MONTHLY only: carry an unused month's balance into the next month.
+  contractCarryForward     Boolean  @default(false)
+  // Whether time may be logged past the allowance, and whether doing so needs a
+  // named approver's sign-off. The approver is an internal staff/admin user.
+  contractAllowExcess      Boolean  @default(false)
+  // What an hour beyond the allowance is charged at (needs contractAllowExcess).
+  // Money: withheld from non-Admins server-side, like contractMonthlyCost.
+  contractExcessRate       Decimal?
+  // DORMANT — the excess-hours approval flow was removed. Nothing reads or writes
+  // these (nor SupportHoursExcessRequest); they are kept only because dropping
+  // them from the schema would make start-up `db push --accept-data-loss` delete
+  // the data on every deployed database.
+  contractExcessApproval   Boolean  @default(false)
+  // Whether the customer may still raise tickets once the allowance is spent.
+  // Defaults to true — support does not stop the moment the hours run out unless
+  // the tenant says so.
+  contractAllowTicketsAfterHours Boolean @default(true)
+  // What else the shared contract covers. Stored terms only — nothing counts
+  // CRs against these yet. With CR not applicable the two limits are cleared.
+  contractThirdPartyIntegration Boolean @default(false)
+  contractPlanRollout      Boolean  @default(false)
+  contractCrApplicable     Boolean  @default(false)
+  contractCrMaxPerMonth    Int?
+  // A CR estimated above this many hours is chargeable.
+  contractCrMaxHours       Decimal?
+  contractExcessApproverId String?
+  contractExcessApprover   User?    @relation("ContractExcessApprover", fields: [contractExcessApproverId], references: [id], onDelete: SetNull)
+  // The one internal staff user who owns this client relationship. Unrelated to
+  // the `Manager` role, which is the Employee Master reporting line.
+  accountManagerId         String?
+  accountManager           User?    @relation("ClientAccountManager", fields: [accountManagerId], references: [id], onDelete: SetNull)
+  // Whether tickets this client raises are auto-routed to a free consultant at
+  // all. Off = every ticket lands unassigned for a manager to pick. Applies
+  // whatever the contractScope is, hence no contract* prefix. Unrelated to the
+  // (dead) Product.autoAssign.
+  autoAssignTickets        Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  createdBy    String?
+  updatedBy    String?
+  users        User[]
+  tickets      Ticket[]
+  projects     Project[]
+  products     CustomerCompanyProduct[]
+  productRequests ProductRequest[]
+  consultants  CustomerConsultant[]
+  clientVisits ClientVisit[]
+  galleryAlbums GalleryAlbum[]
+
+  @@unique([clientId, name])
+}
+
+// A consultant tied to a customer, used to auto-assign that customer's tickets.
+// Optionally scoped to a product/module/track; a row with no scope is the
+// customer's default consultant. These override the module's default routing.
+model CustomerConsultant {
+  id                String   @id @default(uuid())
+  clientId          String
+  customerCompanyId String
+  customerCompany   CustomerCompany @relation(fields: [customerCompanyId], references: [id], onDelete: Cascade)
+  userId            String
+  productId         String?
+  moduleId          String?
+  track             String?  // 'TECHNICAL' | 'FUNCTIONAL' | null (any)
+  isPrimary         Boolean  @default(false)
+  createdAt         DateTime @default(now())
+
+  @@index([customerCompanyId])
 }
 
 model License {
@@ -54,6 +331,7 @@ model License {
 model User {
   id             String      @id @default(uuid())
   username       String      @unique
+  name           String?                                        // full display name (e.g. "John Rivera"); falls back to username
   email          String      @unique
   passwordHash   String
   isActive       Boolean     @default(true)
@@ -65,7 +343,39 @@ model User {
   updatedBy      String?
   clientId       String?
   client         Client?     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // Set for external customer-contact users; null for internal staff/agents.
+  customerCompanyId String?
+  customerCompany   CustomerCompany? @relation(fields: [customerCompanyId], references: [id], onDelete: SetNull)
+
+  // ---- Employee Master ----
+  // Internal staff *are* the employees, so the employee record is these columns
+  // rather than a second person table. `employeeId` is typed by an admin (not a
+  // generated sequence) and must be unique inside the tenant; NULLs are distinct
+  // in Postgres, so users without one never collide. The manager is another user
+  // of the same tenant carrying the Admin role (enforced in UsersService).
+  employeeId     String?
+  department     String?
+  designation    String?
+  phone          String?
+  managerId      String?
+  manager        User?       @relation("EmployeeManager", fields: [managerId], references: [id], onDelete: SetNull)
+  reports        User[]      @relation("EmployeeManager")
+  assetAllocations AssetAllocation[]
+
   userRoles      UserRole[]
+  ticketAssignments TicketTechnician[]
+  moduleConsultants ModuleConsultant[]
+  productConsultants ProductConsultant[]
+  notifications  Notification[]
+  projectTaskWatchers ProjectTaskWatcher[]
+  projectResources ProjectResource[]
+  projectTimesheets ProjectTimesheet[]
+  contractExcessApprovals CustomerCompany[]        @relation("ContractExcessApprover")
+  productExcessApprovals  CustomerCompanyProduct[] @relation("ProductExcessApprover")
+  accountManagedClients   CustomerCompany[]        @relation("ClientAccountManager")
+  managedClientProducts   CustomerCompanyProduct[] @relation("ClientProductManager")
+
+  @@unique([clientId, employeeId])
 }
 
 model Role {
@@ -109,7 +419,10 @@ model UserRole {
 }
 
 model SmtpConfig {
-  id                String   @id @default("global")
+  id                String   @id @default(uuid())
+  // null = the platform-global config (id "global"); set = a tenant's own SMTP.
+  clientId          String?  @unique
+  client            Client?  @relation(fields: [clientId], references: [id], onDelete: Cascade)
   host              String?
   port              Int      @default(587)
   useTls            Boolean  @default(true)
@@ -139,4 +452,1589 @@ model FormPermission {
   updatedBy String?
 
   @@unique([roleId, formId])
+}
+
+// In-app notification for a user (bell feed). Not email.
+model Notification {
+  id        String   @id @default(uuid())
+  clientId  String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // TICKET_CREATED | TICKET_ASSIGNED | TICKET_ACK | TICKET_RESOLVED | TICKET_ACKNOWLEDGED | CLIENT_VISIT_ASSIGNED | CLIENT_VISIT_UPDATED
+  title     String
+  body      String?
+  ticketId  String?
+  link      String?  // in-app route the bell opens; falls back to the ticket when null
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read])
+  @@index([userId, createdAt])
+}
+
+// Products the provider supports (SAP B1, SAP S/4HANA, Others). Auto-assignment
+// routes a customer ticket to a consultant based on product → module → track.
+model Product {
+  id         String   @id @default(uuid())
+  clientId   String
+  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name       String
+  code       String                              // free-form product code
+  description String?
+  imageUrl   String?                             // product logo (data URL); null → default cube
+  autoAssign Boolean  @default(true)             // kept for ticket routing; not shown in the product admin
+  // Product-level tracks (used when the product has no modules). TECHNICAL | FUNCTIONAL | OTHERS.
+  tracks     String[] @default([])
+  sortOrder  Int      @default(0)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  modules    ProductModule[]
+  companies  CustomerCompanyProduct[]
+  requests   ProductRequest[]
+  consultants ProductConsultant[]
+
+  @@unique([clientId, name])
+}
+
+// An agent assigned directly to a product's track (when the product has no
+// module). Multiple agents per track are allowed; the first is the primary.
+model ProductConsultant {
+  id        String   @id @default(uuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  track     String   // 'TECHNICAL' | 'FUNCTIONAL' | 'OTHERS'
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isPrimary Boolean  @default(false)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([productId])
+}
+
+// A product a customer company has purchased from the provider, with its
+// warranty + AMC coverage. Only ACTIVE ones can be chosen when raising a ticket.
+model CustomerCompanyProduct {
+  id                String   @id @default(uuid())
+  customerCompanyId String
+  customerCompany   CustomerCompany @relation(fields: [customerCompanyId], references: [id], onDelete: Cascade)
+  productId         String
+  product           Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  status            String   @default("ACTIVE")   // ACTIVE | EXPIRED | TERMINATED
+  purchaseDate      DateTime?
+  // Warranty coverage.
+  warrantyMonths    Int      @default(12)
+  warrantyEnd       DateTime?
+  // AMC (Annual Maintenance Contract). Free for a period, then a paid renewal.
+  freeAmcMonths     Int      @default(12)
+  amcType           String   @default("FREE")     // FREE | PAID
+  amcStart          DateTime?
+  amcEnd            DateTime?                       // coverage end — drives expiry/termination
+  amcMonthlyCost    Decimal?
+  amcHoursPerMonth  Int?
+  amcVisitsPerMonth Int?     @default(2)
+  // Support-hours + site-visits allocations. Free-period pool and the paid-period
+  // pool (used after subscribing). `hoursUsed`/`visitsUsed` track the current
+  // period's consumption; they reset to 0 when the AMC renews into a new period.
+  // `*HoursUnlimited` is the explicit "no cap" state for that phase's hour pool:
+  // when true the matching `*AmcHours` is null and nothing is deducted or alerted
+  // on. Warranty (the free phase) defaults to unlimited.
+  freeAmcHours      Int?
+  freeAmcHoursUnlimited Boolean @default(true)
+  freeAmcVisits     Int?
+  paidAmcMonths     Int?
+  paidAmcHours      Int?
+  paidAmcHoursUnlimited Boolean @default(false)
+  paidAmcVisits     Int?
+  hoursUsed         Decimal  @default(0)
+  visitsUsed        Int      @default(0)
+  // When the last "coverage running out" reminder went out.
+  expiryAlertSentAt DateTime?
+  // Which reminder that was — 90, 60 or 30 days out (EXPIRY_REMINDER_DAYS). The
+  // sweep sends the next one once its window is reached. Cleared only when
+  // amcEnd moves, so re-saving other terms never resends a reminder.
+  expiryReminderDays Int?
+  warrantyAlertSentAt DateTime?
+  // Same idea for the support-hours pool: the "hours running low" alert fires
+  // once per coverage period, cleared whenever the terms or the period change.
+  hoursAlertSentAt  DateTime?
+  // Per-product mirror of the shared-contract support-hours config. Reads the
+  // active phase's hour figure (paidAmcHours / freeAmcHours) as FULL_AMC (one
+  // pool for the term) or MONTHLY (a per-month allowance tracked by
+  // SupportHoursLedger). Coverage dates are unaffected.
+  amcHoursPeriod       String   @default("FULL_AMC")  // FULL_AMC | MONTHLY
+  amcCarryForward      Boolean  @default(false)
+  amcAllowExcess       Boolean  @default(false)
+  // Per-product mirror of contractExcessRate.
+  amcExcessRate        Decimal?
+  // DORMANT — see contractExcessApproval.
+  amcExcessApproval    Boolean  @default(false)
+  // Per-product mirror of contractAllowTicketsAfterHours.
+  amcAllowTicketsAfterHours Boolean @default(true)
+  // Per-product mirror of contractThirdPartyIntegration … contractCrMaxHours.
+  amcThirdPartyIntegration Boolean @default(false)
+  amcPlanRollout       Boolean  @default(false)
+  amcCrApplicable      Boolean  @default(false)
+  amcCrMaxPerMonth     Int?
+  amcCrMaxHours        Decimal?
+  amcExcessApproverId  String?
+  amcExcessApprover    User?    @relation("ProductExcessApprover", fields: [amcExcessApproverId], references: [id], onDelete: SetNull)
+  // The one internal staff user who owns this product for this client — a
+  // client-product role, so each client can name a different one. Either scope.
+  productManagerId     String?
+  productManager       User?    @relation("ClientProductManager", fields: [productManagerId], references: [id], onDelete: SetNull)
+  // Per-product purchase order + its invoice, the twin of the shared contract's
+  // contractPo* fields. A client on PRODUCT scope raises one PO per product, so
+  // these are what that screen edits; on CUSTOMER scope one PO covers everything
+  // and the company's own fields are read instead.
+  poNumber             String?
+  poFileUrl            String?
+  poFileName           String?
+  // Modules of this product switched off for THIS client — they can't be picked
+  // on the client's new tickets. Plain ids: a module deleted from the product
+  // just stops matching. Not a term, so a scope switch's reset leaves it alone.
+  inactiveModuleIds    String[] @default([])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([customerCompanyId, productId])
+  @@index([productId])
+}
+
+// One calendar-month bucket of a MONTHLY support-hours pool. Serves both scopes
+// via (scope, ownerId): a shared customer contract (scope=CONTRACT, owner =
+// CustomerCompany.id) or a per-product pool (scope=PRODUCT, owner =
+// CustomerCompanyProduct.id). Only written while the pool is on MONTHLY; the
+// monthly sweep rolls unused hours forward when carry-forward is on.
+model SupportHoursLedger {
+  id          String   @id @default(uuid())
+  clientId    String
+  scope       String            // CONTRACT | PRODUCT
+  ownerId     String            // CustomerCompany.id  or  CustomerCompanyProduct.id
+  periodStart DateTime          // first day of the calendar month
+  periodLabel String            // "2026-08"
+  allocated   Int               // month allocation (snapshot of the pool's hours)
+  carriedIn   Int      @default(0)
+  used        Decimal  @default(0)
+  createdAt   DateTime @default(now())
+
+  @@unique([scope, ownerId, periodLabel])
+  @@index([clientId])
+}
+
+// A customer's request to start using a new provider product. The provider
+// grants it (setting the purchase/AMC terms) or declines.
+model ProductRequest {
+  id                String   @id @default(uuid())
+  clientId          String
+  customerCompanyId String
+  customerCompany   CustomerCompany @relation(fields: [customerCompanyId], references: [id], onDelete: Cascade)
+  productId         String
+  product           Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  note              String?
+  status            String   @default("PENDING")  // PENDING | GRANTED | DECLINED
+  decisionNote      String?
+  requestedById     String?
+  decidedById       String?
+  decidedAt         DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([customerCompanyId])
+  @@index([productId])
+}
+
+// A module within a product. B1 has one "whole-product" module; S/4HANA has many
+// (FI, MM, SD, …); Others has none.
+model ProductModule {
+  id          String   @id @default(uuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name        String
+  // Consultant tracks this module uses. Defaults to both; the admin toggles them
+  // per module. Agent-lists and the ticket issue-type picker follow this.
+  tracks      String[] @default(["TECHNICAL", "FUNCTIONAL"])
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  consultants ModuleConsultant[]
+
+  @@index([productId])
+}
+
+// An agent in a module's consultant list for a given track (technical/functional).
+// A module+track holds an ordered list; exactly one is the primary. Auto-assignment
+// prefers the primary and falls back through the rest when they're busy.
+model ModuleConsultant {
+  id        String   @id @default(uuid())
+  moduleId  String
+  module    ProductModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  track     String   // 'TECHNICAL' | 'FUNCTIONAL'
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isPrimary Boolean  @default(false)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@unique([moduleId, track, userId])
+  @@index([userId])
+}
+
+// A reusable project blueprint (milestones + WBS tasks) applied when creating a
+// project. `blueprint` shape: { milestones: [{ name, tasks: [{ title, wbsType, durationDays }] }] }.
+model ProjectTemplate {
+  id          String   @id @default(uuid())
+  clientId    String
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  category    String?
+  icon        String?
+  color       String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  blueprint   Json     @default("{\"milestones\":[]}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String?
+  updatedBy   String?
+
+  @@unique([clientId, name])
+}
+
+model Template {
+  id                  String         @id @default(uuid())
+  clientId            String
+  client              Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name                String
+  category            String?
+  description         String?
+  descriptionGuidance String?
+  icon                String?
+  color               String?
+  defaultPriority     String?
+  sortOrder           Int            @default(0)
+  isActive            Boolean        @default(true)
+  // Tickets an agent or customer raises on this template start PENDING and wait
+  // for a tenant Admin to approve them; an Admin's own tickets go straight through.
+  requiresApproval    Boolean        @default(false)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  createdBy           String?
+  updatedBy           String?
+  fields              TemplateField[]
+  tickets             Ticket[]
+
+  @@unique([clientId, name])
+}
+
+model TemplateField {
+  id                   String           @id @default(uuid())
+  templateId           String
+  template             Template         @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  fieldKey             String
+  isCustom             Boolean          @default(false)
+  label                String?
+  dataType             String?
+  group                String?
+  placeholder          String?
+  options              Json?
+  visibility           FieldVisibility  @default(HIDDEN)
+  requirement          FieldRequirement @default(OPTIONAL)
+  readOnly             Boolean          @default(false)
+  sortOrder            Int              @default(0)
+  helperTextOverride   String?
+  defaultValueOverride String?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+  createdBy            String?
+  updatedBy            String?
+
+  @@unique([templateId, fieldKey])
+}
+
+model SlaPolicy {
+  id             String   @id @default(uuid())
+  clientId       String
+  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  priority       String
+  responseHours  Int?
+  everyResponseHours Int?
+  resolutionHours Int
+  operationalHours String  @default("CALENDAR")
+  escalationEnabled Boolean @default(true)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  createdBy      String?
+  updatedBy      String?
+
+  @@unique([clientId, priority])
+}
+
+model PicklistOption {
+  id          String   @id @default(uuid())
+  clientId    String
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  listKey     String
+  value       String
+  label       String
+  parentValue String?
+  color       String?
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String?
+  updatedBy   String?
+
+  @@unique([clientId, listKey, value])
+}
+
+// The tenant's registry of every dropdown list in the platform — one row per
+// list, whatever module it drives. It is a *registry*, not a second value
+// store: the values themselves still live in `PicklistOption` (source
+// `PICKLIST`) or `ChangeRequestOption` (source `CHANGE_REQUEST`), which is what
+// every ticket/KB/CR dropdown already reads. `listKey` is the key in that
+// backing table, so the unified Option List screen can manage both through one
+// API without moving any data or touching a single consumer.
+model OptionList {
+  id            String   @id @default(uuid())
+  clientId      String
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // Uppercase admin-facing key (ASSET_TYPE); for a custom list it is also the
+  // `listKey` its values are stored under.
+  code          String
+  name          String
+  description   String?
+  source        String   @default("PICKLIST")
+  // Which screen area this list belongs to, and therefore the Module column and
+  // filter on the Option List screen. Deliberately separate from `source`, which
+  // says which table holds the values: the Organization module stores its values
+  // in PicklistOption like Ticketing does, so a module is a label over the
+  // registry, never a third value store. Null on rows predating the column —
+  // `ensureDefaults` backfills system lists and `moduleOf()` falls back.
+  module        String?
+  listKey       String
+  // Set when this list is dependent on another (sub-category -> category);
+  // holds the *parent list's* listKey, matching `parentValue` on the values.
+  parentListKey String?
+  // Stored config: whether a user may type a value outside the list. Nothing
+  // reads it yet — don't quote it to a user as enforced.
+  allowCustom   Boolean  @default(false)
+  // A seeded list that application code references by key: it may be renamed
+  // and its values edited, but it cannot be re-keyed or deleted.
+  isSystem      Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  createdBy     String?
+  updatedBy     String?
+
+  @@unique([clientId, code])
+  @@unique([clientId, source, listKey])
+}
+
+model Ticket {
+  id                    String       @id @default(uuid())
+  clientId              String
+  client                Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  ticketNumber          String
+  templateId            String
+  template              Template     @relation(fields: [templateId], references: [id])
+  projectId             String?
+  project               Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  // Ticket Info
+  requestorName         String?
+  requestorUserId       String?
+  requestorEmail        String?
+  customerName          String?
+  customerCompanyId     String?
+  department             String?
+  requestorContact      String?
+  // SAP routing: which product/module the ticket is about + technical/functional.
+  // Drives auto-assignment to the module's consultant.
+  productId             String?
+  moduleId              String?
+  consultantType        String?      // TECHNICAL | FUNCTIONAL
+  priority              String?
+  ticketStatus          String
+  // When the status last changed. The full trail lives in TicketActivity; this is
+  // the one stamp the detail screen quotes ("in this status since …") without
+  // walking the audit log.
+  statusChangedAt       DateTime?
+  ticketCategory        String?
+  subCategory           String?
+  notifyEmails          String[]     @default([])
+  dueDate               DateTime?
+  expectedResolutionDate DateTime?
+  slaHours              Int?
+  firstResponseAt       DateTime?
+  closedDate            DateTime?
+
+  // Ticket Detail
+  subject               String
+  description           String
+
+  // Resolution
+  resolution            String?
+  resolutionCode        String?
+  resolvedAt            DateTime?
+  resolvedById          String?
+  reopenedCount         Int          @default(0)
+  // Why the client sent it back. Required on every reopen and pushed to the
+  // assigned agents + tenant admins; the full history lives in TicketActivity.
+  reopenReason          String?
+  reopenedAt            DateTime?
+  reopenedById          String?
+
+  // A customer's request to reopen a resolved/closed ticket, decided by the
+  // client product's project manager (`CustomerCompanyProduct.productManagerId`,
+  // resolved when the request is made and held in `reopenApproverUserId`) or any
+  // tenant Admin. Null approver = no project manager set, so the Admins decide.
+  // NONE | PENDING | APPROVED | REJECTED | WITHDRAWN. The ticket only reopens on
+  // APPROVED; the trail of every request lives in TicketActivity.
+  reopenRequestStatus   String       @default("NONE")
+  reopenRequestReason   String?
+  reopenRequestedAt     DateTime?
+  reopenRequestedById   String?
+  reopenApproverUserId  String?
+  reopenDecidedAt       DateTime?
+  reopenDecidedById     String?
+  reopenDecisionNote    String?
+
+  // Client acknowledgement of the resolution. The customer contact confirms the
+  // fix, and that acknowledgement is what closes the ticket.
+  acknowledgedAt        DateTime?
+  acknowledgedById      String?
+
+  // Customer-created ticket approval gate.
+  // NONE = staff-created (no gate); PENDING = awaiting tenant-Admin approval;
+  // APPROVED = active (assignable); REJECTED = declined (reason required, emailed).
+  approvalStatus        String       @default("NONE")
+  rejectionReason       String?
+  approvedById          String?
+  approvedAt            DateTime?
+  rejectedById          String?
+  rejectedAt            DateTime?
+
+  // Admin-designed custom fields (keyed by TemplateField.fieldKey)
+  customFields          Json         @default("{}")
+
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+  createdBy             String?
+  updatedBy             String?
+
+  customerCompany       CustomerCompany? @relation(fields: [customerCompanyId], references: [id])
+  technicians           TicketTechnician[]
+  attachments           TicketAttachment[]
+  activities            TicketActivity[]
+  tasks                 TicketTask[]
+  approvals             TicketApproval[]
+  messages              TicketMessage[]
+  worklogs              TicketWorklog[]
+  comments              TicketComment[]
+
+  @@unique([clientId, ticketNumber])
+  @@index([clientId, customerCompanyId])
+  @@index([clientId, projectId])
+  @@index([customFields(ops: JsonbOps)], type: Gin)
+}
+
+model TicketTechnician {
+  id         String   @id @default(uuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignedAt DateTime @default(now())
+
+  @@unique([ticketId, userId])
+}
+
+model TicketAttachment {
+  id         String   @id @default(uuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  fileName   String
+  filePath   String
+  mimeType   String
+  size       Int
+  uploadedAt DateTime @default(now())
+  uploadedBy String?
+}
+
+// Audit trail / activity timeline (History tab)
+model TicketActivity {
+  id          String   @id @default(uuid())
+  ticketId    String
+  ticket      Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  actorUserId String?
+  actorName   String?
+  type        String
+  summary     String
+  meta        Json?
+  createdAt   DateTime @default(now())
+
+  @@index([ticketId, createdAt])
+}
+
+// Sub-tasks (Tasks tab)
+model TicketTask {
+  id             String    @id @default(uuid())
+  ticketId       String
+  ticket         Ticket    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  // Per-ticket sequence, shown in the grid's Task ID column as T-001. Assigned as
+  // max+1 on create so it is never reused after a delete, and nullable only for
+  // the rows that predate the column (backfilled by the manual migration).
+  taskNumber     Int?
+  title          String
+  description    String?
+  assigneeUserId String?
+  assigneeName   String?
+  status         String    @default("OPEN")
+  dueDate        DateTime?
+  // What the task was expected to take, typed when it is raised. It is the
+  // default the "log time" prompt on a status change is prefilled with — an
+  // estimate, never itself charged to the support-hours pool.
+  estimatedHours Decimal?
+  sortOrder      Int       @default(0)
+  completedAt    DateTime?
+  // Time the task stood in IN_PROGRESS, summed from its status trail. Audit only
+  // and displayed nowhere: the billable figure is `TicketWorklog`, entered on the
+  // task's own edit screen when its status moves.
+  hoursSpent     Decimal?
+  createdBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  statusEvents   TicketTaskStatusEvent[]
+  comments       TicketComment[]
+  worklogs       TicketWorklog[]
+
+  @@index([ticketId])
+}
+
+// Timestamped trail of every status change on a task. Replaces the old
+// startedAt/endedAt clock: time spent is the sum of the intervals the task stood
+// in IN_PROGRESS, and the trail itself is what the task dialog shows as its audit.
+model TicketTaskStatusEvent {
+  id          String     @id @default(uuid())
+  taskId      String
+  task        TicketTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  ticketId    String
+  fromStatus  String?
+  toStatus    String
+  actorUserId String?
+  actorName   String?
+  at          DateTime   @default(now())
+  // Why a completed task was reopened. Mandatory on that one transition and
+  // empty on every other, so the trail says what pulled the task back open.
+  note        String?
+
+  @@index([taskId, at])
+  @@index([ticketId, at])
+}
+
+// Comments on a ticket and on its tasks. `taskId` null is a ticket-level comment;
+// set, a comment on that task. Both streams surface in the Comments tab, which is
+// why they share one table. Ticket-level comments are visible to the customer;
+// task ones are staff-only, because tasks themselves are.
+model TicketComment {
+  id           String      @id @default(uuid())
+  ticketId     String
+  ticket       Ticket      @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  taskId       String?
+  task         TicketTask? @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorUserId String?
+  authorName   String?
+  body         String
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([ticketId, createdAt])
+  @@index([taskId, createdAt])
+}
+
+// Approvals (Approvals tab)
+// A sign-off asked of one staff user on a ticket. Repurposed as the **asset
+// request**: the row names the asset being asked for, and approving it issues
+// that asset to whoever raised the request (ApprovalsService.decide). The asset
+// fields are nullable — an approval raised before this, or one that is a plain
+// sign-off with no asset, still works exactly as it did.
+model TicketApproval {
+  id             String    @id @default(uuid())
+  ticketId       String
+  ticket         Ticket    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  approverUserId String
+  approverName   String?
+  status         String    @default("PENDING")
+  comment        String?
+  requestedById  String?
+  requestedByName String?
+  requestedAt    DateTime  @default(now())
+  decidedAt      DateTime?
+  level          Int       @default(1)
+  // SetNull, not Cascade — a decided request is a record, and it keeps saying
+  // which asset it was for (via the denormalised code/name) even if the asset
+  // is later removed from the register.
+  assetId        String?
+  asset          Asset?    @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  assetCode      String?
+  assetName      String?
+  assetType      String?
+
+  @@index([ticketId])
+}
+
+// Conversation messages (email + internal notes)
+model TicketMessage {
+  id           String   @id @default(uuid())
+  ticketId     String
+  ticket       Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  channel      String   @default("EMAIL")
+  direction    String   @default("OUTBOUND")
+  isInternal   Boolean  @default(false)
+  authorUserId String?
+  authorName   String?
+  fromAddress  String?
+  toAddress    String?
+  subject      String?
+  body         String
+  htmlBody     String?
+  externalId   String?
+  status       String   @default("SENT")
+  error        String?
+  createdAt    DateTime @default(now())
+
+  attachments  MessageAttachment[]
+
+  @@index([ticketId, createdAt])
+  @@index([externalId])
+}
+
+// Time a consultant spent on a ticket (Worklog tab). Rolls up to the
+// customer company's agreed support-hours pool.
+model TicketWorklog {
+  id             String   @id @default(uuid())
+  clientId       String
+  ticketId       String
+  ticket         Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  userId         String?
+  consultantName String?
+  workDate       DateTime
+  hours          Decimal
+  note           String?
+  // Optionally, the task this time was spent on. SetNull rather than Cascade —
+  // the hours were really spent and stay charged to the customer's pool even if
+  // the task is later deleted — so the title is denormalised alongside it, the
+  // same way consultantName is, and the entry keeps saying what it was for.
+  taskId         String?
+  task           TicketTask? @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  taskTitle      String?
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([ticketId])
+  @@index([clientId, workDate])
+  @@index([taskId])
+}
+
+// A consultant asked to log time beyond a client's support-hours allowance, on a
+// pool whose config demands approval. The record is the *permission*, not the
+// entry: approving unlocks over-cap logging for that pool, it does not book any
+// hours. One live row per pool per period, so a month that restores the
+// allowance also demands fresh approval rather than riding an old one.
+// DORMANT — the excess-hours approval flow was removed; see contractExcessApproval.
+model SupportHoursExcessRequest {
+  id                String   @id @default(uuid())
+  clientId          String
+  customerCompanyId String
+  company           CustomerCompany @relation(fields: [customerCompanyId], references: [id], onDelete: Cascade)
+  // Which pool. CONTRACT = the shared customer contract (ownerId is the company);
+  // PRODUCT = one CustomerCompanyProduct (ownerId is that row).
+  scope             String
+  ownerId           String
+  // MONTHLY pools re-approve each calendar month; FULL_AMC pools use the 'ALL'
+  // sentinel rather than null, or Postgres would treat every row as distinct and
+  // the unique index would let duplicates through.
+  periodLabel       String   @default("ALL")
+  // What the cap and usage were when the request was raised, so the approver sees
+  // the position they actually decided on even after more time is logged.
+  allocated         Int
+  usedAtRequest     Decimal
+  productName       String?
+  requestedById     String?
+  requestedByName   String?
+  approverUserId    String?
+  approverName      String?
+  status            String   @default("PENDING")   // PENDING | APPROVED | REJECTED
+  decisionNote      String?
+  decidedAt         DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([scope, ownerId, periodLabel])
+  @@index([clientId, status])
+}
+
+model MessageAttachment {
+  id        String        @id @default(uuid())
+  messageId String
+  message   TicketMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  fileName  String
+  filePath  String
+  mimeType  String
+  size      Int
+}
+
+// Per-client messaging channel config (IMAP inbox now; reusable for WhatsApp/SMS later)
+model MessagingChannel {
+  id              String   @id @default(uuid())
+  clientId        String
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  type            String
+  provider        String   @default("imap")
+  configEncrypted String?
+  fromIdentity    String?
+  enabled         Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  updatedBy       String?
+
+  @@unique([clientId, type])
+}
+
+// A project groups work (tasks, milestones) and can link related tickets.
+model Project {
+  id                String   @id @default(uuid())
+  clientId          String
+  client            Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  projectNumber     String
+  name              String
+  key               String?                              // short code, e.g. "WEB"
+  projectCode       String?                              // Excel "Project Code"
+  description       String?
+  status            String   @default("OPEN")            // OPEN | IN_PROGRESS | ON_HOLD | COMPLETED | CANCELLED
+  isActive          Boolean  @default(true)              // projects are never deleted — deactivated instead
+  priority          String?                              // LOW | MEDIUM | HIGH | URGENT
+  managerUserId     String?
+  managerName       String?
+  projectSponsor    String?
+  department        String?
+  budget            Decimal?
+  currency          String?
+  projectType       String?
+  startDate         DateTime?
+  endDate           DateTime?
+  goLiveDate        DateTime?
+  // Project overview (Excel)
+  objective         String?
+  scope             String?
+  outOfScope        String?
+  successCriteria   String?
+  customerCompanyId String?
+  customerCompany   CustomerCompany? @relation(fields: [customerCompanyId], references: [id], onDelete: SetNull)
+  createdBy         String?
+  createdByName     String?
+  updatedBy         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  taskSequence      Int      @default(0)          // powers per-project task keys (KEY-#)
+  features          Json     @default("{}")        // feature toggles: { timeTracking, sprints, cascadingDates }
+  milestones        ProjectMilestone[]
+  sprints           ProjectSprint[]
+  tasks             ProjectTask[]
+  resources         ProjectResource[]
+  timesheets        ProjectTimesheet[]
+  risks             ProjectRisk[]
+  issues            ProjectIssue[]
+  changeRequests    ProjectChangeRequest[]
+  meetings          ProjectMeeting[]
+  documents         ProjectDocument[]
+  expenses          ProjectExpense[]
+  invoices          ProjectInvoice[]
+  attachments       ProjectAttachment[]
+  tickets           Ticket[]
+  galleryAlbums     GalleryAlbum[]
+
+  @@unique([clientId, projectNumber])
+  @@index([clientId, status])
+}
+
+// Generic attachments (file upload OR pasted link) for any project sub-entity
+// (invoice / document / risk / issue / …), scoped by entityType + entityId.
+model ProjectAttachment {
+  id         String   @id @default(uuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  entityType String                                       // invoice | document | risk | issue | …
+  entityId   String
+  fileName   String?
+  filePath   String?                                      // /uploads/projects/… for uploaded files
+  mimeType   String?
+  size       Int?
+  url        String?                                      // external link (when not an uploaded file)
+  uploadedBy String?
+  uploadedAt DateTime @default(now())
+
+  @@index([projectId, entityType, entityId])
+}
+
+// --- Governance registers (Excel: Risks / Issues / Change Requests / Approvals / MoM / Deadlines / Documents) ---
+
+model ProjectRisk {
+  id          String   @id @default(uuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title       String
+  probability String   @default("MEDIUM")             // LOW | MEDIUM | HIGH
+  impact      String   @default("MEDIUM")             // LOW | MEDIUM | HIGH
+  mitigation  String?
+  ownerName   String?
+  status      String   @default("OPEN")               // OPEN | MITIGATED | CLOSED
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+model ProjectIssue {
+  id          String   @id @default(uuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title       String
+  priority    String?                                  // LOW | MEDIUM | HIGH | URGENT
+  ownerName   String?
+  targetDate  DateTime?
+  resolution  String?
+  status      String   @default("OPEN")               // OPEN | IN_PROGRESS | RESOLVED
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+model ProjectChangeRequest {
+  id             String   @id @default(uuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title          String
+  description    String?
+  reason         String?
+  scheduleImpact String?
+  costEstimate   Decimal?                                // cost of the change (auto-suggested from linked tasks, overridable)
+  budgetImpact   Decimal?                                // approved budget increase applied to the baseline on approval
+  status         String   @default("SUBMITTED")        // DRAFT | SUBMITTED | PENDING_CUSTOMER | CUSTOMER_APPROVED | APPROVED | REJECTED
+  requestedBy    String?
+  decidedAt      DateTime?
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  tasks          ProjectTask[]                           // WBS tasks this change request introduced
+
+  @@index([projectId])
+}
+
+model ProjectMeeting {
+  id          String   @id @default(uuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title       String
+  date        DateTime?
+  attendees   String?
+  notes       String?
+  actionItems Json     @default("[]")                  // [{ text, owner?, due?, done? }]
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+model ProjectDocument {
+  id            String   @id @default(uuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  docType       String?
+  name          String
+  versionNumber String?
+  fileName      String?
+  filePath      String?
+  mimeType      String?
+  size          Int?
+  uploadedBy    String?
+  uploadedAt    DateTime @default(now())
+
+  @@index([projectId])
+}
+
+// Project expense (Excel "Expenses"): categorised spend.
+model ProjectExpense {
+  id          String   @id @default(uuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  category    String                                   // Consultant Cost | Travel | Accommodation | Food | Hardware | Software | Cloud | Third Party | Training | Other
+  description String?
+  amount      Decimal  @default(0)
+  date        DateTime?
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+// Customer invoice (Excel "Billing").
+model ProjectInvoice {
+  id            String   @id @default(uuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  invoiceNumber String
+  invoiceDate   DateTime?
+  amount        Decimal  @default(0)
+  amountPaid    Decimal  @default(0)
+  type          String?                                // Fixed Price | Time & Material | AMC | Internal
+  status        String   @default("DRAFT")             // DRAFT | SENT | PAID
+  createdBy     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+// Tenant cost catalog: a resource category with cost & billing rates (Excel "Resources Cost").
+model ResourceCategory {
+  id          String   @id @default(uuid())
+  clientId    String
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name        String                                  // e.g. Sr Developer / Jr Developer / Project Manager
+  hourlyCost  Decimal  @default(0)
+  billingRate Decimal  @default(0)
+  dailyHours  Int      @default(8)
+  isActive    Boolean  @default(true)
+  createdBy   String?
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  resources   ProjectResource[]
+
+  @@unique([clientId, name])
+}
+
+// A consultant allocated to a project (Excel "Resources Plan").
+model ProjectResource {
+  id             String   @id @default(uuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  consultantName String?
+  categoryId     String?
+  category       ResourceCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  role           String?
+  allocationPct  Int      @default(100)
+  dailyHours     Int      @default(8)
+  startDate      DateTime?
+  endDate        DateTime?
+  billable       Boolean  @default(true)
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+// A timesheet entry against a project / WBS activity (Excel "Project Time Sheet").
+model ProjectTimesheet {
+  id             String   @id @default(uuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  consultantName String?
+  date           DateTime
+  taskId         String?
+  activity       String?
+  hours          Decimal  @default(0)
+  // The consultant's category rates when the hours were written, frozen: a later
+  // rate edit, category change or removal from Resources never reprices past work.
+  costRate       Decimal?
+  billingRate    Decimal?
+  workPerformed  String?
+  status         String   @default("SUBMITTED")       // DRAFT | SUBMITTED | APPROVED | REJECTED
+  documentNumber String?                                // Excel "Document Number" (per consultant/week sheet)
+  documentDate   DateTime?                              // Excel "Document Date" (= week start)
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([projectId, date])
+  @@index([userId, date])
+}
+
+// An agile sprint: a time-boxed set of tasks pulled from the backlog.
+model ProjectSprint {
+  id         String   @id @default(uuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name       String
+  goal       String?
+  status     String   @default("PLANNED")          // PLANNED | ACTIVE | COMPLETED
+  startDate  DateTime?
+  endDate    DateTime?
+  sortOrder  Int      @default(0)
+  createdBy  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  tasks      ProjectTask[]
+
+  @@index([projectId])
+}
+
+// A project milestone / stage gate (Excel grouping). Tasks are grouped by milestone;
+// its % complete is computed from member tasks. Seeded with 8 defaults per project.
+model ProjectMilestone {
+  id         String   @id @default(uuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name       String
+  status     String   @default("PENDING")          // PENDING | IN_PROGRESS | COMPLETED
+  targetDate DateTime?
+  sortOrder  Int      @default(0)
+  // Stage-gate sign-off (folded in from the former Approvals register).
+  approverName    String?
+  approvalStatus  String   @default("PENDING")      // PENDING | APPROVED | REJECTED
+  decidedAt       DateTime?
+  createdBy  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  tasks      ProjectTask[]
+
+  @@index([projectId])
+}
+
+// A WBS node within a project: Phase → Task → Sub Task → Activity → Checklist.
+model ProjectTask {
+  id             String    @id @default(uuid())
+  projectId      String
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  milestoneId    String?
+  milestone      ProjectMilestone? @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+  sprintId       String?
+  sprint         ProjectSprint?   @relation(fields: [sprintId], references: [id], onDelete: SetNull)
+  storyPoints    Int?
+  taskNumber     Int?                                    // sequential within project → key = project.key + '-' + taskNumber
+  // WBS
+  wbsType        String    @default("TASK")             // PHASE | TASK | SUBTASK | ACTIVITY | CHECKLIST | MILESTONE
+  wbsCode        String?                                 // auto "1.2.3"
+  durationDays   Int?                                    // leaf value; parent = sum of children (computed)
+  completionPct  Int       @default(0)                   // 0–100
+  actualStart    DateTime?
+  actualFinish   DateTime?
+  estimatedHours Int?
+  actualHours    Int?
+  critical       Boolean   @default(false)
+  type           String    @default("TASK")             // legacy: TASK | MILESTONE (kept for compatibility)
+  title          String
+  description    String?
+  assigneeUserId String?
+  assigneeName   String?
+  status         String    @default("TODO")             // TODO | IN_PROGRESS | REVIEW | COMPLETED
+  priority       String?
+  startDate      DateTime?
+  dueDate        DateTime?
+  plannedEffort  Int?                                    // hours (supports Gantt later)
+  parentTaskId   String?
+  parentTask     ProjectTask?  @relation("ProjectTaskSubtasks", fields: [parentTaskId], references: [id], onDelete: SetNull)
+  subtasks       ProjectTask[] @relation("ProjectTaskSubtasks")
+  changeRequestId String?                                 // the CR that introduced this task (scope change)
+  changeRequest  ProjectChangeRequest? @relation(fields: [changeRequestId], references: [id], onDelete: SetNull)
+  tags           String[]  @default([])
+  sortOrder      Int       @default(0)
+  completedAt    DateTime?
+  createdBy      String?
+  createdByName  String?
+  updatedBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  comments       ProjectTaskComment[]
+  watchers       ProjectTaskWatcher[]
+  successors     ProjectTaskDependency[] @relation("TaskAsPredecessor") // rows where this task is the predecessor
+  predecessors   ProjectTaskDependency[] @relation("TaskAsSuccessor")   // rows where this task is the successor
+
+  @@index([projectId, status])
+  @@index([changeRequestId])
+}
+
+// A comment on a task (supports @mentions stored as plain text in the body).
+model ProjectTaskComment {
+  id           String   @id @default(uuid())
+  taskId       String
+  task         ProjectTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorUserId String?
+  authorName   String?
+  body         String
+  createdAt    DateTime @default(now())
+
+  @@index([taskId, createdAt])
+}
+
+// A user watching a task (notified on updates, mirrors ticket watchers).
+model ProjectTaskWatcher {
+  id      String   @id @default(uuid())
+  taskId  String
+  task    ProjectTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId  String
+  user    User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  addedAt DateTime @default(now())
+
+  @@unique([taskId, userId])
+}
+
+// A dependency: the successor task cannot start until the predecessor completes.
+model ProjectTaskDependency {
+  id            String @id @default(uuid())
+  predecessorId String
+  successorId   String
+  predecessor   ProjectTask @relation("TaskAsPredecessor", fields: [predecessorId], references: [id], onDelete: Cascade)
+  successor     ProjectTask @relation("TaskAsSuccessor", fields: [successorId], references: [id], onDelete: Cascade)
+
+  @@unique([predecessorId, successorId])
+  @@index([successorId])
+}
+
+// ============================================================================
+// Change Request (CR) module — standalone SAP-style change-request tracking.
+// Self-contained: no relations into Project / CustomerCompany / User / Ticket.
+// Categorical fields store the selected ChangeRequestOption *value* (plain
+// String, no FK); the CR's own option store drives every dropdown.
+// ============================================================================
+
+// Self-contained option store for the CR module's dropdowns (customer, project,
+// module, type, priority, category, status, complexity, dev_status, test_status,
+// doc_title, yes_no, approval, person). Independent of the shared PicklistOption.
+model ChangeRequestOption {
+  id        String   @id @default(uuid())
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  listKey   String
+  value     String
+  label     String
+  parentValue String?                                 // dependent lists: parent option's value (e.g. subcategory -> category)
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?
+  updatedBy String?
+
+  @@unique([clientId, listKey, value])
+  @@index([clientId, listKey])
+}
+
+model ChangeRequest {
+  id                   String   @id @default(uuid())
+  clientId             String
+  client               Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  crNumber             String                                    // CR-000001
+
+  // --- General / header (dropdown values from the CR option store) ---
+  customer             String?                                   // listKey: customer
+  projectName          String?                                   // listKey: project
+  moduleName           String?                                   // listKey: module
+  crType               String?                                   // listKey: type
+  priority             String?                                   // listKey: priority
+  crCategory           String?                                   // listKey: category
+  status               String   @default("New")                 // listKey: status
+
+  // --- Change Management (ITIL model) — General section ---
+  changeType           String?                                   // listKey: change_type (Emergency | Major | Minor | Standard)
+  changeGroup          String?                                   // listKey: change_group (Infrastructure | Software)
+  changeOwner          String?                                   // listKey: person
+  subCategory          String?                                   // listKey: subcategory (dependent on crCategory)
+  impact               String?                                   // listKey: impact
+  servicesAffected     String?                                   // typed
+  comments             String?                                   // typed
+  stage                String   @default("Submission")           // fixed pipeline: Submission..Close (CHANGE_STAGES)
+  // Who the change is for: CUSTOMER (raised against a client company — needs their
+  // admin's approval) or INTERNAL (our own change — no customer company at all).
+  changeSource         String   @default("CUSTOMER")              // CUSTOMER | INTERNAL
+  stageNotes           Json?                                     // per-stage status notes, keyed by stage name
+
+  // Roles (per-record people assignments)
+  changeCoordinator    String?                                   // listKey: person
+  implementor          String?                                   // listKey: person
+  lineManager          String?                                   // listKey: person
+  reviewer             String?                                   // listKey: person
+  changeApprover       String?                                   // denormalised full name of the CAB approver (for display)
+  changeApproverUserId String?                                   // real staff user id — the authoritative CAB approver identity
+
+  // CAB (Change Approval Board) sign-off — required for Major/Minor/Standard.
+  cabApprovalStatus    String   @default("NONE")                 // NONE | PENDING | APPROVED | REJECTED
+  cabReason            String?                                   // rejection reason
+  cabDecidedById       String?
+  cabDecidedAt         DateTime?
+
+  // Customer-admin approval — a CR is sent to the linked company's admin to approve.
+  customerCompanyId    String?
+  approvalStatus       String   @default("NONE")                // NONE | PENDING | APPROVED | REJECTED
+  approvalReason       String?                                  // rejection reason
+  decidedById          String?
+  decidedAt            DateTime?
+
+  requestedBy          String?                                   // listKey: person
+  businessOwner        String?                                   // listKey: person
+  functionalConsultant String?                                   // listKey: person
+  technicalConsultant  String?                                   // listKey: person
+  projectManager       String?                                   // listKey: person
+
+  // --- General / header (typed) ---
+  title                String
+  description          String?
+  featureName          String?                                   // Feature Name (Menu) — free entry
+
+  // --- General / header (dates) ---
+  crDate               DateTime?
+  crStartDate          DateTime?
+  crEndDate            DateTime?
+  targetReleaseDate    DateTime?                                 // >= crEndDate
+  expectedGoLiveDate   DateTime?                                 // >= targetReleaseDate
+
+  // --- Business Requirement (Phase 2, typed) ---
+  requirementDetails   String?
+  objective            String?
+  reasonForCr          String?
+  benefitToCustomer    String?
+
+  // --- Blue Print (Phase 3) ---
+  blueprintName          String?                                 // typed, e.g. "BBP Version1"
+  blueprintVersionNumber String?                                 // typed
+  blueprintPreparedBy    String?                                 // listKey: person
+  blueprintReviewedBy    String?                                 // listKey: person
+  blueprintApprovedBy    String?                                 // listKey: person
+  blueprintApprovalDate  DateTime?
+  blueprintRemarks       String?                                 // typed
+
+  // --- Impact Analysis (Phase 5) ---
+  affectedModule       String?                                   // listKey: module
+  affectedTables       String?                                   // typed
+  impactReports        String?                                   // typed
+  impactInterfaces     String?                                   // typed
+  impactForms          String?                                   // typed
+  impactWorkflow       String?                                   // typed
+  masterData           String?                                   // typed
+  authorizations       String?                                   // typed
+  performance          String?                                   // typed
+  risk                 String?                                   // typed
+  estimatedHours       Decimal?                                  // number
+  complexity           String?                                   // listKey: complexity
+
+  // --- Development Details (Phase 6) ---
+  developer            String?                                   // listKey: person
+  developmentStatus    String?                                   // listKey: dev_status
+  developmentStartDate DateTime?
+  completionDate       DateTime?                                 // >= developmentStartDate
+  transportNumber      String?                                   // typed
+  gitRepository        String?                                   // typed
+  buildNumber          String?                                   // typed
+
+  // --- Testing (Phase 7) ---
+  testCase             String?                                   // typed
+  testingPerson        String?                                   // listKey: person
+  testingStatus        String?                                   // listKey: test_status
+  uatPerformedBy       String?                                   // listKey: person
+  defectCount          Int?
+  retest               String?                                   // listKey: yes_no
+  testApproval         String?                                   // listKey: approval
+
+  // --- Deployment (Phase 8) ---
+  deploymentPlan       String?                                   // typed
+  goLiveChecklist      String?                                   // typed
+  rollbackPlan         String?                                   // typed
+  transportList        String?                                   // typed
+  deploymentDate       DateTime?
+  supportWindow        String?                                   // typed
+
+  // Audit
+  createdBy            String?
+  createdByName        String?
+  updatedBy            String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  attachments          ChangeRequestAttachment[]
+
+  @@unique([clientId, crNumber])
+  @@index([clientId, status])
+}
+
+// Self-contained attachments for a Change Request (upload OR pasted link).
+// Slots are distinguished by entityType: blueprint | supportive | uat.
+// `title` labels a supportive document; files live in /uploads/change-requests.
+model ChangeRequestAttachment {
+  id              String        @id @default(uuid())
+  changeRequestId String
+  changeRequest   ChangeRequest @relation(fields: [changeRequestId], references: [id], onDelete: Cascade)
+  entityType      String                                         // blueprint | supportive | uat
+  title           String?
+  fileName        String?
+  filePath        String?                                        // /uploads/change-requests/…
+  mimeType        String?
+  size            Int?
+  url             String?                                        // external link (when not an uploaded file)
+  uploadedBy      String?
+  uploadedAt      DateTime      @default(now())
+
+  @@index([changeRequestId, entityType])
+}
+
+// ---------------------------------------------------------------------------
+// Asset Master
+// ---------------------------------------------------------------------------
+
+// One physical unit, not an asset *type*: `assetId` identifies the individual
+// laptop/monitor/phone and is unique inside the tenant. Every descriptive field
+// is free text on purpose — the Asset Master form has no dropdowns — so nothing
+// here is backed by an option list.
+model Asset {
+  id            String    @id @default(uuid())
+  clientId      String
+  client        Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  assetId       String                                          // the admin-typed unique code, e.g. LAP-0417
+  assetName     String
+  description   String?
+  assetType     String?                                         // e.g. Laptop
+  assetCategory String?                                         // e.g. IT Equipment
+  serialNumber  String?
+  manufacturer  String?
+  model         String?
+  barcode       String?                                         // barcode / QR payload, stored as text
+  warrantyStart DateTime?
+  warrantyEnd   DateTime?
+  purchaseDate  DateTime?
+  poNumber      String?
+  supplierName  String?
+  invoiceNumber String?
+  lifespan      String?                                         // free text, e.g. "3 years"
+  // The unit's own condition, which outlives any one allocation. A BROKEN return
+  // sets it to DAMAGED; an admin flips it back to OK once the unit is repaired.
+  // Deriving "in repair" from the last allocation instead would be a state
+  // nothing could ever leave.
+  condition     String    @default("OK")                        // OK | DAMAGED | RETIRED
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  createdBy     String?
+  updatedBy     String?
+
+  allocations   AssetAllocation[]
+  approvals     TicketApproval[]
+  activities    AssetActivity[]
+
+  @@unique([clientId, assetId])
+  @@index([clientId])
+}
+
+// An asset issued to an employee (an internal `User`). The rule "an allocated
+// asset is not available to anyone else" is *at most one open allocation per
+// asset*, and with only two statuses open means exactly ISSUED. It is enforced in
+// the service with a ConflictException that names the current holder (the house
+// convention), not by a partial unique index: `prisma db push --accept-data-loss`
+// runs on every container start and would drop an index the schema cannot express.
+//
+// `status` says only whether the unit is out or back. How it came back is
+// `returnCondition`, and damage that outlives the allocation is `Asset.condition`
+// — the old BROKEN / NOT_RETURNED statuses conflated all three.
+model AssetAllocation {
+  id                 String    @id @default(uuid())
+  clientId           String
+  client             Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  assetId            String
+  asset              Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  employeeUserId     String
+  employee           User      @relation(fields: [employeeUserId], references: [id], onDelete: Cascade)
+  status             String    @default("ISSUED")               // ISSUED | RETURNED
+  returnCondition    String?                                    // GOOD | BROKEN — set only while RETURNED
+  // Some units (phone, laptop) are never handed back until the employee leaves.
+  // UNTIL_EXIT says so, so such a row reads as normal rather than permanently
+  // overdue, and becomes the exit-clearance list when the employee is deactivated.
+  retention          String    @default("RETURNABLE")           // RETURNABLE | UNTIL_EXIT
+  expectedReturnDate DateTime?                                  // meaningful only for RETURNABLE
+  issuedDate         DateTime?
+  returnDate         DateTime?
+  notes              String?
+  // Denormalised at write time so neither grid needs a join — the same reason
+  // ClientVisit carries consultantName / productName.
+  assetCode          String?
+  assetName          String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  createdBy          String?
+  updatedBy          String?
+
+  @@index([clientId, employeeUserId])
+  @@index([assetId])
+}
+
+// The audit trail of one asset's life: created, issued, returned (and in what
+// condition), reassigned, repaired, deleted. Modelled on `TicketActivity` —
+// written best-effort after the operation, never inside its transaction.
+//
+// `allocationId` is deliberately a plain column and not a relation: removing an
+// allocation is exactly the event the trail exists to record, so it must not
+// cascade the history away with it.
+model AssetActivity {
+  id             String   @id @default(uuid())
+  clientId       String
+  assetId        String
+  asset          Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  allocationId   String?
+  employeeUserId String?
+  employeeName   String?                                        // denormalised, like TicketTaskStatusEvent.actorName
+  type           String
+  summary        String
+  meta           Json?
+  actorUserId    String?
+  actorName      String?
+  createdAt      DateTime @default(now())
+
+  @@index([clientId, assetId, createdAt])
+  @@index([clientId, employeeUserId, createdAt])
+}
+
+// An internal communication sent to every active staff member of the tenant: a
+// one-off announcement or the monthly newsletter. Written and sent by an Admin;
+// read by all staff on the Communications screen. Plain text — paragraphs are
+// blank-line separated and become <p>s in the email.
+model Communication {
+  id             String    @id @default(uuid())
+  clientId       String
+  client         Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  kind           String    @default("ANNOUNCEMENT")   // ANNOUNCEMENT | NEWSLETTER
+  subject        String
+  body           String
+  // DRAFT → (SCHEDULED →) SENDING → SENT. Only DRAFT / SCHEDULED are editable or
+  // deletable; a sent communication is a record.
+  status         String    @default("DRAFT")
+  scheduledAt    DateTime?
+  sentAt         DateTime?
+  // Gallery albums shown with it — usually one on an announcement, several on a
+  // newsletter. Plain ids, not a relation: an album deleted later just drops out
+  // of the in-app view, and the email already sent keeps its embedded photos.
+  albumIds       String[]  @default([])
+  // Snapshot of the audience when sending began, and how many emails failed.
+  recipientCount Int       @default(0)
+  failedCount    Int       @default(0)
+  createdBy      String?
+  createdByName  String?
+  updatedBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  recipients     CommunicationRecipient[]
+
+  @@index([clientId, status])
+  @@index([status, scheduledAt])
+}
+
+// One row per person a communication went to — its delivery log. Written when
+// sending starts (PENDING) and settled one email at a time, so a restart part-way
+// through resumes from the rows still PENDING instead of re-mailing everyone.
+model CommunicationRecipient {
+  id              String        @id @default(uuid())
+  communicationId String
+  communication   Communication @relation(fields: [communicationId], references: [id], onDelete: Cascade)
+  userId          String        // plain column: the log outlives a deleted user
+  name            String
+  email           String
+  status          String        @default("PENDING")  // PENDING | SENT | FAILED
+  error           String?
+  sentAt          DateTime?
+
+  @@unique([communicationId, userId])
+  @@index([communicationId, status])
+}
+
+// Photo gallery — staff-only albums of project initiatives, client achievements,
+// UAT / sign-off team photos and awards. Admins create albums and upload; every
+// staff member views. Files live under uploads/gallery/<albumId>/.
+model GalleryAlbum {
+  id                String           @id @default(uuid())
+  clientId          String
+  client            Client           @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  title             String
+  description       String?
+  category          String           @default("OTHER")  // PROJECT_INITIATIVE | CLIENT_ACHIEVEMENT | UAT_SIGNOFF | AWARD | OTHER
+  eventDate         DateTime?
+  // Optional context. Kept (nulled) if the project or client is removed.
+  projectId         String?
+  project           Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  customerCompanyId String?
+  customerCompany   CustomerCompany? @relation(fields: [customerCompanyId], references: [id], onDelete: SetNull)
+  // The photo shown on the album card; falls back to the first photo when unset.
+  coverPhotoId      String?
+  createdBy         String?
+  createdByName     String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  photos            GalleryPhoto[]
+
+  @@index([clientId, eventDate])
+}
+
+// One photo. What is stored is never the camera original: uploads are shrunk to
+// a web copy of 1 MB or less plus a small thumbnail (GalleryService.process).
+model GalleryPhoto {
+  id           String       @id @default(uuid())
+  albumId      String
+  album        GalleryAlbum @relation(fields: [albumId], references: [id], onDelete: Cascade)
+  fileUrl      String       // "/uploads/gallery/<albumId>/<id>.jpg"
+  thumbUrl     String       // "/uploads/gallery/<albumId>/<id>_t.jpg" (= fileUrl if it could not be made)
+  width        Int?
+  height       Int?
+  sizeBytes    Int
+  originalName String?
+  caption      String?
+  sortOrder    Int          @default(0)
+  uploadedBy   String?
+  createdAt    DateTime     @default(now())
+
+  @@index([albumId, sortOrder])
+}
+
+// "Announce this?" — a prompt raised when something worth announcing happens in
+// Projects: a project created (initiative), a milestone signed off (UAT / sign-off;
+// a Go Live sign-off is a client achievement) or a project completed. Admins see
+// the pending ones on the Communications screen; nothing is ever sent without an
+// admin writing and sending the announcement themselves.
+model AnnouncementSuggestion {
+  id                String    @id @default(uuid())
+  clientId          String
+  // One suggestion per event, ever: e.g. "milestone-approved:<id>". Re-saving a
+  // project or re-approving a milestone hits this and suggests nothing new.
+  sourceKey         String
+  kind              String    // PROJECT_CREATED | MILESTONE_APPROVED | PROJECT_COMPLETED
+  category          String    // the album category it maps to (galleryMeta)
+  title             String
+  body              String
+  // Context, as plain ids — prefills the album; names are already in the text.
+  projectId         String?
+  milestoneId       String?
+  customerCompanyId String?
+  // "Add photos & announce" made this album; the announcement made from it.
+  albumId           String?
+  communicationId   String?
+  status            String    @default("PENDING")   // PENDING | USED | DISMISSED
+  decidedBy         String?
+  decidedAt         DateTime?
+  createdAt         DateTime  @default(now())
+
+  @@unique([clientId, sourceKey])
+  @@index([clientId, status])
 }

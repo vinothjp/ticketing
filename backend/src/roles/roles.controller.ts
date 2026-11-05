@@ -3,10 +3,13 @@ import { RolesService } from './roles.service';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 
 type AuthedRequest = { user: { id: string; clientId: string } };
 
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
+@Roles('Admin')
 @Controller('api/roles')
 export class RolesController {
   constructor(private rolesService: RolesService) {}

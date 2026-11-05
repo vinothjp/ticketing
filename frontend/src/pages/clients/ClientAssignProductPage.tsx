@@ -44,7 +44,7 @@ export default function ClientAssignProductPage() {
   const assignable = catalog.filter((c) => !owned.has(c.id));
 
   // Warranty is free support, so the form opens on warranty with Unlimited hours.
-  const [assign, setAssign] = useState<{ productId: string; coverageType: 'WARRANTY' | 'AMC'; startDate: string; endDate: string; supportHoursUnlimited: boolean; supportHours: number; visits: number; contractAmount: number; hoursPeriod: 'FULL_AMC' | 'MONTHLY'; carryForward: boolean; allowTicketsAfterHours: boolean; allowExcess: boolean; excessApproval: boolean; excessApproverId: string }>({ productId: '', coverageType: 'WARRANTY', startDate: today(), endDate: monthsFromNow(12), supportHoursUnlimited: true, supportHours: 100, visits: 4, contractAmount: 100000, hoursPeriod: 'FULL_AMC', carryForward: false, allowTicketsAfterHours: true, allowExcess: false, excessApproval: false, excessApproverId: '' });
+  const [assign, setAssign] = useState<{ productId: string; coverageType: 'WARRANTY' | 'AMC'; startDate: string; endDate: string; supportHoursUnlimited: boolean; supportHours: number; visits: number; contractAmount: number; hoursPeriod: 'FULL_AMC' | 'MONTHLY'; carryForward: boolean; allowTicketsAfterHours: boolean; allowExcess: boolean; excessRate: number | '' }>({ productId: '', coverageType: 'WARRANTY', startDate: today(), endDate: monthsFromNow(12), supportHoursUnlimited: true, supportHours: 100, visits: 4, contractAmount: 100000, hoursPeriod: 'FULL_AMC', carryForward: false, allowTicketsAfterHours: true, allowExcess: false, excessRate: '' });
   // Switching to warranty preselects Unlimited; AMC keeps the current choice.
   const onCoverage = (v: string) => {
     if (!v) return;
@@ -118,8 +118,7 @@ export default function ClientAssignProductPage() {
           carryForward: assign.hoursPeriod === 'MONTHLY' && assign.carryForward,
           allowTicketsAfterHours: assign.allowTicketsAfterHours,
           allowExcess: assign.allowExcess,
-          excessApproval: assign.allowExcess && assign.excessApproval,
-          excessApproverId: assign.allowExcess && assign.excessApproval && assign.excessApproverId ? assign.excessApproverId : null,
+          ...(assign.allowExcess && assign.excessRate !== '' ? { excessRate: Number(assign.excessRate) } : {}),
         }),
       });
       for (const c of draftC) {
@@ -186,9 +185,9 @@ export default function ClientAssignProductPage() {
             {!assign.supportHoursUnlimited && (
               <div className="max-w-2xl">
                 <SupportHoursConfig
-                  value={{ hoursPeriod: assign.hoursPeriod, carryForward: assign.carryForward, allowTicketsAfterHours: assign.allowTicketsAfterHours, allowExcess: assign.allowExcess, excessApproval: assign.excessApproval, excessApproverId: assign.excessApproverId }}
+                  value={{ hoursPeriod: assign.hoursPeriod, carryForward: assign.carryForward, allowTicketsAfterHours: assign.allowTicketsAfterHours, allowExcess: assign.allowExcess, excessRate: assign.excessRate }}
                   onChange={(patch) => setAssign((a) => ({ ...a, ...patch }))}
-                  staff={staff} />
+                  showRate />
               </div>
             )}
           </>

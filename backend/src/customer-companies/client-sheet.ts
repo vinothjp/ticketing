@@ -30,8 +30,8 @@ export const CLIENT_STATUS_LABELS: Record<string, string> = {
  * tenant, which is what `create` enforces.
  *
  * The contract deliberately is not here. Its scope decides which support-hours
- * pool governs a client — switching it withdraws pending excess-hours requests
- * and moves what every ticket is charged against, which is why the client screen
+ * pool governs a client — switching it blanks the terms being entered and
+ * moves what every ticket is charged against, which is why the client screen
  * guards it behind a confirmation. That is not a thing to change by pasting a
  * column, so scope is read-back only and the terms, PO and consultants stay on
  * the client's own screen.

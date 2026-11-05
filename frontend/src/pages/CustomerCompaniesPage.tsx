@@ -14,7 +14,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { useAuth } from '../context/AuthContext';
 import ImportExportBar from '@/components/ImportExportBar';
 import type { ReactNode } from 'react';
-import { MyExcessApprovals } from '@/components/MyExcessApprovals';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -298,7 +297,6 @@ export default function CustomerCompaniesPage() {
 
       {/* What is waiting on this user, wherever it lives — an approver should not
           have to guess which client raised the request. */}
-      <MyExcessApprovals />
 
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
@@ -377,8 +375,8 @@ export default function CustomerCompaniesPage() {
                   </TableCell>
                   <TableCell className="w-px text-right">
                     <div className="flex items-center justify-end gap-1">
-                      {/* A consultant is here only to decide an excess-hours request,
-                          so the client workspace is the one action they get. */}
+                      {/* A consultant only reads a client, so the client workspace
+                          is the one action they get. */}
                       <Button
                         variant="ghost"
                         size="icon"

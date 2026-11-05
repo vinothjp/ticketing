@@ -17,6 +17,7 @@ import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { CreateWorklogDto } from './dto/worklog.dto';
 import { SETTLED_TASK_STATUSES } from '../tasks/task-status';
+import { productOffForClient } from '../customer-companies/module-switch';
 import { exportSheet as buildSheet } from '../lib/spreadsheet';
 import { TICKET_COLUMNS, type TicketSheetRow } from './ticket-sheet';
 
@@ -130,6 +131,23 @@ export class TicketsService {
         clientId, viewer.customerCompanyId, dto.productId ?? null,
       );
     }
+    // Modules switched off for this client on their product screen can't be
+    // named on their new tickets, and with every module off the product itself
+    // is inactive for them. The form no longer offers either; this closes the
+    // API behind it. Internal tickets have no client, so nothing to check.
+    if (dto.customerCompanyId && dto.productId) {
+      const link = await this.prisma.customerCompanyProduct.findFirst({
+        where: { customerCompanyId: dto.customerCompanyId, productId: dto.productId, customerCompany: { clientId } },
+        select: { inactiveModuleIds: true, product: { select: { name: true, modules: { select: { id: true } } } } },
+      });
+      if (link && productOffForClient(link.product.modules.map((m) => m.id), link.inactiveModuleIds)) {
+        throw new BadRequestException(`${link.product.name} is inactive for this client — every one of its modules is switched off.`);
+      }
+      if (dto.moduleId && link?.inactiveModuleIds.includes(dto.moduleId)) {
+        throw new BadRequestException(`That module is switched off for this client and can't be used on a new ticket.`);
+      }
+    }
+
     const template = await this.templatesService.getById(
       dto.templateId,
       clientId,
@@ -2006,7 +2024,7 @@ Please acknowledge the resolution to close the ticket, or reopen it if the issue
     // Refuse hours that would break the customer's support-hours allowance before
     // anything is written (unless the pool allows excess). Throws on a violation.
     await this.customerProducts.assertHoursWithinAllowance(
-      clientId, ticket.customerCompanyId, ticket.productId ?? null, hours, actorId,
+      clientId, ticket.customerCompanyId, ticket.productId ?? null, hours,
     );
 
     return this.writeWorklog(clientId, ticket, {

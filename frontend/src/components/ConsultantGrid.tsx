@@ -1,6 +1,7 @@
 import { useState, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Star } from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
 
 // Module × Technical / Functional / Others grid for assigning a client's per-product
 // consultants. "Others" maps to no specific track (module-wide fallback).
@@ -14,7 +15,7 @@ export interface GridModule { id: string; name: string }
 export interface GridConsultant { id: string; userId: string; username: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
 interface StaffUser { id: string; username: string }
 
-export default function ConsultantGrid({ modules, consultants, staff, onAdd, onRemove, onPrimary, emptyRowLabel = 'Whole product', readOnly = false }: {
+export default function ConsultantGrid({ modules, consultants, staff, onAdd, onRemove, onPrimary, emptyRowLabel = 'Whole product', readOnly = false, inactiveModuleIds, onToggleModule }: {
   modules: GridModule[];
   consultants: GridConsultant[];
   staff: StaffUser[];
@@ -24,6 +25,13 @@ export default function ConsultantGrid({ modules, consultants, staff, onAdd, onR
   emptyRowLabel?: string;
   /** Consultants read the client screens but may not change routing on them. */
   readOnly?: boolean;
+  /**
+   * Per-client module switch. Passed only where a purchased product is being
+   * edited; an off module can't be picked on the client's new tickets, but its
+   * consultants stay editable so switching it back on restores its routing.
+   */
+  inactiveModuleIds?: string[];
+  onToggleModule?: (moduleId: string, isActive: boolean) => void;
 }) {
   // One row per module when split into modules; otherwise a single catch-all row.
   const rows = modules.length > 0
@@ -45,9 +53,23 @@ export default function ConsultantGrid({ modules, consultants, staff, onAdd, onR
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr key={row.key} className="align-top">
-              <td className="border-b px-3 py-2 font-medium text-foreground">{row.name}</td>
+          {rows.map((row) => {
+            const off = !!row.moduleId && !!inactiveModuleIds?.includes(row.moduleId);
+            return (
+            <tr key={row.key} className={off ? 'bg-muted/30 align-top' : 'align-top'}>
+              <td className="border-b px-3 py-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className={off ? 'font-medium text-muted-foreground' : 'font-medium text-foreground'}>{row.name}</div>
+                    {off && <div className="text-[11px] text-muted-foreground">Inactive for this client</div>}
+                  </div>
+                  {onToggleModule && row.moduleId && (
+                    <Switch className="mt-0.5" checked={!off} disabled={readOnly}
+                      title={off ? 'Inactive — click to activate for this client' : 'Active — click to deactivate for this client'}
+                      onCheckedChange={(v) => onToggleModule(row.moduleId!, v)} />
+                  )}
+                </div>
+              </td>
               {CCOLS.map((c) => {
                 const list = inCell(row.moduleId, c.key).slice().sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary));
                 const taken = new Set(list.map((a) => a.userId));
@@ -70,7 +92,8 @@ export default function ConsultantGrid({ modules, consultants, staff, onAdd, onR
                 );
               })}
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

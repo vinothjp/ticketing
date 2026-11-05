@@ -10,20 +10,22 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import ProductIcon from '@/components/ProductIcon';
 import ConsultantGrid from '@/components/ConsultantGrid';
+import ManagerSelect from '@/components/ManagerSelect';
 import SupportHoursChoice from '@/components/SupportHoursChoice';
 import AutoAssignChoice from '@/components/AutoAssignChoice';
 import PurchaseOrderFields from '@/components/PurchaseOrderFields';
 import SupportHoursConfig from '@/components/SupportHoursConfig';
-import ExcessRequestCard from '@/components/ExcessRequestCard';
+import ContractServicesConfig from '@/components/ContractServicesConfig';
+import { servicesForm, servicesPayload, type ContractServicesValue } from '@/components/contractServices';
 import CoverageMeter, { wholeHrs } from '@/components/CoverageMeter';
-import { useExcessRequests, useDecideExcess, latestExcessFor } from '@/components/excessHoursQueries';
 import { useAuth } from '../../context/AuthContext';
 
 interface Pool { allocated: number | null; used: number; left: number | null; unlimited?: boolean }
 interface Cov { end: string | null; label: string; pct: number; active: boolean }
 interface Support {
-  period: 'FULL_AMC' | 'MONTHLY'; carryForward: boolean; allowTicketsAfterHours: boolean; allowExcess: boolean; excessApproval: boolean;
-  approverId: string | null; approverName: string | null;
+  period: 'FULL_AMC' | 'MONTHLY'; carryForward: boolean; allowTicketsAfterHours: boolean; allowExcess: boolean;
+  // Per excess hour; null for non-Admins (withheld server-side) or when unset.
+  excessRate: number | null;
   currentAllocated: number | null; carriedIn: number; currentUsed: number; available: number | null;
 }
 interface Purchased {
@@ -32,14 +34,20 @@ interface Purchased {
   hours: Pool; visits: Pool;
   paidTerms: { months: number | null; monthlyCost: number | null; hoursUnlimited?: boolean; hours: number | null; visits: number | null };
   support?: Support;
+  services?: { thirdPartyIntegration: boolean; planRollout: boolean; crApplicable: boolean; crMaxPerMonth: number | null; crMaxHours: number | null };
   // This product's own PO, used on PRODUCT scope where each product carries one.
   poNumber: string | null; poFileUrl: string | null; poFileName: string | null;
+  // Modules switched off for this client (the switch in the consultant grid);
+  // with every one off the product itself is inactive for them.
+  inactiveModuleIds: string[]; activeForClient: boolean;
+  // The one product manager for this product at this client.
+  productManagerId: string | null; productManagerName: string | null;
 }
 interface Consultant { id: string; userId: string; username: string | null; productId: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
 interface CatAgent { user: { id: string; username: string } }
 interface CatModule { id: string; name: string; tracks: string[]; consultants: CatAgent[] }
 interface CatProduct { id: string; name: string; imageUrl?: string | null; modules: CatModule[]; consultants: CatAgent[] }
-interface StaffUser { id: string; username: string }
+interface StaffUser { id: string; username: string; name?: string | null; isActive?: boolean }
 
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleDateString() : '—');
 const statusCls = (s: string) =>
@@ -81,9 +89,15 @@ export default function ClientProductPage() {
 
   // Warranty is free support, so a new/unsaved coverage starts Unlimited.
   const [terms, setTerms] = useState({ coverageType: 'WARRANTY' as 'WARRANTY' | 'AMC', startDate: '', endDate: '', supportHoursUnlimited: true, supportHours: 0, visits: 0, contractAmount: 0,
-    hoursPeriod: 'FULL_AMC' as 'FULL_AMC' | 'MONTHLY', carryForward: false, allowTicketsAfterHours: true, allowExcess: false, excessApproval: false, excessApproverId: '' });
+    hoursPeriod: 'FULL_AMC' as 'FULL_AMC' | 'MONTHLY', carryForward: false, allowTicketsAfterHours: true, allowExcess: false, excessRate: '' as number | '' });
   // Hydrate from the saved coverage once the products query lands. Guarded on a
-  // real row, so an in-flight refetch never blanks an already-hydrated form.
+  // real row, so an in-flight refetch never blanks an already-hydrated form, and
+  // keyed on the saved terms rather than the row object: a consultant or module
+  // switch click refetches the row, which used to wipe unsaved term edits.
+  const termsKey = cp && JSON.stringify([cp.id, cp.amc, cp.hours, cp.visits, cp.paidTerms.monthlyCost, cp.support, cp.services]);
+  // Third-party integration, plan roll-out and CR terms — saved with Save terms.
+  const [services, setServices] = useState<ContractServicesValue>(servicesForm(null));
+  useEffect(() => { if (cp) setServices(servicesForm(cp.services)); }, [termsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (cp) setTerms({
       coverageType: cp.amc.type === 'FREE' ? 'WARRANTY' : 'AMC',
@@ -97,10 +111,9 @@ export default function ClientProductPage() {
       carryForward: cp.support?.carryForward ?? false,
       allowTicketsAfterHours: cp.support?.allowTicketsAfterHours ?? true,
       allowExcess: cp.support?.allowExcess ?? false,
-      excessApproval: cp.support?.excessApproval ?? false,
-      excessApproverId: cp.support?.approverId ?? '',
+      excessRate: cp.support?.excessRate ?? '',
     });
-  }, [cp]);
+  }, [termsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // Switching to warranty preselects Unlimited (free support); AMC keeps the
   // current choice.
   const onCoverage = (v: string) => {
@@ -109,10 +122,7 @@ export default function ClientProductPage() {
     setTerms((t) => ({ ...t, coverageType, supportHoursUnlimited: coverageType === 'WARRANTY' ? true : t.supportHoursUnlimited }));
   };
 
-  // The excess-requests key matters as much as the others: saving terms can raise
-  // or withdraw the approval request server-side, and without re-reading it the
-  // approval tab only appears after a manual reload.
-  const invalidate = () => { qc.invalidateQueries({ queryKey: ['client-products', companyId] }); qc.invalidateQueries({ queryKey: ['client-consultants', companyId] }); qc.invalidateQueries({ queryKey: ['excess-requests', companyId] }); };
+  const invalidate = () => { qc.invalidateQueries({ queryKey: ['client-products', companyId] }); qc.invalidateQueries({ queryKey: ['client-consultants', companyId] }); };
   const run = async (p: Promise<unknown>, ok?: string) => { try { await p; invalidate(); if (ok) toast.success(ok); } catch (e: any) { toast.error(e.response?.data?.message || 'Error'); } };
 
   // Auto-assignment belongs to the CLIENT, not this product — it gates routing
@@ -129,21 +139,6 @@ export default function ClientProductPage() {
     );
   };
 
-  /**
-   * The excess-hours trio saves the moment it changes, rather than waiting for
-   * Save terms. The approval request is raised server-side off the *saved*
-   * config, so an approver still sitting unsaved in the form raises nothing and
-   * the tab below never appears — which reads as the feature being broken. Same
-   * write-on-change rule as Auto assignment above; the fields stay in the Save
-   * terms payload too, so saving the form is still correct and idempotent.
-   */
-  const saveExcess = (next: { allowExcess: boolean; excessApproval: boolean; excessApproverId: string }) =>
-    run(api.patch(`/api/customer-companies/purchased-products/${cpId}`, {
-      allowExcess: next.allowExcess,
-      excessApproval: next.allowExcess && next.excessApproval,
-      excessApproverId: next.allowExcess && next.excessApproval && next.excessApproverId ? next.excessApproverId : null,
-    }));
-
   const saveTerms = () => {
     if (terms.startDate && terms.endDate && terms.endDate <= terms.startDate) { toast.error('End date must be after the start date'); return; }
     if (!terms.supportHoursUnlimited && Number(terms.supportHours) <= 0) { toast.error('Enter support hours greater than 0, or choose Unlimited'); return; }
@@ -156,29 +151,21 @@ export default function ClientProductPage() {
       ...(terms.supportHoursUnlimited ? {} : { supportHours: Number(terms.supportHours) }),
       visits: Number(terms.visits),
       ...(terms.coverageType === 'AMC' ? { contractAmount: Number(terms.contractAmount) } : {}),
-      // Support-hours config; approver cleared → explicit null so the API disconnects it.
+      // Support-hours config; a cleared rate goes as an explicit null.
       hoursPeriod: terms.hoursPeriod,
       carryForward: terms.hoursPeriod === 'MONTHLY' && terms.carryForward,
       allowTicketsAfterHours: terms.allowTicketsAfterHours,
       allowExcess: terms.allowExcess,
-      excessApproval: terms.allowExcess && terms.excessApproval,
-      excessApproverId: terms.allowExcess && terms.excessApproval && terms.excessApproverId ? terms.excessApproverId : null,
+      excessRate: terms.excessRate === '' ? null : Number(terms.excessRate),
+      ...servicesPayload(services),
     }), 'Terms saved');
   };
 
-  // Consultants reach this screen read-only — they are here to decide an
-  // excess-hours request, not to change the contract. Every write behind these
-  // controls is Admin-only on the API; hiding them keeps the page honest rather
-  // than offering buttons that 403.
+  // Consultants reach this screen read-only. Every write behind these controls
+  // is Admin-only on the API; hiding them keeps the page honest rather than
+  // offering buttons that 403.
   const { user } = useAuth();
   const isAdmin = !!user?.roles.includes('Admin');
-  // The live excess-hours request for this product's pool, decided inline in the
-  // support-hours card below. Readable by any staff member (the GET is Admin+Viewer);
-  // who may *decide* mirrors the backend rule — the named approver, or an Admin.
-  const { data: excessRequests = [] } = useExcessRequests(companyId);
-  const excessRequest = latestExcessFor(excessRequests, cpId);
-  const decideExcess = useDecideExcess(companyId);
-  const canDecideExcess = excessRequest?.status === 'PENDING' && (isAdmin || excessRequest.approverUserId === user?.id);
   const [renewOpen, setRenewOpen] = useState(false);
   const [renew, setRenew] = useState({ months: 12, amcMonthlyCost: 0 });
   const doRenew = useMutation({
@@ -197,6 +184,13 @@ export default function ClientProductPage() {
       track: col === 'OTHERS' ? undefined : col,
     }), 'Consultant assigned');
 
+  const setProductManager = (userId: string | null) =>
+    run(api.patch(`/api/customer-companies/purchased-products/${cpId}/manager`, { userId }),
+      userId ? 'Product manager assigned' : 'Product manager removed');
+  const setModuleActive = (moduleId: string, isActive: boolean) =>
+    run(api.patch(`/api/customer-companies/purchased-products/${cpId}/modules/${moduleId}`, { isActive }),
+      isActive ? 'Module activated for this client' : 'Module deactivated for this client');
+
   if (!cp) return <p className="text-muted-foreground">Loading…</p>;
   // On a shared customer contract, per-product coverage/terms don't apply — the
   // product page is only for its consultants. Driven by the saved scope, or by
@@ -208,6 +202,8 @@ export default function ClientProductPage() {
   const hUsed = monthlyHrs ? cp.support!.currentUsed : cp.hours.used;
   const hLeft = monthlyHrs ? cp.support!.available : cp.hours.left;
   const hUnlimited = monthlyHrs ? false : !!cp.hours.unlimited;
+  // Every module switched off for this client while the contract is live.
+  const productOff = cp.status === 'ACTIVE' && !cp.activeForClient;
 
   return (
     <div>
@@ -221,9 +217,15 @@ export default function ClientProductPage() {
         <div className="flex-1">
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-bold text-foreground">{cp.productName}</h1>
-            <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${statusCls(cp.status)}`}>{cp.status.toLowerCase()}</span>
+            {/* An active contract with every module switched off reads as inactive — one pill, not two. */}
+            <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${statusCls(productOff ? 'INACTIVE' : cp.status)}`}>{productOff ? 'inactive' : cp.status.toLowerCase()}</span>
           </div>
+          {productOff && <div className="text-sm text-muted-foreground">Every module is switched off for this client, so they can't raise tickets on this product. Switch a module back on below to make it active again.</div>}
           <div className="text-sm text-muted-foreground">Purchased {fmt(cp.purchaseDate)}</div>
+          <div className="mt-2">
+            <ManagerSelect label="Product manager" value={cp.productManagerId} valueName={cp.productManagerName}
+              staff={staff} readOnly={!isAdmin} onChange={setProductManager} />
+          </div>
         </div>
         <div className="flex gap-2">
           {!customerScoped && isAdmin && (
@@ -319,53 +321,31 @@ export default function ClientProductPage() {
               </p>
             ) : (
               <SupportHoursConfig
-                value={{ hoursPeriod: terms.hoursPeriod, carryForward: terms.carryForward, allowTicketsAfterHours: terms.allowTicketsAfterHours, allowExcess: terms.allowExcess, excessApproval: terms.excessApproval, excessApproverId: terms.excessApproverId }}
-                onChange={(patch) => {
-                  const next = { ...terms, ...patch };
-                  setTerms(next);
-                  // Only the three that gate the approval request write at once.
-                  if ('allowExcess' in patch || 'excessApproval' in patch || 'excessApproverId' in patch) saveExcess(next);
-                }}
-                staff={staff}
+                value={{ hoursPeriod: terms.hoursPeriod, carryForward: terms.carryForward, allowTicketsAfterHours: terms.allowTicketsAfterHours, allowExcess: terms.allowExcess, excessRate: terms.excessRate }}
+                // Saved with the rest of the terms by Save terms.
+                onChange={(patch) => setTerms((t) => ({ ...t, ...patch }))}
                 live={cp.support ?? null}
                 readOnly={!isAdmin}
-                approverName={cp.support?.approverName}
-                request={excessRequest}
-                canDecide={canDecideExcess}
-                deciding={decideExcess.isPending}
-                onDecide={(approve) => excessRequest && decideExcess.mutate({ id: excessRequest.id, approve })} />
+                showRate={isAdmin} />
             )}
+            {/* What else the contract covers. Outside the Unlimited branch above on
+                purpose: it has nothing to do with how hours are counted. */}
+            <div className="mt-1 border-t pt-3">
+              <h3 className="text-sm font-semibold text-foreground">Contract services</h3>
+              <ContractServicesConfig value={services} readOnly={!isAdmin}
+                onChange={(patch) => setServices((s) => ({ ...s, ...patch }))} />
+            </div>
           </section>
         </div>
       </div>
       )}
 
-      {/* A live request on this product's pool survives the block above being
-          hidden. Switching the client to one shared customer contract stops the
-          per-product pool governing anything and hides its whole card — which
-          used to take the request with it, leaving it decidable by the API but
-          reachable from no screen, while the approver's banner and the decision
-          notification both still deep-linked to this page. */}
-      {customerScoped && excessRequest && (
-        <section className="mb-8">
-          <ExcessRequestCard
-            request={excessRequest}
-            productName={cp.productName}
-            // Only a real scope switch supersedes the pool. `customerScoped` is
-            // also true for ?view=consultants on a per-product client, where the
-            // allowance still governs and that notice would be a lie.
-            superseded={company?.contractScope === 'CUSTOMER'}
-            canDecide={canDecideExcess}
-            deciding={decideExcess.isPending}
-            onDecide={(approve) => decideExcess.mutate({ id: excessRequest.id, approve })} />
-        </section>
-      )}
-
       {/* Consultants — full-width grid of Module × Technical / Functional / Others */}
       <section className={customerScoped ? 'space-y-3' : 'mt-8 space-y-3'}>
         <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground"><Users className="size-4" /> Consultants for this product</h2>
-        <p className="text-sm text-muted-foreground">Route this client's tickets per module and track. Type a name to assign. Empty cells fall back to the module's default routing.</p>
-        <ConsultantGrid modules={cat?.modules ?? []} consultants={productConsultants} staff={productAgents} onAdd={addConsultant} onRemove={removeConsultant} onPrimary={setPrimaryConsultant} readOnly={!isAdmin} />
+        <p className="text-sm text-muted-foreground">Route this client's tickets per module and track. Type a name to assign. Empty cells fall back to the module's default routing. The switch beside a module makes it active or inactive for this client — an inactive module can't be picked on their new tickets.</p>
+        <ConsultantGrid modules={cat?.modules ?? []} consultants={productConsultants} staff={productAgents} onAdd={addConsultant} onRemove={removeConsultant} onPrimary={setPrimaryConsultant} readOnly={!isAdmin}
+          inactiveModuleIds={cp.inactiveModuleIds} onToggleModule={setModuleActive} />
       </section>
 
 

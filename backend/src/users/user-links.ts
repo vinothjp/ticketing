@@ -29,8 +29,8 @@ export async function assertUserDeletable(prisma: PrismaService, userId: string,
     [['client consultant assignment', 'client consultant assignments'], prisma.customerConsultant.count({ where: { userId } })],
     [['product consultant list', 'product consultant lists'], prisma.productConsultant.count({ where: { userId } })],
     [['module consultant list', 'module consultant lists'], prisma.moduleConsultant.count({ where: { userId } })],
-    [['client pool as excess-hours approver', 'client pools as excess-hours approver'], prisma.customerCompany.count({ where: { contractExcessApproverId: userId } })],
-    [['product pool as excess-hours approver', 'product pools as excess-hours approver'], prisma.customerCompanyProduct.count({ where: { amcExcessApproverId: userId } })],
+    [['client as account manager', 'clients as account manager'], prisma.customerCompany.count({ where: { accountManagerId: userId } })],
+    [['client product as product manager', 'client products as product manager'], prisma.customerCompanyProduct.count({ where: { productManagerId: userId } })],
   ];
   const counts = await Promise.all(checks.map(([, c]) => c));
   const links = checks

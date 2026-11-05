@@ -22,15 +22,21 @@ export class SetContractDto {
   @IsOptional() @IsArray() @IsString({ each: true }) productIds?: string[];
   // Support-hours config. `hoursPeriod` reads `hours` as a whole-term pool
   // (FULL_AMC) or a per-month allowance (MONTHLY); `carryForward` rolls unused
-  // monthly hours over; `allowExcess`/`excessApproval` gate logging past the
-  // allowance; `excessApproverId` names the staff approver (null clears it).
+  // monthly hours over; `allowExcess` permits logging past the allowance, and
+  // `excessRate` is what an hour beyond it is charged at (null clears it).
   @IsOptional() @IsIn(['FULL_AMC', 'MONTHLY']) hoursPeriod?: 'FULL_AMC' | 'MONTHLY';
   @IsOptional() @IsBoolean() carryForward?: boolean;
   @IsOptional() @IsBoolean() allowExcess?: boolean;
-  @IsOptional() @IsBoolean() excessApproval?: boolean;
-  @IsOptional() @IsString() excessApproverId?: string | null;
+  @IsOptional() @IsNumber() @Min(0) excessRate?: number | null;
   // Whether the customer may still raise tickets once the allowance is spent.
   @IsOptional() @IsBoolean() allowTicketsAfterHours?: boolean;
+  // What else the contract covers. `crMaxPerMonth` / `crMaxHours` only mean
+  // anything with `crApplicable` on — the service clears them when it is off.
+  @IsOptional() @IsBoolean() thirdPartyIntegration?: boolean;
+  @IsOptional() @IsBoolean() planRollout?: boolean;
+  @IsOptional() @IsBoolean() crApplicable?: boolean;
+  @IsOptional() @IsInt() @Min(0) crMaxPerMonth?: number | null;
+  @IsOptional() @IsNumber() @Min(0) crMaxHours?: number | null;
 }
 
 /**
@@ -42,6 +48,11 @@ export class SetContractDto {
  */
 export class SetPoNumberDto {
   @IsOptional() @IsString() poNumber?: string | null;
+}
+
+// The one product manager (internal staff) for a client's product; null clears it.
+export class SetProductManagerDto {
+  @IsOptional() @IsString() userId?: string | null;
 }
 
 // Renew a customer contract into a fresh period (resets the used hours/visits).
@@ -71,14 +82,25 @@ class ProductTermsFields {
   @IsOptional() @IsIn(['FULL_AMC', 'MONTHLY']) hoursPeriod?: 'FULL_AMC' | 'MONTHLY';
   @IsOptional() @IsBoolean() carryForward?: boolean;
   @IsOptional() @IsBoolean() allowExcess?: boolean;
-  @IsOptional() @IsBoolean() excessApproval?: boolean;
-  @IsOptional() @IsString() excessApproverId?: string | null;
+  @IsOptional() @IsNumber() @Min(0) excessRate?: number | null;
   @IsOptional() @IsBoolean() allowTicketsAfterHours?: boolean;
+  // What else the contract covers. `crMaxPerMonth` / `crMaxHours` only mean
+  // anything with `crApplicable` on — the service clears them when it is off.
+  @IsOptional() @IsBoolean() thirdPartyIntegration?: boolean;
+  @IsOptional() @IsBoolean() planRollout?: boolean;
+  @IsOptional() @IsBoolean() crApplicable?: boolean;
+  @IsOptional() @IsInt() @Min(0) crMaxPerMonth?: number | null;
+  @IsOptional() @IsNumber() @Min(0) crMaxHours?: number | null;
 }
 
 // Provider assigns a product to a customer.
 export class AssignProductDto extends ProductTermsFields {
   @IsString() @IsNotEmpty() productId!: string;
+}
+
+// Provider switches one of a purchased product's modules on/off for that client.
+export class SetModuleActiveDto {
+  @IsBoolean() isActive!: boolean;
 }
 
 // Provider edits an existing purchase's terms (row already known).
@@ -122,7 +144,3 @@ export class AddCustomerConsultantDto {
 // Provider grants a request, setting the same terms as a direct assignment.
 export class GrantRequestDto extends ProductTermsFields {}
 
-/** Approver's optional note when deciding an excess support-hours request. */
-export class DecideExcessDto {
-  @IsOptional() @IsString() note?: string;
-}

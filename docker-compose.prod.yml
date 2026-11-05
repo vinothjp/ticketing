@@ -26,6 +26,7 @@ services:
       JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      FRONTEND_URL: ${FRONTEND_URL:-https://tickets.kumaraitech.com}   # base for reset / gallery links in emails
       OTP_SERVICE_URL: http://otp:3001
       OTP_SERVICE_API_KEY: ${OTP_API_KEY}
       SUPER_ADMIN_OTP: ${SUPER_ADMIN_OTP:-true}

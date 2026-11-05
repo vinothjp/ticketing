@@ -124,6 +124,34 @@ export class TicketsController {
     return this.ticketsService.reopen(id, req.user.clientId, dto, req.user.id, req.user);
   }
 
+  // A customer ticket reopens only on approval: the client (the employee who
+  // raised it, or their company admin) asks, and the client product's project
+  // manager or a tenant Admin decides. Who may decide is checked in the service
+  // — the project manager is a per-ticket fact, not a role a guard can read.
+  @Post(':id/reopen-request')
+  @UseGuards(CustomerContactGuard)
+  requestReopen(@Param('id') id: string, @Body() dto: ReopenTicketDto, @Request() req: AuthedRequest) {
+    return this.ticketsService.requestReopen(id, req.user.clientId, dto, req.user.id, req.user);
+  }
+
+  @Post(':id/reopen-request/withdraw')
+  @UseGuards(CustomerContactGuard)
+  withdrawReopenRequest(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.withdrawReopenRequest(id, req.user.clientId, req.user.id, req.user);
+  }
+
+  @Post(':id/reopen-request/approve')
+  @UseGuards(StaffGuard)
+  approveReopenRequest(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.approveReopenRequest(id, req.user.clientId, req.user.id, req.user);
+  }
+
+  @Post(':id/reopen-request/reject')
+  @UseGuards(StaffGuard)
+  rejectReopenRequest(@Param('id') id: string, @Body() dto: RejectTicketDto, @Request() req: AuthedRequest) {
+    return this.ticketsService.rejectReopenRequest(id, req.user.clientId, dto, req.user.id, req.user);
+  }
+
   // The client signs off a resolved ticket, which closes it. Customer contacts
   // only — staff must not acknowledge on the client's behalf.
   @Post(':id/acknowledge')

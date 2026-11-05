@@ -9,13 +9,17 @@ import { unlink } from 'fs/promises';
 import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { assertUserDeletable } from '../users/user-links';
+import { CLIENT_TYPES, CLIENT_TYPE_LABELS, type ClientType } from './client-type';
 import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto, CustomerAdminDto } from './dto/customer-company.dto';
 import { CUSTOMER_ADMIN_ROLE, assertNoCustomerAdmin } from './customer-admin';
 import { productOffForClient } from './module-switch';
 import { assertAssignableManager, managerName, MANAGER_SELECT } from './client-managers';
-import { CLIENT_COLUMNS, CLIENT_IMPORT_NOTES, CLIENT_STATUSES, CLIENT_STATUS_LABELS } from './client-sheet';
 import {
-  exportSheet, importTemplate, readSheet, rowReader, asText, asEnum, errorText,
+  CLIENT_COLUMNS, CLIENT_IMPORT_NOTES, CLIENT_STATUSES, CLIENT_STATUS_LABELS,
+  CONTRACT_COLUMNS, CONSULTANT_COLUMNS, type ContractSheetRow, type ConsultantSheetRow,
+} from './client-sheet';
+import {
+  exportWorkbook, importTemplate, readSheet, rowReader, asText, asEnum, errorText,
 } from '../lib/spreadsheet';
 import type { ImportResult } from '../lib/spreadsheet';
 
@@ -66,7 +70,9 @@ export class CustomerCompaniesService {
       supportPeriodStart: c.supportPeriodStart,
       supportPeriodEnd: c.supportPeriodEnd,
       supportAlertThresholdPct: c.supportAlertThresholdPct,
-      // Which coverage model this client is on — the tiles badge it.
+      // What the client bought, and (for AMC) which coverage model it is on — the
+      // list's Type column reads both.
+      clientType: c.clientType,
       contractScope: c.contractScope,
       contactCount: c._count.users,
       ticketCount: c._count.tickets,
@@ -100,7 +106,7 @@ export class CustomerCompaniesService {
     return {
       id: c.id, name: c.name, code: c.code, status: c.status, contactEmail: c.contactEmail,
       contactPerson: c.contactPerson, contactNumber: c.contactNumber, logoUrl: c.logoUrl,
-      contractScope: c.contractScope, contractStart: c.contractStart, contractEnd: c.contractEnd, contractHours: c.contractHours,
+      clientType: c.clientType, contractScope: c.contractScope, contractStart: c.contractStart, contractEnd: c.contractEnd, contractHours: c.contractHours,
       autoAssignTickets: c.autoAssignTickets,
       accountManagerId: c.accountManagerId, accountManagerName: managerName(c.accountManager),
     };
@@ -115,7 +121,106 @@ export class CustomerCompaniesService {
    * sheet and the screen can never disagree about what a client's row says.
    */
   async exportSheet(clientId: string) {
-    return exportSheet('Clients', CLIENT_COLUMNS, await this.list(clientId));
+    const clients = await this.list(clientId);
+    return exportWorkbook([
+      // First, because it is the sheet the importer reads back.
+      { name: 'Clients', columns: CLIENT_COLUMNS, rows: clients },
+      { name: 'Contracts', columns: CONTRACT_COLUMNS, rows: await this.contractRows(clientId) },
+      { name: 'Consultants', columns: CONSULTANT_COLUMNS, rows: await this.consultantRows(clientId) },
+    ]);
+  }
+
+  /**
+   * One row per contract, read straight off the stored terms: a shared contract
+   * is one row naming the products it covers, a per-product AMC client one row
+   * per product. An Implementation client has no contract and so no row.
+   */
+  private async contractRows(clientId: string): Promise<ContractSheetRow[]> {
+    const companies = await this.prisma.customerCompany.findMany({
+      where: { clientId, clientType: 'AMC' },
+      orderBy: { name: 'asc' },
+      include: { products: { include: { product: { select: { name: true } } } } },
+    });
+    const rows: ContractSheetRow[] = [];
+    for (const c of companies) {
+      const products = [...c.products].sort((a, b) => a.product.name.localeCompare(b.product.name));
+      if (c.contractScope === 'CUSTOMER') {
+        rows.push({
+          clientName: c.name,
+          product: products.length ? `All covered: ${products.map((p) => p.product.name).join(', ')}` : 'No products yet',
+          coverage: c.contractCoverageType,
+          hoursUnlimited: c.contractHoursUnlimited, hours: c.contractHours, hoursPeriod: c.contractHoursPeriod,
+          visits: c.contractVisits, start: c.contractStart, end: c.contractEnd,
+          amount: c.contractCoverageType === 'AMC' && c.contractMonthlyCost != null ? Number(c.contractMonthlyCost) : null,
+        });
+        continue;
+      }
+      for (const p of products) {
+        const paid = p.amcType === 'PAID';
+        rows.push({
+          clientName: c.name,
+          product: p.product.name,
+          coverage: paid ? 'AMC' : 'WARRANTY',
+          hoursUnlimited: paid ? p.paidAmcHoursUnlimited : p.freeAmcHoursUnlimited,
+          hours: paid ? p.paidAmcHours : p.freeAmcHours,
+          hoursPeriod: p.amcHoursPeriod,
+          visits: paid ? p.paidAmcVisits : p.freeAmcVisits,
+          start: p.amcStart ?? p.purchaseDate,
+          end: p.amcEnd ?? p.warrantyEnd,
+          amount: paid && p.amcMonthlyCost != null ? Number(p.amcMonthlyCost) : null,
+        });
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * Every client's consultant routing: its default consultants (no product) and
+   * each product/module override, one row per client × product × module, names
+   * per track with the primary marked. `track` null is the grid's Others column.
+   */
+  private async consultantRows(clientId: string): Promise<ConsultantSheetRow[]> {
+    const [assignments, companies] = await Promise.all([
+      this.prisma.customerConsultant.findMany({ where: { clientId }, orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }] }),
+      this.prisma.customerCompany.findMany({ where: { clientId }, select: { id: true, name: true } }),
+    ]);
+    if (!assignments.length) return [];
+    const ids = (pick: (a: (typeof assignments)[number]) => string | null) =>
+      [...new Set(assignments.map(pick).filter((x): x is string => !!x))];
+    const [users, products, modules] = await Promise.all([
+      this.prisma.user.findMany({ where: { id: { in: ids((a) => a.userId) } }, select: { id: true, name: true, username: true } }),
+      this.prisma.product.findMany({ where: { id: { in: ids((a) => a.productId) } }, select: { id: true, name: true } }),
+      this.prisma.productModule.findMany({ where: { id: { in: ids((a) => a.moduleId) } }, select: { id: true, name: true } }),
+    ]);
+    const userName = new Map(users.map((u) => [u.id, u.name || u.username]));
+    const productName = new Map(products.map((p) => [p.id, p.name]));
+    const moduleName = new Map(modules.map((m) => [m.id, m.name]));
+    const companyName = new Map(companies.map((c) => [c.id, c.name]));
+
+    const groups = new Map<string, ConsultantSheetRow & { T: string[]; F: string[]; O: string[] }>();
+    for (const a of assignments) {
+      const key = `${a.customerCompanyId}|${a.productId ?? ''}|${a.moduleId ?? ''}`;
+      let g = groups.get(key);
+      if (!g) {
+        g = {
+          clientName: companyName.get(a.customerCompanyId) ?? '',
+          product: a.productId ? productName.get(a.productId) ?? '(removed product)' : 'All products (default)',
+          module: a.moduleId ? moduleName.get(a.moduleId) ?? '(removed module)' : a.productId ? 'All modules' : '—',
+          technical: '', functional: '', others: '', T: [], F: [], O: [],
+        };
+        groups.set(key, g);
+      }
+      const name = `${userName.get(a.userId) ?? 'Unknown user'}${a.isPrimary ? ' (primary)' : ''}`;
+      (a.track === 'TECHNICAL' ? g.T : a.track === 'FUNCTIONAL' ? g.F : g.O).push(name);
+    }
+    const isDefault = (r: ConsultantSheetRow) => r.product.startsWith('All products');
+    return [...groups.values()]
+      .map(({ T, F, O, ...r }) => ({ ...r, technical: T.join(', '), functional: F.join(', '), others: O.join(', ') }))
+      .sort((a, b) =>
+        a.clientName.localeCompare(b.clientName)
+        || Number(isDefault(b)) - Number(isDefault(a))
+        || a.product.localeCompare(b.product)
+        || a.module.localeCompare(b.module));
   }
 
   /** The blank template: the same columns, minus the ones an import cannot set. */
@@ -144,6 +249,7 @@ export class CustomerCompaniesService {
       contactNumber: column('Contact number'),
       maxContacts: column('Max contacts'),
       status: column('Status'),
+      clientType: column('Client type'),
     };
 
     for (const [i, record] of records.entries()) {
@@ -164,7 +270,7 @@ export class CustomerCompaniesService {
         // data) lands nowhere near its cause, so an ambiguous code is refused
         // and named instead. The name fallback needs no such check.
         const byCode = code
-          ? await this.prisma.customerCompany.findMany({ where: { clientId, code }, select: { id: true }, take: 2 })
+          ? await this.prisma.customerCompany.findMany({ where: { clientId, code }, select: { id: true, clientType: true }, take: 2 })
           : [];
         if (byCode.length > 1) {
           throw new BadRequestException(
@@ -174,7 +280,7 @@ export class CustomerCompaniesService {
         const matched =
           byCode[0] ??
           (name
-            ? await this.prisma.customerCompany.findFirst({ where: { clientId, name }, select: { id: true } })
+            ? await this.prisma.customerCompany.findFirst({ where: { clientId, name }, select: { id: true, clientType: true } })
             : null);
 
         // A blank cell on an update means "leave it alone", so only the columns
@@ -199,12 +305,22 @@ export class CustomerCompaniesService {
         const status = asEnum(read(COLS.status), CLIENT_STATUSES, CLIENT_STATUS_LABELS, 'Status');
         if (status) fields.status = status;
 
+        // Client type is chosen when a client is added. An existing client keeps
+        // its own; a cell that would change it is refused, never silently dropped.
+        const clientType = asEnum(read(COLS.clientType), CLIENT_TYPES, CLIENT_TYPE_LABELS, 'Client type');
+
         if (matched) {
+          if (clientType && clientType !== matched.clientType) {
+            throw new BadRequestException(
+              `Client type can't be changed by import — this client is ${CLIENT_TYPE_LABELS[matched.clientType as ClientType] ?? matched.clientType}. Change it on the client's own screen.`,
+            );
+          }
           if (name) fields.name = name;
           await this.update(matched.id, fields as UpdateCompanyDto, clientId, actorId);
           result.updated += 1;
         } else {
           if (!name) throw new BadRequestException('Client name is required to add a new client');
+          if (clientType) fields.clientType = clientType;
           await this.create({ ...fields, name } as CreateCompanyDto, clientId, actorId);
           result.created += 1;
         }
@@ -302,6 +418,7 @@ export class CustomerCompaniesService {
         contactNumber: dto.contactNumber,
         maxContacts: dto.maxContacts ?? 5,
         status: dto.status ?? 'ACTIVE',
+        ...(dto.clientType ? { clientType: dto.clientType } : {}),
         agreedSupportHours: dto.agreedSupportHours ?? null,
         supportPeriodStart: dto.supportPeriodStart ? new Date(dto.supportPeriodStart) : null,
         supportPeriodEnd: dto.supportPeriodEnd ? new Date(dto.supportPeriodEnd) : null,

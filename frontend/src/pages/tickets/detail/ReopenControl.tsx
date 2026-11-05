@@ -41,12 +41,22 @@ export default function ReopenControl({
   canReopen,
   onReopen,
   reopening,
+  requestMode = false,
+  approverName = null,
 }: {
   ticket: ReopenWindow;
   /** True only for whoever owns the call — the client, or staff on an internal ticket. */
   canReopen: boolean;
   onReopen: (reason: string) => void;
   reopening: boolean;
+  /**
+   * A customer's ticket is not reopened on the spot: the client *asks*, and the
+   * client product's project manager (or an Admin) approves. The button, dialog
+   * and hint say so. Off for an internal ticket, which staff reopen directly.
+   */
+  requestMode?: boolean;
+  /** Who decides the request, when a project manager is set — named in the dialog. */
+  approverName?: string | null;
 }) {
   const { fmtDate } = useDateFormat();
   const [open, setOpen] = useState(false);
@@ -57,11 +67,14 @@ export default function ReopenControl({
   // Absent from an older payload = treat as open, and let the API be the judge.
   const windowOpen = ticket.reopenWindowOpen !== false;
   const until = deadline ? ` (until ${fmtDate(deadline)})` : '';
+  const decider = approverName ? `${approverName} (project manager)` : 'your provider';
   const hint = !canReopen
-    ? `Only the client can reopen their own ticket, for ${days} days after it is resolved${until}. After that they raise a new ticket instead.`
-    : windowOpen
-      ? `You can reopen this ticket for ${days} days after it was resolved${until}. After that, please raise a new ticket.`
-      : `The ${days}-day reopening window closed${deadline ? ` on ${fmtDate(deadline)}` : ''}. Raise a new ticket for this issue instead.`;
+    ? `Only the client can ask to reopen their own ticket, for ${days} days after it is resolved${until}. The project manager approves the request before it reopens.`
+    : !windowOpen
+      ? `The ${days}-day reopening window closed${deadline ? ` on ${fmtDate(deadline)}` : ''}. Raise a new ticket for this issue instead.`
+      : requestMode
+        ? `You can ask to reopen this ticket for ${days} days after it was resolved${until}. It reopens once ${decider} approves.`
+        : `You can reopen this ticket for ${days} days after it was resolved${until}. After that, please raise a new ticket.`;
 
   const submit = () => {
     const trimmed = reason.trim();
@@ -75,7 +88,7 @@ export default function ReopenControl({
     <div className="flex items-center gap-1">
       {canReopen && (windowOpen ? (
         <Button variant="outline" size="sm" onClick={() => setOpen(true)} disabled={reopening}>
-          Reopen
+          {requestMode ? 'Request reopen' : 'Reopen'}
         </Button>
       ) : (
         <Button variant="outline" size="sm" asChild>
@@ -100,10 +113,11 @@ export default function ReopenControl({
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Reopen ticket</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{requestMode ? 'Request to reopen this ticket' : 'Reopen ticket'}</DialogTitle></DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Tell us what the resolution missed. The assigned agents and the support admins are
-            notified with this note.
+            {requestMode
+              ? `The ticket stays closed until ${decider} approves your request. You'll get an email and a notification with the decision.`
+              : 'Tell us what the resolution missed. The assigned agents and the support admins are notified with this note.'}
           </p>
           <Textarea
             rows={4}
@@ -115,7 +129,7 @@ export default function ReopenControl({
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
             <Button onClick={submit} disabled={!reason.trim() || reopening}>
-              {reopening ? 'Reopening…' : 'Reopen ticket'}
+              {requestMode ? (reopening ? 'Sending…' : 'Send for approval') : (reopening ? 'Reopening…' : 'Reopen ticket')}
             </Button>
           </DialogFooter>
         </DialogContent>

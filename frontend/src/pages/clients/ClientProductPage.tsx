@@ -40,7 +40,7 @@ interface Purchased {
   // Modules switched off for this client (the switch in the consultant grid);
   // with every one off the product itself is inactive for them.
   inactiveModuleIds: string[]; activeForClient: boolean;
-  // The one product manager for this product at this client.
+  // The one project manager for this product at this client (stored as productManagerId).
   productManagerId: string | null; productManagerName: string | null;
 }
 interface Consultant { id: string; userId: string; username: string | null; productId: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
@@ -70,7 +70,7 @@ export default function ClientProductPage() {
   const qc = useQueryClient();
   const [searchParams] = useSearchParams();
 
-  const { data: company } = useQuery<{ name: string; contractScope?: 'PRODUCT' | 'CUSTOMER'; autoAssignTickets?: boolean }>({ queryKey: ['client', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}`)).data });
+  const { data: company } = useQuery<{ name: string; clientType?: 'IMPLEMENTATION' | 'AMC'; contractScope?: 'PRODUCT' | 'CUSTOMER'; autoAssignTickets?: boolean }>({ queryKey: ['client', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}`)).data });
   const { data: products = [] } = useQuery<Purchased[]>({ queryKey: ['client-products', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}/purchased-products`)).data });
   const { data: consultants = [] } = useQuery<Consultant[]>({ queryKey: ['client-consultants', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}/consultants`)).data });
   const { data: catalog = [] } = useQuery<CatProduct[]>({ queryKey: ['products'], queryFn: async () => (await api.get('/api/products')).data });
@@ -95,7 +95,7 @@ export default function ClientProductPage() {
   // keyed on the saved terms rather than the row object: a consultant or module
   // switch click refetches the row, which used to wipe unsaved term edits.
   const termsKey = cp && JSON.stringify([cp.id, cp.amc, cp.hours, cp.visits, cp.paidTerms.monthlyCost, cp.support, cp.services]);
-  // Third-party integration, plan roll-out and CR terms — saved with Save terms.
+  // Third-party integration, plant roll-out and CR terms — saved with Save terms.
   const [services, setServices] = useState<ContractServicesValue>(servicesForm(null));
   useEffect(() => { if (cp) setServices(servicesForm(cp.services)); }, [termsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -186,7 +186,7 @@ export default function ClientProductPage() {
 
   const setProductManager = (userId: string | null) =>
     run(api.patch(`/api/customer-companies/purchased-products/${cpId}/manager`, { userId }),
-      userId ? 'Product manager assigned' : 'Product manager removed');
+      userId ? 'Project manager assigned' : 'Project manager removed');
   const setModuleActive = (moduleId: string, isActive: boolean) =>
     run(api.patch(`/api/customer-companies/purchased-products/${cpId}/modules/${moduleId}`, { isActive }),
       isActive ? 'Module activated for this client' : 'Module deactivated for this client');
@@ -195,7 +195,9 @@ export default function ClientProductPage() {
   // On a shared customer contract, per-product coverage/terms don't apply — the
   // product page is only for its consultants. Driven by the saved scope, or by
   // navigating here from the customer-contract view (?view=consultants).
-  const customerScoped = company?.contractScope === 'CUSTOMER' || searchParams.get('view') === 'consultants';
+  // An Implementation client has no AMC at all, so it gets the same consultants-only page.
+  const impl = company?.clientType === 'IMPLEMENTATION';
+  const customerScoped = impl || company?.contractScope === 'CUSTOMER' || searchParams.get('view') === 'consultants';
   // Support-hours meter figures: MONTHLY reads this month's ledger, else the whole-term pool.
   const monthlyHrs = cp.support?.period === 'MONTHLY' && !cp.hours.unlimited;
   const hAlloc = monthlyHrs ? (cp.support!.currentAllocated ?? 0) + cp.support!.carriedIn : cp.hours.allocated;
@@ -219,11 +221,12 @@ export default function ClientProductPage() {
             <h1 className="text-2xl font-bold text-foreground">{cp.productName}</h1>
             {/* An active contract with every module switched off reads as inactive — one pill, not two. */}
             <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${statusCls(productOff ? 'INACTIVE' : cp.status)}`}>{productOff ? 'inactive' : cp.status.toLowerCase()}</span>
+            {impl && <span title="Implementation client — no AMC" className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-xs font-semibold text-violet-700 dark:text-violet-300">Implementation</span>}
           </div>
           {productOff && <div className="text-sm text-muted-foreground">Every module is switched off for this client, so they can't raise tickets on this product. Switch a module back on below to make it active again.</div>}
-          <div className="text-sm text-muted-foreground">Purchased {fmt(cp.purchaseDate)}</div>
+          {!impl && <div className="text-sm text-muted-foreground">Purchased {fmt(cp.purchaseDate)}</div>}
           <div className="mt-2">
-            <ManagerSelect label="Product manager" value={cp.productManagerId} valueName={cp.productManagerName}
+            <ManagerSelect label="Project manager" value={cp.productManagerId} valueName={cp.productManagerName}
               staff={staff} readOnly={!isAdmin} onChange={setProductManager} />
           </div>
         </div>

@@ -83,7 +83,7 @@ export class ClientVisitsService {
   private async assertCompany(clientId: string, customerCompanyId: string) {
     const company = await this.prisma.customerCompany.findFirst({
       where: { id: customerCompanyId, clientId },
-      select: { id: true, name: true, contractScope: true },
+      select: { id: true, name: true, contractScope: true, clientType: true },
     });
     if (!company) throw new BadRequestException('Customer company not found');
     return company;
@@ -101,9 +101,11 @@ export class ClientVisitsService {
    *   optional and every visit draws from that single allowance.
    */
   private assertProductForScope(
-    company: { name: string; contractScope: string },
+    company: { name: string; contractScope: string; clientType: string },
     productId?: string | null,
   ) {
+    // An Implementation client has no allowance to spend, so nothing needs naming.
+    if (company.clientType === 'IMPLEMENTATION') return;
     if (company.contractScope === 'PRODUCT' && !productId) {
       throw new BadRequestException(
         `${company.name} is on per-product coverage, so a visit must name the product it is booked against`,
@@ -414,7 +416,8 @@ export class ClientVisitsService {
     });
 
     const visitNumber = `CL-${String(updatedClient.clientVisitSequence).padStart(6, '0')}`;
-    const contractDeducted = dto.status === DEDUCTING_STATUS;
+    // An Implementation client has no visits allowance: its visits are logged, never drawn down.
+    const contractDeducted = dto.status === DEDUCTING_STATUS && company.clientType !== 'IMPLEMENTATION';
     const deductedCpId = contractDeducted
       ? await this.resolvePool(dto.customerCompanyId, dto.productId)
       : null;
@@ -492,7 +495,6 @@ export class ClientVisitsService {
     this.assertScheduleDate(newStatus, newDate);
     this.assertConsultantHours(actor, dto, newStatus, Number(existingVisit.hours ?? 0));
     const customerCompanyId = dto.customerCompanyId || existingVisit.customerCompanyId;
-    const contractDeducted = newStatus === DEDUCTING_STATUS;
 
     // A product only stays on the visit while the (possibly new) customer owns it.
     const productId = dto.productId !== undefined ? dto.productId : existingVisit.productId;
@@ -501,6 +503,8 @@ export class ClientVisitsService {
     // have to leave a row whose draw-down has somewhere to land.
     const effectiveCompany = company ?? (await this.assertCompany(clientId, customerCompanyId));
     this.assertProductForScope(effectiveCompany, productId);
+    // An Implementation client has no visits allowance: its visits are logged, never drawn down.
+    const contractDeducted = newStatus === DEDUCTING_STATUS && effectiveCompany.clientType !== 'IMPLEMENTATION';
     let productName = existingVisit.productName;
     if (!productId) {
       productName = null;

@@ -15,7 +15,7 @@ import {
   DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
-import { getPriorityMeta, getSlaMeta, isOverdueTicket, isCreatedTodayTicket, getApprovalMeta, monthKey, monthLabel, dayKey, monthRange, type TicketSummary } from './ticketHelpers';
+import { getPriorityMeta, getSlaMeta, isOverdueTicket, isCreatedTodayTicket, getApprovalMeta, getReopenMeta, monthKey, monthLabel, dayKey, monthRange, type TicketSummary } from './ticketHelpers';
 import { useDateFormat } from '@/lib/dateFormat';
 
 interface TemplateSummary { id: string; name: string; }
@@ -78,7 +78,7 @@ export default function TicketListPage() {
   // Initial view/status can be deep-linked from the dashboard (?view=, ?status=).
   const initialView = (searchParams.get('view') ?? 'all') as ViewKey;
   const [view, setView] = useState<ViewKey>(
-    (['all', 'mine', 'today', 'overdue', 'unassigned', 'tasks'] as string[]).includes(initialView) ? initialView : 'all',
+    (['all', 'mine', 'today', 'overdue', 'unassigned', 'tasks', 'pending'] as string[]).includes(initialView) ? initialView : 'all',
   );
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
@@ -122,6 +122,19 @@ export default function TicketListPage() {
   });
   // Customer side (employees + their company admin) get the restricted portal.
   const isCustomer = (!!user?.roles.includes('Customer') || !!user?.roles.includes('CustomerAdmin')) && !isAdmin;
+  const isCustomerAdmin = isCustomer && !!user?.roles.includes('CustomerAdmin');
+  // "Awaiting approval" holds what is waiting on *this* viewer's decision, and
+  // each role decides different things: the provider Admin both change requests
+  // and reopen requests, a client's company admin their own people's change
+  // requests (before the provider sees them), and a member of staff the reopen
+  // requests put to them as a client product's project manager.
+  const awaitsMe = (t: TicketSummary) =>
+    isAdmin
+      ? t.approvalStatus === 'PENDING' || t.reopenRequestStatus === 'PENDING'
+      : isCustomerAdmin
+        ? t.approvalStatus === 'PENDING_CUSTOMER'
+        : !isCustomer && t.reopenRequestStatus === 'PENDING' && t.reopenApproverUserId === user?.id;
+  const showPending = isAdmin || isCustomerAdmin || !isCustomer;
   // Open tasks assigned to the current agent (internal — customers never see tasks).
   const { data: myTasks = [] } = useQuery<MyTask[]>({
     queryKey: ['my-tasks'],
@@ -178,8 +191,9 @@ export default function TicketListPage() {
     overdue: byType.filter(isOverdueTicket).length,
     unassigned: byType.filter((t) => t.technicians.length === 0).length,
     tasks: myTasks.length,
-    pending: byType.filter((t) => t.approvalStatus === 'PENDING').length,
-  }), [byType, user?.id, myTasks.length]);
+    pending: byType.filter(awaitsMe).length,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- awaitsMe reads only the role flags and user id
+  }), [byType, user?.id, myTasks.length, isAdmin, isCustomerAdmin, isCustomer]);
 
   const filtered = useMemo(() => {
     let list = byType;
@@ -187,13 +201,14 @@ export default function TicketListPage() {
     if (view === 'today') list = list.filter(isCreatedTodayTicket);
     if (view === 'overdue') list = list.filter(isOverdueTicket);
     if (view === 'unassigned') list = list.filter((t) => t.technicians.length === 0);
-    if (view === 'pending') list = list.filter((t) => t.approvalStatus === 'PENDING');
+    if (view === 'pending') list = list.filter(awaitsMe);
     if (priorityFilter !== 'all') list = list.filter((t) => (t.priority ?? '').toLowerCase() === priorityFilter);
     if (categoryFilter !== 'all') list = list.filter((t) => t.ticketCategory === categoryFilter);
     if (statusFilter !== 'all') list = list.filter((t) => t.ticketStatus === statusFilter);
     if (companyFilter !== 'all') list = list.filter((t) => t.customerCompany?.id === companyFilter);
     return list;
-  }, [byType, view, priorityFilter, categoryFilter, statusFilter, companyFilter, user?.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- awaitsMe reads only the role flags and user id
+  }, [byType, view, priorityFilter, categoryFilter, statusFilter, companyFilter, user?.id, isAdmin, isCustomerAdmin, isCustomer]);
 
   const sorted = useMemo(() => {
     const list = [...filtered];
@@ -222,9 +237,9 @@ export default function TicketListPage() {
     { key: 'today', label: 'Created today', count: viewCounts.today },
     { key: 'overdue', label: 'Overdue', count: viewCounts.overdue },
     { key: 'unassigned', label: 'Unassigned', count: viewCounts.unassigned },
-    // The Admin's queue of tickets held for their decision (templates with
-    // "Needs admin approval" on). Approving is Admin-only, so only they get it.
-    ...(isAdmin ? [{ key: 'pending' as const, label: 'Awaiting approval', count: viewCounts.pending }] : []),
+    // Everything waiting on this viewer's decision — see `awaitsMe`. A client's
+    // employee decides nothing, so they don't get the tab.
+    ...(showPending ? [{ key: 'pending' as const, label: 'Awaiting approval', count: viewCounts.pending }] : []),
   ];
   // Customers only get their own ticket views — agent/task concepts are hidden.
   const views = isCustomer ? allViews.filter((v) => ['all', 'today', 'overdue', 'pending'].includes(v.key)) : allViews;
@@ -457,11 +472,11 @@ export default function TicketListPage() {
                       <span className="text-sm font-medium text-primary hover:underline">
                         <span className="text-muted-foreground">#{t.ticketNumber}</span> {t.subject}
                       </span>
-                      {getApprovalMeta(t.approvalStatus) && (
-                        <span className={`ml-2 rounded-full border px-2 py-0.5 text-[11px] font-medium ${getApprovalMeta(t.approvalStatus)!.className}`}>
-                          {getApprovalMeta(t.approvalStatus)!.label}
+                      {[getApprovalMeta(t.approvalStatus), getReopenMeta(t.reopenRequestStatus)].map((m) => m && (
+                        <span key={m.label} className={`ml-2 rounded-full border px-2 py-0.5 text-[11px] font-medium ${m.className}`}>
+                          {m.label}
                         </span>
-                      )}
+                      ))}
                       <div className="pointer-events-none absolute top-full left-0 z-20 mt-1 hidden w-[26rem] max-w-[88vw] rounded-lg border bg-card p-3 text-left shadow-lg group-hover/tt:block">
                         <dl className="space-y-1.5 text-xs">
                           <div className="flex gap-2"><dt className="w-24 shrink-0 font-medium text-muted-foreground">Request ID</dt><dd className="text-foreground">#{t.ticketNumber}</dd></div>
@@ -526,7 +541,7 @@ export default function TicketListPage() {
                       {sep}
                       <span className="inline-flex items-center gap-1.5">
                         SLA :
-                        {t.approvalStatus === 'PENDING' ? (
+                        {t.approvalStatus === 'PENDING' || t.approvalStatus === 'PENDING_CUSTOMER' ? (
                           // A held ticket's clock hasn't started — it starts on approval.
                           <span className="text-foreground">starts on approval</span>
                         ) : (

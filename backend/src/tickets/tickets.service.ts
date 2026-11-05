@@ -69,6 +69,15 @@ function joinEmails(addresses: (string | null | undefined)[]): string {
 const esc = (s: string | null | undefined) =>
   (s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+/** The plain-text twin of an email body built for `reassignmentHtml`. */
+const htmlToText = (html: string) =>
+  html.replace(/<br\s*\/?>/g, '\n').replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+
+/** A person as other people read them: their full name, else their login. */
+const displayName = (u: { name?: string | null; username?: string | null }) =>
+  u.name?.trim() || u.username || '';
+
 /** House-style email body: 480px wrapper, coloured header bar, white card. */
 function reassignmentHtml(heading: string, greetName: string | null, bodyHtml: string): string {
   return `
@@ -163,6 +172,10 @@ export class TicketsService {
     // its SLA clock does not run — both start in `approve()`.
     const needsApproval = template.requiresApproval && !(viewer && isAdmin(viewer));
     if (needsApproval) dto = { ...dto, technicianUserIds: [] };
+    // A customer's *employee* goes through their own company admin first
+    // (PENDING_CUSTOMER), who forwards it to the provider's Admin (PENDING). A
+    // customer admin's own request, and an agent's, go straight to the Admin.
+    const needsCustomerApproval = needsApproval && !!viewer && isCustomerEmployee(viewer);
 
     // Server-side is the source of truth for "required" — it's tenant-configured
     // data, so the client's zod validation alone can't be trusted. We also
@@ -238,7 +251,7 @@ export class TicketsService {
           // has stood in its opening status, rather than nothing until someone
           // touches it.
           statusChangedAt: new Date(),
-          approvalStatus: needsApproval ? 'PENDING' : 'NONE',
+          approvalStatus: needsCustomerApproval ? 'PENDING_CUSTOMER' : needsApproval ? 'PENDING' : 'NONE',
           productId: dto.productId,
           moduleId: dto.moduleId,
           consultantType: dto.consultantType,
@@ -284,7 +297,9 @@ export class TicketsService {
     const assignedConsultantId =
       isCustomerTicket && !needsApproval ? await this.autoRoute(clientId, ticket, actorId) : null;
 
-    if (needsApproval) {
+    if (needsCustomerApproval) {
+      await this.notifyCustomerApprovalRequested(clientId, ticket, template.name, actorId);
+    } else if (needsApproval) {
       await this.notifyApprovalRequested(clientId, ticket, template.name, actorId);
     }
 
@@ -359,35 +374,140 @@ export class TicketsService {
     return assignedConsultantId;
   }
 
-  /** Bell every tenant Admin that a held ticket is waiting for their decision. */
+  /**
+   * Tell every tenant Admin — bell and email — that a held ticket is waiting for
+   * their decision. `forwardedBy` names the customer admin who passed an
+   * employee's request on, so the Admin knows the client has already said yes.
+   */
   private async notifyApprovalRequested(
+    clientId: string,
+    ticket: { id: string; ticketNumber: string; subject: string; customerCompanyId: string | null },
+    templateName: string,
+    raiserId: string | null,
+    forwardedBy?: string | null,
+  ) {
+    try {
+      const [raiser, company, admins] = await Promise.all([
+        raiserId
+          ? this.prisma.user.findUnique({ where: { id: raiserId }, select: { username: true, name: true, customerCompanyId: true } })
+          : null,
+        ticket.customerCompanyId
+          ? this.prisma.customerCompany.findUnique({ where: { id: ticket.customerCompanyId }, select: { name: true } })
+          : null,
+        this.tenantAdmins(clientId),
+      ]);
+      // A customer reads as "bob (Globex Ltd) raised…"; an agent's company goes
+      // after the subject, since it's the client the work is for, not theirs.
+      const raiserName = raiser ? displayName(raiser) : 'Someone';
+      const who = raiser?.customerCompanyId && company ? `${raiserName} (${company.name})` : raiserName;
+      const forWhom = !raiser?.customerCompanyId && company ? ` (${company.name})` : '';
+      const forwarded = forwardedBy ? ` Approved by their company admin, ${forwardedBy}.` : '';
+      await this.notifications.notifyMany(admins.map((a) => a.id), {
+        clientId, type: 'TICKET_APPROVAL_REQUESTED', ticketId: ticket.id,
+        title: `${templateName} awaiting your approval`,
+        body: `${who} raised ${ticket.ticketNumber} · ${ticket.subject}${forWhom}.${forwarded}`,
+      });
+      await this.mailEach(
+        clientId,
+        admins,
+        `[${ticket.ticketNumber}] ${templateName} awaiting your approval`,
+        `${templateName} awaiting your approval`,
+        `${esc(who)} raised <strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong>${esc(forWhom)}.${esc(forwarded)}` +
+          `<br/><br/>Nobody can be assigned or work on it until you approve it. You'll find it under <strong>Awaiting approval</strong> on the ticket list.`,
+        `the approval request for ${ticket.ticketNumber}`,
+      );
+    } catch (err) {
+      this.logger.error('Failed to notify admins of a ticket awaiting approval', err instanceof Error ? err.stack : String(err));
+    }
+  }
+
+  /**
+   * An employee's request waits for their own company admin first — bell and
+   * email each `CustomerAdmin` of that company. The provider hears nothing yet.
+   */
+  private async notifyCustomerApprovalRequested(
     clientId: string,
     ticket: { id: string; ticketNumber: string; subject: string; customerCompanyId: string | null },
     templateName: string,
     raiserId: string,
   ) {
     try {
-      const [raiser, company, admins] = await Promise.all([
-        this.prisma.user.findUnique({ where: { id: raiserId }, select: { username: true, customerCompanyId: true } }),
-        ticket.customerCompanyId
-          ? this.prisma.customerCompany.findUnique({ where: { id: ticket.customerCompanyId }, select: { name: true } })
-          : null,
+      if (!ticket.customerCompanyId) return;
+      const [raiser, companyAdmins] = await Promise.all([
+        this.prisma.user.findUnique({ where: { id: raiserId }, select: { username: true, name: true } }),
         this.prisma.user.findMany({
-          where: { clientId, isActive: true, userRoles: { some: { role: { name: 'Admin' } } } },
-          select: { id: true },
+          where: {
+            clientId, customerCompanyId: ticket.customerCompanyId, isActive: true,
+            userRoles: { some: { role: { name: 'CustomerAdmin' } } },
+          },
+          select: { id: true, username: true, name: true, email: true },
         }),
       ]);
-      // A customer reads as "bob (Globex Ltd) raised…"; an agent's company goes
-      // after the subject, since it's the client the work is for, not theirs.
-      const who = raiser?.customerCompanyId && company ? `${raiser.username} (${company.name})` : raiser?.username ?? 'Someone';
-      const forWhom = !raiser?.customerCompanyId && company ? ` (${company.name})` : '';
-      await this.notifications.notifyMany(admins.map((a) => a.id), {
+      const who = raiser ? displayName(raiser) : 'A team member';
+      await this.notifications.notifyMany(companyAdmins.map((a) => a.id), {
         clientId, type: 'TICKET_APPROVAL_REQUESTED', ticketId: ticket.id,
         title: `${templateName} awaiting your approval`,
-        body: `${who} raised ${ticket.ticketNumber} · ${ticket.subject}${forWhom}`,
+        body: `${who} raised ${ticket.ticketNumber} · ${ticket.subject}`,
       });
+      await this.mailEach(
+        clientId,
+        companyAdmins,
+        `[${ticket.ticketNumber}] ${templateName} awaiting your approval`,
+        `${templateName} awaiting your approval`,
+        `${esc(who)} raised <strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong>.` +
+          `<br/><br/>It goes to your service provider only once you approve it. You'll find it under <strong>Awaiting approval</strong> on your ticket list.`,
+        `the customer approval request for ${ticket.ticketNumber}`,
+      );
     } catch (err) {
-      this.logger.error('Failed to notify admins of a ticket awaiting approval', err instanceof Error ? err.stack : String(err));
+      this.logger.error('Failed to notify the company admins of a ticket awaiting their approval', err instanceof Error ? err.stack : String(err));
+    }
+  }
+
+  /** Active tenant Admins, with what an email needs. */
+  private tenantAdmins(clientId: string) {
+    return this.prisma.user.findMany({
+      where: { clientId, isActive: true, customerCompanyId: null, userRoles: { some: { role: { name: 'Admin' } } } },
+      select: { id: true, username: true, name: true, email: true },
+    });
+  }
+
+  /**
+   * One email per address, each sent and caught on its own — a client's address
+   * never shares a `To:` with anyone else's, and one bad address can't cost the
+   * others theirs. Duplicates and unusable addresses are dropped. Never throws.
+   */
+  private async mailEach(
+    clientId: string,
+    recipients: { email: string | null; username?: string | null; name?: string | null }[],
+    subject: string,
+    heading: string,
+    bodyHtml: string,
+    context: string,
+  ) {
+    try {
+      const seen = new Set<string>();
+      const list = recipients.filter((r) => {
+        const e = r.email?.trim().toLowerCase();
+        if (!e || !EMAIL_RE.test(e) || seen.has(e)) return false;
+        seen.add(e);
+        return true;
+      });
+      if (!list.length) return;
+      if (!(await this.mailer.isConfigured(clientId))) {
+        this.logger.warn(`SMTP not configured — ${context} not emailed`);
+        return;
+      }
+      const text = `${subject}\n\n${htmlToText(bodyHtml)}`;
+      for (const r of list) {
+        await this.mailer
+          .sendMail(
+            { to: r.email!.trim(), subject, html: reassignmentHtml(heading, esc(displayName(r)) || 'there', bodyHtml), text },
+            clientId,
+          )
+          .catch((err) => this.logger.error(`Failed to email ${context}`, err instanceof Error ? err.stack : String(err)));
+      }
+    } catch (err) {
+      this.logger.error(`Failed to email ${context}`, err instanceof Error ? err.stack : String(err));
     }
   }
 
@@ -465,6 +585,9 @@ export class TicketsService {
               // …but always their own request on an approval template, pending,
               // approved or rejected — it's how they follow the decision.
               { createdBy: viewer.id, approvalStatus: { not: 'NONE' } },
+              // …and any ticket whose reopen request was put to them as the
+              // client product's project manager — they have to read it to decide.
+              { reopenApproverUserId: viewer.id },
             ],
           }),
     };
@@ -615,7 +738,10 @@ export class TicketsService {
     });
     if (!ticket) throw new NotFoundException('Ticket not found');
     // Enrich with SAP product/module names for display (scalar IDs → names).
-    const [product, module, reopenedBy, reopenWindow, autoClose, worklogTotal, openTasks, raisedBy, rejectedBy] = await Promise.all([
+    // The people on a reopen request, by name, for the banners — one batched read.
+    const reopenPeopleIds = [ticket.reopenRequestedById, ticket.reopenApproverUserId, ticket.reopenDecidedById]
+      .filter((x): x is string => !!x);
+    const [product, module, reopenedBy, reopenWindow, autoClose, worklogTotal, openTasks, raisedBy, rejectedBy, reopenPeople] = await Promise.all([
       ticket.productId ? this.prisma.product.findUnique({ where: { id: ticket.productId }, select: { name: true, code: true } }) : null,
       ticket.moduleId ? this.prisma.productModule.findUnique({ where: { id: ticket.moduleId }, select: { name: true } }) : null,
       // Who sent it back — staff see the name on the reopen notice; the client
@@ -636,12 +762,19 @@ export class TicketsService {
       // Who asked and who refused, for the approval bars — only a ticket that
       // went through approval needs either.
       ticket.approvalStatus !== 'NONE' && ticket.createdBy
-        ? this.prisma.user.findUnique({ where: { id: ticket.createdBy }, select: { username: true, customerCompanyId: true } })
+        ? this.prisma.user.findUnique({ where: { id: ticket.createdBy }, select: { username: true, name: true, customerCompanyId: true } })
         : null,
       ticket.rejectedById
         ? this.prisma.user.findUnique({ where: { id: ticket.rejectedById }, select: { username: true } })
         : null,
+      reopenPeopleIds.length
+        ? this.prisma.user.findMany({ where: { id: { in: reopenPeopleIds } }, select: { id: true, username: true, name: true } })
+        : Promise.resolve([] as { id: string; username: string; name: string | null }[]),
     ]);
+    const personName = (uid: string | null) => {
+      const u = uid ? reopenPeople.find((p) => p.id === uid) : null;
+      return u ? displayName(u) : null;
+    };
     Object.assign(ticket, {
       productName: product?.name ?? null,
       productCode: product?.code ?? null,
@@ -663,9 +796,18 @@ export class TicketsService {
       // support-hours pool is charged, so every surface quotes one number.
       totalHoursSpent: Number(worklogTotal._sum.hours ?? 0),
       openTaskCount: openTasks,
-      raisedByName: raisedBy?.username ?? null,
+      raisedByName: raisedBy ? displayName(raisedBy) : null,
       raisedByCustomer: !!raisedBy?.customerCompanyId,
       rejectedByName: rejectedBy?.username ?? null,
+      reopenRequestedByName: personName(ticket.reopenRequestedById),
+      // Null with a request pending = no project manager was set, so the Admins decide.
+      reopenApproverName: personName(ticket.reopenApproverUserId),
+      reopenDecidedByName: personName(ticket.reopenDecidedById),
+      // Whether *this* viewer may decide the pending request — the screen shows
+      // the approval card off it. Same rule `assertMayDecideReopen` enforces.
+      canDecideReopen:
+        ticket.reopenRequestStatus === 'PENDING' && !!viewer &&
+        (isAdmin(viewer) || ticket.reopenApproverUserId === viewer.id),
     });
     // Customer side: must be the same company; an employee is further limited to
     // the tickets they raised, while the company admin sees all of them.
@@ -682,7 +824,8 @@ export class TicketsService {
     // one where they have an assigned task (possibly created by another agent),
     // or their own request on an approval template (see `visibleTicketWhere`).
     const ownRequest = !!viewer && ticket.createdBy === viewer.id && ticket.approvalStatus !== 'NONE';
-    if (viewer && !isAdmin(viewer) && !ownRequest && !ticket.technicians.some((t) => t.user.id === viewer.id)) {
+    const reopenApprover = !!viewer && ticket.reopenApproverUserId === viewer.id;
+    if (viewer && !isAdmin(viewer) && !ownRequest && !reopenApprover && !ticket.technicians.some((t) => t.user.id === viewer.id)) {
       const [isApprover, isTaskAssignee] = await Promise.all([
         this.prisma.ticketApproval.findFirst({
           where: { ticketId: id, approverUserId: viewer.id },
@@ -704,7 +847,7 @@ export class TicketsService {
    * work. Approving is what opens it; comments stay open throughout.
    */
   assertNotHeld(ticket: { approvalStatus: string }) {
-    if (ticket.approvalStatus === 'PENDING') {
+    if (ticket.approvalStatus === 'PENDING' || ticket.approvalStatus === 'PENDING_CUSTOMER') {
       throw new BadRequestException('This ticket is awaiting approval and cannot be worked on yet');
     }
     if (ticket.approvalStatus === 'REJECTED') {
@@ -1422,13 +1565,15 @@ export class TicketsService {
     viewer: TicketViewer,
   ) {
     const ticket = await this.findOne(id, clientId, viewer);
-    // Reopening says the fix didn't hold — on a customer's ticket that is the
-    // client's call alone, so provider staff (admins and consultants alike) are
-    // refused. An internal ticket has no client to make the call, so it stays with
-    // staff, the same way internal tickets keep the direct close.
-    if (ticket.customerCompanyId && !isCustomerSide(viewer)) {
+    // A customer's ticket is never reopened directly: the client *asks*
+    // (`requestReopen`) and the project manager or an Admin decides. Only an
+    // internal ticket — no client to ask — is reopened here, by staff, the same
+    // way internal tickets keep the direct close.
+    if (ticket.customerCompanyId) {
       throw new ForbiddenException(
-        'Only the client can reopen their own ticket. Raise a new ticket if the issue needs more work.',
+        isCustomerSide(viewer)
+          ? 'Send a reopen request instead — your project manager approves it before the ticket reopens.'
+          : 'Only the client can ask to reopen their own ticket. Raise a new ticket if the issue needs more work.',
       );
     }
     // A resolved ticket only stays reopenable for the tenant's window; after that
@@ -1445,6 +1590,23 @@ export class TicketsService {
     if (!reason) {
       throw new BadRequestException('Tell us why this ticket needs to be reopened');
     }
+    return this.applyReopen(ticket, clientId, reason, actorId, actorId);
+  }
+
+  /**
+   * The reopen itself, shared by a staff reopen of an internal ticket and an
+   * approved reopen request. `reopenedById` is who asked for it (shown on the
+   * ticket); `actorId` is who made it happen (and gets no notification).
+   */
+  private async applyReopen(
+    ticket: { id: string; ticketNumber: string; subject: string; resolvedById: string | null },
+    clientId: string,
+    reason: string,
+    reopenedById: string,
+    actorId: string,
+    extra: Prisma.TicketUpdateInput = {},
+  ) {
+    const id = ticket.id;
     const reopenStatus =
       (
         await this.prisma.picklistOption.findFirst({
@@ -1467,8 +1629,9 @@ export class TicketsService {
         reopenedCount: { increment: 1 },
         reopenReason: reason,
         reopenedAt: new Date(),
-        reopenedById: actorId,
+        reopenedById,
         updatedBy: actorId,
+        ...extra,
       },
     });
     await this.activity.log({
@@ -1526,6 +1689,246 @@ export class TicketsService {
         `Failed to emit reopen notification for ${ticket.ticketNumber}`,
         err instanceof Error ? err.stack : String(err),
       );
+    }
+  }
+
+  // ---- Reopen requests: the client asks, the project manager (or an Admin) decides ----
+
+  /**
+   * Who decides a reopen of this ticket: the project manager set on the client's
+   * product (`CustomerCompanyProduct.productManagerId`), if they are still an
+   * active member of staff. Null means nobody is set, and the tenant Admins decide.
+   */
+  private async reopenApproverFor(
+    clientId: string,
+    ticket: { customerCompanyId: string | null; productId: string | null },
+  ): Promise<string | null> {
+    if (!ticket.customerCompanyId || !ticket.productId) return null;
+    const link = await this.prisma.customerCompanyProduct.findFirst({
+      where: { customerCompanyId: ticket.customerCompanyId, productId: ticket.productId, customerCompany: { clientId } },
+      select: { productManager: { select: { id: true, isActive: true, clientId: true, customerCompanyId: true } } },
+    });
+    const pm = link?.productManager;
+    return pm && pm.isActive && pm.clientId === clientId && !pm.customerCompanyId ? pm.id : null;
+  }
+
+  /**
+   * The client asks to reopen a resolved or closed ticket. Nothing about the
+   * ticket changes — it stays closed until `approveReopenRequest`. Open to the
+   * employee who raised it and their company admin (`findOne` already limits an
+   * employee to their own tickets; `CustomerContactGuard` keeps staff out).
+   */
+  async requestReopen(id: string, clientId: string, dto: { reason?: string }, actorId: string, viewer: TicketViewer) {
+    const ticket = await this.findOne(id, clientId, viewer);
+    if (!isCustomerSide(viewer) || !ticket.customerCompanyId) {
+      throw new ForbiddenException('Only the client can ask to reopen their own ticket');
+    }
+    if (!ticket.resolvedAt) {
+      throw new BadRequestException('Only a resolved or closed ticket can be reopened');
+    }
+    if (ticket.reopenRequestStatus === 'PENDING') {
+      throw new BadRequestException('A reopen request for this ticket is already waiting for approval');
+    }
+    const window = await this.reopenWindow(clientId, ticket.resolvedAt);
+    if (!window.windowOpen) {
+      throw new BadRequestException(
+        `This ticket was resolved more than ${window.windowDays} days ago and can no longer be reopened. Please create a new ticket instead.`,
+      );
+    }
+    const reason = dto?.reason?.trim();
+    if (!reason) throw new BadRequestException('Tell us why this ticket needs to be reopened');
+
+    const approverId = await this.reopenApproverFor(clientId, ticket);
+    const updated = await this.prisma.ticket.update({
+      where: { id },
+      data: {
+        reopenRequestStatus: 'PENDING',
+        reopenRequestReason: reason,
+        reopenRequestedAt: new Date(),
+        reopenRequestedById: actorId,
+        reopenApproverUserId: approverId,
+        reopenDecidedAt: null,
+        reopenDecidedById: null,
+        reopenDecisionNote: null,
+        updatedBy: actorId,
+      },
+    });
+    const approver = approverId
+      ? await this.prisma.user.findUnique({ where: { id: approverId }, select: { id: true, username: true, name: true, email: true } })
+      : null;
+    await this.activity.log({
+      ticketId: id,
+      actorUserId: actorId,
+      type: 'REOPEN_REQUESTED',
+      summary: `Reopen requested, for ${approver ? `${displayName(approver)} (project manager)` : 'admin'} approval: ${reason}`,
+      meta: { reason, approverUserId: approverId },
+    });
+
+    // The decider hears about it: the project manager, or every Admin when
+    // there is none. Admins with a project manager in place still find it in
+    // their Awaiting approval list, but are not pinged for a call that isn't theirs.
+    try {
+      const [requester, company] = await Promise.all([
+        this.prisma.user.findUnique({ where: { id: actorId }, select: { username: true, name: true } }),
+        this.prisma.customerCompany.findUnique({ where: { id: ticket.customerCompanyId }, select: { name: true } }),
+      ]);
+      const deciders = approver ? [approver] : await this.tenantAdmins(clientId);
+      const who = `${requester ? displayName(requester) : 'The client'}${company ? ` (${company.name})` : ''}`;
+      await this.notifications.notifyMany(deciders.map((d) => d.id), {
+        clientId, type: 'TICKET_REOPEN_REQUESTED', ticketId: id,
+        title: `Reopen approval needed · ${ticket.ticketNumber}`,
+        body: `${who} asked to reopen ${ticket.subject}. Reason: ${reason}`,
+      });
+      await this.mailEach(
+        clientId,
+        deciders,
+        `[${ticket.ticketNumber}] Reopen request awaiting your approval`,
+        'Reopen request awaiting your approval',
+        `${esc(who)} asked to reopen <strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong>.` +
+          `<br/><br/><strong>Reason:</strong> ${esc(reason)}` +
+          `<br/><br/>The ticket stays closed until you approve it. You'll find it under <strong>Awaiting approval</strong> on the ticket list.`,
+        `the reopen request for ${ticket.ticketNumber}`,
+      );
+    } catch (err) {
+      this.logger.error(`Failed to notify the reopen request for ${ticket.ticketNumber}`, err instanceof Error ? err.stack : String(err));
+    }
+    return updated;
+  }
+
+  /** The client takes back a reopen request nobody has decided yet. */
+  async withdrawReopenRequest(id: string, clientId: string, actorId: string, viewer: TicketViewer) {
+    const ticket = await this.findOne(id, clientId, viewer);
+    if (!isCustomerSide(viewer)) throw new ForbiddenException('Only the client can withdraw their reopen request');
+    if (ticket.reopenRequestStatus !== 'PENDING') {
+      throw new BadRequestException('There is no reopen request waiting on this ticket');
+    }
+    const updated = await this.prisma.ticket.update({
+      where: { id },
+      data: { reopenRequestStatus: 'WITHDRAWN', reopenDecidedAt: new Date(), reopenDecidedById: actorId, updatedBy: actorId },
+    });
+    await this.activity.log({ ticketId: id, actorUserId: actorId, type: 'REOPEN_WITHDRAWN', summary: 'Reopen request withdrawn' });
+    // Take it off the decider's plate — a bell is enough for a non-event.
+    const deciders = ticket.reopenApproverUserId ? [{ id: ticket.reopenApproverUserId }] : await this.tenantAdmins(clientId);
+    await this.notifications
+      .notifyMany(deciders.map((d) => d.id), {
+        clientId, type: 'TICKET_REOPEN_WITHDRAWN', ticketId: id,
+        title: `Reopen request withdrawn · ${ticket.ticketNumber}`,
+        body: `The client no longer needs ${ticket.subject} reopened.`,
+      })
+      .catch((err) => this.logger.error('Failed to notify a withdrawn reopen request', err instanceof Error ? err.stack : String(err)));
+    return updated;
+  }
+
+  /** The named project manager, or any tenant Admin, decides a reopen request. */
+  private assertMayDecideReopen(ticket: { reopenRequestStatus: string; reopenApproverUserId: string | null }, viewer: TicketViewer) {
+    if (ticket.reopenRequestStatus !== 'PENDING') {
+      throw new BadRequestException('There is no reopen request waiting on this ticket');
+    }
+    if (!isAdmin(viewer) && ticket.reopenApproverUserId !== viewer.id) {
+      throw new ForbiddenException('Only the project manager for this client product, or an Admin, can decide this request');
+    }
+  }
+
+  async approveReopenRequest(id: string, clientId: string, actorId: string, viewer: TicketViewer) {
+    const ticket = await this.findOne(id, clientId, viewer);
+    this.assertMayDecideReopen(ticket, viewer);
+    const reason = ticket.reopenRequestReason ?? 'Reopen requested';
+    const decided = { reopenRequestStatus: 'APPROVED', reopenDecidedAt: new Date(), reopenDecidedById: actorId };
+    await this.activity.log({ ticketId: id, actorUserId: actorId, type: 'REOPEN_APPROVED', summary: 'Reopen request approved' });
+    // A ticket someone already moved out of Resolved/Closed needs no reopening —
+    // the request is simply recorded as approved.
+    const updated = ticket.resolvedAt
+      ? await this.applyReopen(ticket, clientId, reason, ticket.reopenRequestedById ?? actorId, actorId, decided)
+      : await this.prisma.ticket.update({ where: { id }, data: { ...decided, updatedBy: actorId } });
+    await this.notifyReopenDecision(clientId, ticket, 'APPROVED', actorId, null);
+    return updated;
+  }
+
+  async rejectReopenRequest(id: string, clientId: string, dto: { reason?: string }, actorId: string, viewer: TicketViewer) {
+    const ticket = await this.findOne(id, clientId, viewer);
+    this.assertMayDecideReopen(ticket, viewer);
+    const note = dto?.reason?.trim();
+    if (!note) throw new BadRequestException('Say why the reopen request is rejected — the client sees this');
+    const updated = await this.prisma.ticket.update({
+      where: { id },
+      data: {
+        reopenRequestStatus: 'REJECTED', reopenDecidedAt: new Date(), reopenDecidedById: actorId,
+        reopenDecisionNote: note, updatedBy: actorId,
+      },
+    });
+    await this.activity.log({
+      ticketId: id, actorUserId: actorId, type: 'REOPEN_REJECTED',
+      summary: `Reopen request rejected: ${note}`, meta: { reason: note },
+    });
+    await this.notifyReopenDecision(clientId, ticket, 'REJECTED', actorId, note);
+    return updated;
+  }
+
+  /**
+   * Tell the client who asked how their reopen request was decided (bell and
+   * email). On approval the assigned agent also gets an email of their own — the
+   * bells to agents and Admins are `applyReopen`'s. Never throws.
+   */
+  private async notifyReopenDecision(
+    clientId: string,
+    ticket: {
+      id: string; ticketNumber: string; subject: string; reopenRequestedById: string | null;
+      reopenRequestReason: string | null; technicians: { user: { id: string } }[];
+    },
+    decision: 'APPROVED' | 'REJECTED',
+    actorId: string,
+    note: string | null,
+  ) {
+    const approved = decision === 'APPROVED';
+    try {
+      const [requester, decider] = await Promise.all([
+        ticket.reopenRequestedById
+          ? this.prisma.user.findUnique({ where: { id: ticket.reopenRequestedById }, select: { id: true, username: true, name: true, email: true } })
+          : null,
+        this.prisma.user.findUnique({ where: { id: actorId }, select: { username: true, name: true } }),
+      ]);
+      const by = decider ? displayName(decider) : 'your provider';
+      const label = `<strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong>`;
+      if (requester) {
+        await this.notifications
+          .notify({
+            clientId, userId: requester.id, type: approved ? 'TICKET_REOPEN_APPROVED' : 'TICKET_REOPEN_REJECTED', ticketId: ticket.id,
+            title: `Reopen request ${approved ? 'approved' : 'not approved'} · ${ticket.ticketNumber}`,
+            body: approved ? `${by} approved it. The ticket is open again.` : `${by}: ${note ?? ''}`,
+          })
+          .catch((err) => this.logger.error('Failed to bell the reopen decision', err instanceof Error ? err.stack : String(err)));
+        await this.mailEach(
+          clientId,
+          [requester],
+          approved
+            ? `[${ticket.ticketNumber}] Your reopen request was approved`
+            : `[${ticket.ticketNumber}] Your reopen request was not approved`,
+          approved ? 'Reopen request approved' : 'Reopen request not approved',
+          approved
+            ? `${esc(by)} approved your request to reopen ${label}. The ticket is open again and the support team is back on it.`
+            : `${esc(by)} did not approve your request to reopen ${label}. The ticket stays closed.<br/><br/><strong>Reason:</strong> ${esc(note)}<br/><br/>If the issue still needs work, you can raise a new ticket.`,
+          `the reopen decision for ${ticket.ticketNumber}`,
+        );
+      }
+      // The agent who will pick it back up — a separate email, so the client's
+      // address never shares a To: with the provider's.
+      if (approved && ticket.technicians.length) {
+        const agents = await this.prisma.user.findMany({
+          where: { id: { in: ticket.technicians.map((t) => t.user.id) }, isActive: true, NOT: { id: actorId } },
+          select: { username: true, name: true, email: true },
+        });
+        await this.mailEach(
+          clientId,
+          agents,
+          `[${ticket.ticketNumber}] Ticket reopened`,
+          'Ticket reopened',
+          `${label} has been reopened at the client's request, approved by ${esc(by)}.` +
+            `<br/><br/><strong>Client's reason:</strong> ${esc(ticket.reopenRequestReason)}`,
+          `the reopen notice for ${ticket.ticketNumber}`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(`Failed to notify the reopen decision for ${ticket.ticketNumber}`, err instanceof Error ? err.stack : String(err));
     }
   }
 
@@ -1721,6 +2124,36 @@ export class TicketsService {
       type: 'CUSTOMER_APPROVED',
       summary: 'Approved by company admin — sent for provider approval',
     });
+    const templateName = ticket.template?.name ?? 'Ticket';
+    const approver = await this.prisma.user.findUnique({ where: { id: actorId }, select: { username: true, name: true } });
+    const approverName = approver ? displayName(approver) : null;
+    // Now it is the provider's call: their Admins hear about it the way they
+    // would have had the request been raised straight to them.
+    await this.notifyApprovalRequested(clientId, ticket, templateName, ticket.createdBy, approverName);
+    // …and the employee who raised it learns it has moved on.
+    if (ticket.createdBy && ticket.createdBy !== actorId) {
+      const raiser = await this.prisma.user.findUnique({
+        where: { id: ticket.createdBy }, select: { id: true, username: true, name: true, email: true },
+      });
+      if (raiser) {
+        await this.notifications
+          .notify({
+            clientId, userId: raiser.id, type: 'TICKET_CUSTOMER_APPROVED', ticketId: id,
+            title: `${ticket.ticketNumber} sent to your provider`,
+            body: `${approverName ?? 'Your company admin'} approved your ${templateName}. It now waits for your provider's approval.`,
+          })
+          .catch((err) => this.logger.error('Failed to bell the customer approval', err instanceof Error ? err.stack : String(err)));
+        await this.mailEach(
+          clientId,
+          [raiser],
+          `[${ticket.ticketNumber}] Your ${templateName} was sent to your provider`,
+          'Sent to your provider',
+          `${esc(approverName ?? 'Your company admin')} approved your ${esc(templateName)} <strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong>.` +
+            `<br/><br/>It now waits for your service provider's approval. You'll hear as soon as it is decided.`,
+          `the customer approval notice for ${ticket.ticketNumber}`,
+        );
+      }
+    }
     return updated;
   }
 
@@ -1758,6 +2191,15 @@ export class TicketsService {
       summary: 'Ticket rejected by company admin',
       meta: { reason },
     });
+    if (ticket.createdBy && ticket.createdBy !== actorId) {
+      await this.notifications
+        .notify({
+          clientId, userId: ticket.createdBy, type: 'TICKET_REJECTED', ticketId: id,
+          title: `${ticket.ticketNumber} not approved`,
+          body: `Your company admin did not approve it. Reason: ${reason}`,
+        })
+        .catch((err) => this.logger.error('Failed to bell the customer rejection', err instanceof Error ? err.stack : String(err)));
+    }
     await this.notifyRejection(updated, clientId);
     return updated;
   }

@@ -32,19 +32,37 @@ export const MAX_IMPORT_ROWS = 1000;
 const widths = (columns: SheetColumn<any>[]) =>
   columns.map((c) => ({ wch: c.width ?? Math.max(12, c.header.length + 2) }));
 
+/** One sheet of a multi-sheet export. */
+export interface SheetSpec<T> {
+  name: string;
+  columns: SheetColumn<T>[];
+  rows: T[];
+}
+
+/**
+ * Several sheets in one workbook, in the order given. The first sheet is the one
+ * `readSheet` reads back, so a screen whose export is also its import keeps its
+ * importable rows first and puts read-back detail on the sheets after it.
+ */
+export function exportWorkbook(sheets: SheetSpec<any>[]): Buffer {
+  const wb = XLSX.utils.book_new();
+  for (const { name, columns, rows } of sheets) {
+    const body = rows.map((row) =>
+      columns.map((c) => {
+        const v = c.value?.(row);
+        return v === undefined || v === null ? '' : v;
+      }),
+    );
+    const sheet = XLSX.utils.aoa_to_sheet([columns.map((c) => c.header), ...body]);
+    sheet['!cols'] = widths(columns);
+    XLSX.utils.book_append_sheet(wb, sheet, name);
+  }
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+}
+
 /** A sheet of `rows` under `columns`, as a workbook buffer. */
 export function exportSheet<T>(sheetName: string, columns: SheetColumn<T>[], rows: T[]): Buffer {
-  const body = rows.map((row) =>
-    columns.map((c) => {
-      const v = c.value?.(row);
-      return v === undefined || v === null ? '' : v;
-    }),
-  );
-  const sheet = XLSX.utils.aoa_to_sheet([columns.map((c) => c.header), ...body]);
-  sheet['!cols'] = widths(columns);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, sheet, sheetName);
-  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  return exportWorkbook([{ name: sheetName, columns, rows }]);
 }
 
 /**

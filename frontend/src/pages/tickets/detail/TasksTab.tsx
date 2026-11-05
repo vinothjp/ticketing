@@ -89,6 +89,9 @@ export default function TasksTab({
   // task's own assignee, who is the person that called it finished. Mirrors
   // `assertMayReopen` on the backend.
   const mayReopen = isAdmin || (!!ticketAssigneeId && ticketAssigneeId === user?.id);
+  // Editing a task's fields (title, description, assignee, due date): the
+  // ticket's agent, the task's own assignee, or an admin — as `assertMayEdit`.
+  const mayEdit = (t: Task) => mayReopen || (!!t.assigneeUserId && t.assigneeUserId === user?.id);
   const isCompleted = (t: Task) => t.status === COMPLETED_TASK_STATUS;
 
   const { data: tasks = [] } = useQuery<Task[]>({
@@ -578,6 +581,7 @@ export default function TasksTab({
         taskId={openTaskId}
         users={users}
         canTrack={(t) => mayTrack(t)}
+        canEdit={(t) => mayEdit(t)}
         canReopen={mayReopen}
         pendingStatus={pendingStatus}
         onPendingHandled={() => setPendingStatus(null)}

@@ -710,6 +710,9 @@ model Template {
   defaultPriority     String?
   sortOrder           Int            @default(0)
   isActive            Boolean        @default(true)
+  // Tickets an agent or customer raises on this template start PENDING and wait
+  // for a tenant Admin to approve them; an Admin's own tickets go straight through.
+  requiresApproval    Boolean        @default(false)
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
   createdBy           String?

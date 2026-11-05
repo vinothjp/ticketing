@@ -267,6 +267,7 @@ export class TasksService {
 
   async create(ticketId: string, clientId: string, dto: CreateTaskDto, actorId: string, viewer: TicketViewer) {
     const ticket = await this.tickets.findOne(ticketId, clientId, viewer);
+    this.tickets.assertNotHeld(ticket);
     // Both counters are max+1 rather than a count, so deleting a task never hands
     // its number to the next one — the grid's Task ID has to keep meaning the same
     // task in a comment or a conversation about it.

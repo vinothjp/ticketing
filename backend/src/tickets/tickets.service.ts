@@ -65,6 +65,10 @@ function joinEmails(addresses: (string | null | undefined)[]): string {
   return [...new Set(addresses.filter((a): a is string => !!a && EMAIL_RE.test(a)))].join(', ');
 }
 
+/** Typed text made safe to drop into an email's HTML. */
+const esc = (s: string | null | undefined) =>
+  (s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
 /** House-style email body: 480px wrapper, coloured header bar, white card. */
 function reassignmentHtml(heading: string, greetName: string | null, bodyHtml: string): string {
   return `
@@ -102,9 +106,10 @@ export class TicketsService {
   ) {}
 
   async create(dto: CreateTicketDto, clientId: string, actorId: string, viewer?: TicketViewer) {
-    // No approval gate — a customer ticket becomes active immediately and is
-    // auto-routed to a consultant. A customer can only raise a ticket under their
-    // own company and can't self-assign technicians (forced server-side).
+    // A customer ticket becomes active immediately and is auto-routed to a
+    // consultant — unless its template needs approval (below). A customer can
+    // only raise a ticket under their own company and can't self-assign
+    // technicians (forced server-side).
     const isCustomerTicket = viewer ? isCustomerSide(viewer) : false;
     let requestorDefaults: { name?: string; email?: string; companyId?: string } = {};
     if (viewer && isCustomerSide(viewer)) {
@@ -152,6 +157,12 @@ export class TicketsService {
       dto.templateId,
       clientId,
     );
+    // A template that needs approval (Change Request) holds an agent's or a
+    // customer's ticket at PENDING until a tenant Admin decides it; an Admin's
+    // own ticket goes straight through. While it waits nobody is assigned and
+    // its SLA clock does not run — both start in `approve()`.
+    const needsApproval = template.requiresApproval && !(viewer && isAdmin(viewer));
+    if (needsApproval) dto = { ...dto, technicianUserIds: [] };
 
     // Server-side is the source of truth for "required" — it's tenant-configured
     // data, so the client's zod validation alone can't be trusted. We also
@@ -227,7 +238,7 @@ export class TicketsService {
           // has stood in its opening status, rather than nothing until someone
           // touches it.
           statusChangedAt: new Date(),
-          approvalStatus: 'NONE',
+          approvalStatus: needsApproval ? 'PENDING' : 'NONE',
           productId: dto.productId,
           moduleId: dto.moduleId,
           consultantType: dto.consultantType,
@@ -242,10 +253,12 @@ export class TicketsService {
           ticketCategory: dto.ticketCategory,
           subCategory: dto.subCategory,
           notifyEmails: dto.notifyEmails ?? [],
-          dueDate: dto.dueDate ? new Date(dto.dueDate) : slaDue,
+          // A held ticket keeps its SLA hours but no deadline yet: the clock
+          // starts on approval, so time spent waiting never counts against it.
+          dueDate: dto.dueDate ? new Date(dto.dueDate) : needsApproval ? undefined : slaDue,
           expectedResolutionDate: dto.expectedResolutionDate
             ? new Date(dto.expectedResolutionDate)
-            : slaDue,
+            : needsApproval ? undefined : slaDue,
           slaHours,
           subject: dto.subject ?? '',
           description: dto.description ?? '',
@@ -267,52 +280,17 @@ export class TicketsService {
       summary: 'Ticket created',
     });
 
-    // Auto-route a customer ticket to a consultant configured for it. The tiers
-    // are tried most-specific-first, and WITHIN each tier the ordered list is
-    // walked and the first consultant who is free — active and holding no open
-    // ticket — takes it. A tier is left only when every candidate in it is busy
-    // or inactive; when nobody anywhere is free the ticket stays unassigned for
-    // a manager to pick, with no fallback to the primary. Same for "Others"/no
-    // module, which names no consultant at all.
-    //
-    // The whole block is gated on the client's own `autoAssignTickets` switch —
-    // off means every ticket they raise is assigned by hand. Building the
-    // availability test inside the guard keeps a manual-routing client at zero
-    // extra queries. Racy by design: two tickets created in the same instant can
-    // both see the same consultant as free.
-    let assignedConsultantId: string | null = null;
-    if (isCustomerTicket && (await this.customerProducts.autoAssignEnabled(clientId, ticket.customerCompanyId))) {
-      const track = dto.consultantType === 'TECHNICAL' ? 'TECHNICAL' : dto.consultantType === 'FUNCTIONAL' ? 'FUNCTIONAL' : null;
-      const isEligible = await this.consultantAvailability(clientId);
-      // 1) & 2) The customer's own consultants — product-scoped first, then their
-      //    default set — override the product's routing.
-      assignedConsultantId = await this.customerProducts.resolveCustomerConsultant(
-        clientId, ticket.customerCompanyId, dto.productId ?? null, dto.moduleId ?? null, track, isEligible,
-      );
-      // 3) Otherwise fall back to the consultants set on the Product screen —
-      //    the module's list first, then the product-level list for an unsplit
-      //    product.
-      if (!assignedConsultantId && dto.productId) {
-        if (dto.moduleId) {
-          assignedConsultantId = await this.products.resolveConsultant(clientId, dto.moduleId, track, isEligible);
-        }
-        assignedConsultantId ??= await this.products.resolveProductConsultant(clientId, dto.productId, track, isEligible);
-      }
-      if (assignedConsultantId) {
-        await this.prisma.ticketTechnician.create({ data: { ticketId: ticket.id, userId: assignedConsultantId } });
-        const c = await this.prisma.user.findUnique({ where: { id: assignedConsultantId }, select: { username: true } });
-        await this.activity.log({
-          ticketId: ticket.id,
-          actorUserId: actorId,
-          type: 'ASSIGNED',
-          summary: `Auto-assigned to ${c?.username ?? 'consultant'}`,
-          meta: { userId: assignedConsultantId, auto: true },
-        });
-      }
+    // A held ticket is routed when it is approved, not now.
+    const assignedConsultantId =
+      isCustomerTicket && !needsApproval ? await this.autoRoute(clientId, ticket, actorId) : null;
+
+    if (needsApproval) {
+      await this.notifyApprovalRequested(clientId, ticket, template.name, actorId);
     }
 
     // In-app notifications for a customer-created ticket: acknowledge the creator,
-    // alert every provider admin, and alert the assigned consultant.
+    // alert every provider admin, and alert the assigned consultant. A held
+    // ticket's admins already got the approval request instead.
     if (isCustomerTicket && viewer) {
       await this.emitTicketNotifications({
         clientId,
@@ -321,10 +299,96 @@ export class TicketsService {
         subject: ticket.subject,
         creatorUserId: viewer.id,
         assignedConsultantId,
+        skipAdmins: needsApproval,
       });
     }
 
     return this.prisma.ticket.findUnique({ where: { id: ticket.id }, include: { technicians: { include: { user: { select: { id: true, username: true } } } }, template: true } });
+  }
+
+  /**
+   * Auto-route a customer ticket to a consultant configured for it. The tiers
+   * are tried most-specific-first, and WITHIN each tier the ordered list is
+   * walked and the first consultant who is free — active and holding no open
+   * ticket — takes it. A tier is left only when every candidate in it is busy
+   * or inactive; when nobody anywhere is free the ticket stays unassigned for
+   * a manager to pick, with no fallback to the primary. Same for "Others"/no
+   * module, which names no consultant at all.
+   *
+   * The whole block is gated on the client's own `autoAssignTickets` switch —
+   * off means every ticket they raise is assigned by hand. Building the
+   * availability test inside the guard keeps a manual-routing client at zero
+   * extra queries. Racy by design: two tickets created in the same instant can
+   * both see the same consultant as free.
+   *
+   * Runs at creation, or at approval for a ticket that was held.
+   */
+  private async autoRoute(
+    clientId: string,
+    ticket: { id: string; customerCompanyId: string | null; productId: string | null; moduleId: string | null; consultantType: string | null },
+    actorId: string,
+  ): Promise<string | null> {
+    if (!(await this.customerProducts.autoAssignEnabled(clientId, ticket.customerCompanyId))) return null;
+    const track = ticket.consultantType === 'TECHNICAL' ? 'TECHNICAL' : ticket.consultantType === 'FUNCTIONAL' ? 'FUNCTIONAL' : null;
+    const isEligible = await this.consultantAvailability(clientId);
+    // 1) & 2) The customer's own consultants — product-scoped first, then their
+    //    default set — override the product's routing.
+    let assignedConsultantId = await this.customerProducts.resolveCustomerConsultant(
+      clientId, ticket.customerCompanyId, ticket.productId, ticket.moduleId, track, isEligible,
+    );
+    // 3) Otherwise fall back to the consultants set on the Product screen —
+    //    the module's list first, then the product-level list for an unsplit
+    //    product.
+    if (!assignedConsultantId && ticket.productId) {
+      if (ticket.moduleId) {
+        assignedConsultantId = await this.products.resolveConsultant(clientId, ticket.moduleId, track, isEligible);
+      }
+      assignedConsultantId ??= await this.products.resolveProductConsultant(clientId, ticket.productId, track, isEligible);
+    }
+    if (assignedConsultantId) {
+      await this.prisma.ticketTechnician.create({ data: { ticketId: ticket.id, userId: assignedConsultantId } });
+      const c = await this.prisma.user.findUnique({ where: { id: assignedConsultantId }, select: { username: true } });
+      await this.activity.log({
+        ticketId: ticket.id,
+        actorUserId: actorId,
+        type: 'ASSIGNED',
+        summary: `Auto-assigned to ${c?.username ?? 'consultant'}`,
+        meta: { userId: assignedConsultantId, auto: true },
+      });
+    }
+    return assignedConsultantId;
+  }
+
+  /** Bell every tenant Admin that a held ticket is waiting for their decision. */
+  private async notifyApprovalRequested(
+    clientId: string,
+    ticket: { id: string; ticketNumber: string; subject: string; customerCompanyId: string | null },
+    templateName: string,
+    raiserId: string,
+  ) {
+    try {
+      const [raiser, company, admins] = await Promise.all([
+        this.prisma.user.findUnique({ where: { id: raiserId }, select: { username: true, customerCompanyId: true } }),
+        ticket.customerCompanyId
+          ? this.prisma.customerCompany.findUnique({ where: { id: ticket.customerCompanyId }, select: { name: true } })
+          : null,
+        this.prisma.user.findMany({
+          where: { clientId, isActive: true, userRoles: { some: { role: { name: 'Admin' } } } },
+          select: { id: true },
+        }),
+      ]);
+      // A customer reads as "bob (Globex Ltd) raised…"; an agent's company goes
+      // after the subject, since it's the client the work is for, not theirs.
+      const who = raiser?.customerCompanyId && company ? `${raiser.username} (${company.name})` : raiser?.username ?? 'Someone';
+      const forWhom = !raiser?.customerCompanyId && company ? ` (${company.name})` : '';
+      await this.notifications.notifyMany(admins.map((a) => a.id), {
+        clientId, type: 'TICKET_APPROVAL_REQUESTED', ticketId: ticket.id,
+        title: `${templateName} awaiting your approval`,
+        body: `${who} raised ${ticket.ticketNumber} · ${ticket.subject}${forWhom}`,
+      });
+    } catch (err) {
+      this.logger.error('Failed to notify admins of a ticket awaiting approval', err instanceof Error ? err.stack : String(err));
+    }
   }
 
   private async emitTicketNotifications(p: {
@@ -334,6 +398,7 @@ export class TicketsService {
     subject: string;
     creatorUserId: string;
     assignedConsultantId: string | null;
+    skipAdmins?: boolean;
   }) {
     const label = `${p.ticketNumber} — ${p.subject}`;
     try {
@@ -344,14 +409,16 @@ export class TicketsService {
         body: `We've received your ticket ${p.ticketNumber} and will get back to you shortly.`,
       });
       // Alert every provider admin.
-      const admins = await this.prisma.user.findMany({
-        where: { clientId: p.clientId, isActive: true, userRoles: { some: { role: { name: 'Admin' } } } },
-        select: { id: true },
-      });
-      await this.notifications.notifyMany(admins.map((a) => a.id), {
-        clientId: p.clientId, type: 'TICKET_CREATED', ticketId: p.ticketId,
-        title: 'New ticket created', body: `New ticket ${label}`,
-      });
+      if (!p.skipAdmins) {
+        const admins = await this.prisma.user.findMany({
+          where: { clientId: p.clientId, isActive: true, userRoles: { some: { role: { name: 'Admin' } } } },
+          select: { id: true },
+        });
+        await this.notifications.notifyMany(admins.map((a) => a.id), {
+          clientId: p.clientId, type: 'TICKET_CREATED', ticketId: p.ticketId,
+          title: 'New ticket created', body: `New ticket ${label}`,
+        });
+      }
       // Alert the assigned consultant.
       if (p.assignedConsultantId) {
         await this.notifications.notify({
@@ -384,13 +451,20 @@ export class TicketsService {
           // own approval stage (not yet forwarded to us).
           { approvalStatus: { not: 'PENDING_CUSTOMER' } }
         : {
-            // Agents never see tickets still awaiting approval.
-            approvalStatus: { in: ['NONE', 'APPROVED'] },
             OR: [
-              { technicians: { some: { userId: viewer.id } } },
-              { approvals: { some: { approverUserId: viewer.id } } },
-              // Tickets on which the viewer has an assigned task (possibly created by another agent).
-              { tasks: { some: { assigneeUserId: viewer.id } } },
+              {
+                // Agents never see someone else's ticket still awaiting approval.
+                approvalStatus: { in: ['NONE', 'APPROVED'] },
+                OR: [
+                  { technicians: { some: { userId: viewer.id } } },
+                  { approvals: { some: { approverUserId: viewer.id } } },
+                  // Tickets on which the viewer has an assigned task (possibly created by another agent).
+                  { tasks: { some: { assigneeUserId: viewer.id } } },
+                ],
+              },
+              // …but always their own request on an approval template, pending,
+              // approved or rejected — it's how they follow the decision.
+              { createdBy: viewer.id, approvalStatus: { not: 'NONE' } },
             ],
           }),
     };
@@ -541,7 +615,7 @@ export class TicketsService {
     });
     if (!ticket) throw new NotFoundException('Ticket not found');
     // Enrich with SAP product/module names for display (scalar IDs → names).
-    const [product, module, reopenedBy, reopenWindow, autoClose, worklogTotal, openTasks] = await Promise.all([
+    const [product, module, reopenedBy, reopenWindow, autoClose, worklogTotal, openTasks, raisedBy, rejectedBy] = await Promise.all([
       ticket.productId ? this.prisma.product.findUnique({ where: { id: ticket.productId }, select: { name: true, code: true } }) : null,
       ticket.moduleId ? this.prisma.productModule.findUnique({ where: { id: ticket.moduleId }, select: { name: true } }) : null,
       // Who sent it back — staff see the name on the reopen notice; the client
@@ -559,6 +633,14 @@ export class TicketsService {
       this.prisma.ticketTask.count({
         where: { ticketId: id, status: { notIn: SETTLED_TASK_STATUSES } },
       }),
+      // Who asked and who refused, for the approval bars — only a ticket that
+      // went through approval needs either.
+      ticket.approvalStatus !== 'NONE' && ticket.createdBy
+        ? this.prisma.user.findUnique({ where: { id: ticket.createdBy }, select: { username: true, customerCompanyId: true } })
+        : null,
+      ticket.rejectedById
+        ? this.prisma.user.findUnique({ where: { id: ticket.rejectedById }, select: { username: true } })
+        : null,
     ]);
     Object.assign(ticket, {
       productName: product?.name ?? null,
@@ -581,6 +663,9 @@ export class TicketsService {
       // support-hours pool is charged, so every surface quotes one number.
       totalHoursSpent: Number(worklogTotal._sum.hours ?? 0),
       openTaskCount: openTasks,
+      raisedByName: raisedBy?.username ?? null,
+      raisedByCustomer: !!raisedBy?.customerCompanyId,
+      rejectedByName: rejectedBy?.username ?? null,
     });
     // Customer side: must be the same company; an employee is further limited to
     // the tickets they raised, while the company admin sees all of them.
@@ -594,8 +679,10 @@ export class TicketsService {
       return ticket;
     }
     // A non-admin can access a ticket they're assigned to, a named approver on,
-    // or one where they have an assigned task (possibly created by another agent).
-    if (viewer && !isAdmin(viewer) && !ticket.technicians.some((t) => t.user.id === viewer.id)) {
+    // one where they have an assigned task (possibly created by another agent),
+    // or their own request on an approval template (see `visibleTicketWhere`).
+    const ownRequest = !!viewer && ticket.createdBy === viewer.id && ticket.approvalStatus !== 'NONE';
+    if (viewer && !isAdmin(viewer) && !ownRequest && !ticket.technicians.some((t) => t.user.id === viewer.id)) {
       const [isApprover, isTaskAssignee] = await Promise.all([
         this.prisma.ticketApproval.findFirst({
           where: { ticketId: id, approverUserId: viewer.id },
@@ -611,6 +698,20 @@ export class TicketsService {
     return ticket;
   }
 
+  /**
+   * Nobody works on a ticket still waiting for approval, or one refused it —
+   * the person who raised it can follow it, but it is not yet (or never) real
+   * work. Approving is what opens it; comments stay open throughout.
+   */
+  assertNotHeld(ticket: { approvalStatus: string }) {
+    if (ticket.approvalStatus === 'PENDING') {
+      throw new BadRequestException('This ticket is awaiting approval and cannot be worked on yet');
+    }
+    if (ticket.approvalStatus === 'REJECTED') {
+      throw new BadRequestException('This ticket request was rejected and cannot be worked on');
+    }
+  }
+
   async update(
     id: string,
     clientId: string,
@@ -619,6 +720,7 @@ export class TicketsService {
     viewer: TicketViewer,
   ) {
     const ticket = await this.findOne(id, clientId, viewer);
+    this.assertNotHeld(ticket);
 
     // A status change can carry two lifecycle events: closing the ticket (stamps
     // closedDate) or resolving it (stamps resolvedAt and notifies the client).
@@ -1441,15 +1543,21 @@ export class TicketsService {
           orderBy: { sortOrder: 'asc' },
         })
       )?.value ?? 'Open';
+    const now = new Date();
+    // The SLA clock starts now: a held ticket was created with its SLA hours but
+    // no deadline, so the wait for a decision never counts against it. A
+    // deadline someone typed on the form is left as they set it.
+    const slaDue = ticket.slaHours && !ticket.dueDate ? new Date(now.getTime() + ticket.slaHours * 3600 * 1000) : null;
     const updated = await this.prisma.ticket.update({
       where: { id },
       data: {
         approvalStatus: 'APPROVED',
         approvedById: actorId,
-        approvedAt: new Date(),
+        approvedAt: now,
         // Now a real, assignable ticket — move it to the default open status.
         ticketStatus: initial,
-        statusChangedAt: new Date(),
+        statusChangedAt: now,
+        ...(slaDue && { dueDate: slaDue, expectedResolutionDate: ticket.expectedResolutionDate ?? slaDue }),
         updatedBy: actorId,
       },
     });
@@ -1459,6 +1567,23 @@ export class TicketsService {
       type: 'APPROVED',
       summary: 'Ticket approved',
     });
+    // A customer's ticket is routed now, exactly as it would have been on
+    // creation had it not needed approval. Staff-raised tickets never are.
+    const raiser = ticket.createdBy
+      ? await this.prisma.user.findUnique({ where: { id: ticket.createdBy }, select: { customerCompanyId: true } })
+      : null;
+    if (raiser?.customerCompanyId && ticket.technicians.length === 0) {
+      const consultantId = await this.autoRoute(clientId, ticket, actorId);
+      if (consultantId) {
+        await this.notifications
+          .notify({
+            clientId, userId: consultantId, type: 'TICKET_ASSIGNED', ticketId: id,
+            title: 'Ticket assigned to you', body: `You've been assigned ${ticket.ticketNumber} — ${ticket.subject}`,
+          })
+          .catch((err) => this.logger.error('Failed to notify auto-assigned consultant', err instanceof Error ? err.stack : String(err)));
+      }
+    }
+    await this.notifyDecision(clientId, { ...updated, templateName: ticket.template?.name ?? 'Ticket' }, 'APPROVED');
     return updated;
   }
 
@@ -1496,8 +1621,86 @@ export class TicketsService {
       summary: 'Ticket request rejected',
       meta: { reason },
     });
-    await this.notifyRejection(updated, clientId);
+    await this.notifyDecision(clientId, { ...updated, templateName: ticket.template?.name ?? 'Ticket' }, 'REJECTED');
     return updated;
+  }
+
+  /**
+   * Tell whoever raised a held ticket how it was decided: a bell for the person
+   * who raised it, and an email to them and to the requester named on the
+   * ticket when that's someone else (an agent raising a change for a customer).
+   * Each address is its own send, so a customer and a provider address never
+   * share a `To:`.
+   */
+  private async notifyDecision(
+    clientId: string,
+    ticket: {
+      id: string; ticketNumber: string; subject: string; templateName: string; createdBy: string | null;
+      requestorEmail: string | null; requestorName: string | null; rejectionReason: string | null;
+      slaHours: number | null; customerCompanyId: string | null;
+    },
+    decision: 'APPROVED' | 'REJECTED',
+  ) {
+    const approved = decision === 'APPROVED';
+    const label = `${ticket.ticketNumber} · ${ticket.subject}`;
+    try {
+      const raiser = ticket.createdBy
+        ? await this.prisma.user.findUnique({ where: { id: ticket.createdBy }, select: { id: true, username: true, email: true } })
+        : null;
+      if (raiser) {
+        await this.notifications.notify({
+          clientId, userId: raiser.id, type: approved ? 'TICKET_APPROVED' : 'TICKET_REJECTED', ticketId: ticket.id,
+          title: `${ticket.ticketNumber} ${approved ? 'approved' : 'rejected'}`,
+          body: approved
+            ? `Your ${ticket.templateName} was approved. Its SLA has started.`
+            : `Reason: ${ticket.rejectionReason ?? ''}`,
+        });
+      }
+
+      if (!(await this.mailer.isConfigured(clientId))) {
+        this.logger.warn(`SMTP not configured — ${decision.toLowerCase()} email for ${ticket.ticketNumber} not sent`);
+        return;
+      }
+      const company = ticket.customerCompanyId
+        ? await this.prisma.customerCompany.findUnique({ where: { id: ticket.customerCompanyId }, select: { name: true } })
+        : null;
+      const recipients = new Map<string, string | null>();
+      if (raiser?.email && EMAIL_RE.test(raiser.email)) recipients.set(raiser.email.toLowerCase(), raiser.username);
+      if (ticket.requestorEmail && EMAIL_RE.test(ticket.requestorEmail) && !recipients.has(ticket.requestorEmail.toLowerCase())) {
+        recipients.set(ticket.requestorEmail.toLowerCase(), ticket.requestorName);
+      }
+      const what = `Your ${esc(ticket.templateName)} <strong>${esc(label)}</strong>${company ? ` for ${esc(company.name)}` : ''}`;
+      const body = approved
+        ? `${what} has been approved. It is now an open ticket${ticket.slaHours ? `, and its SLA started on approval: it is due to be resolved within ${ticket.slaHours} hours` : ''}.`
+        : `${what} was not approved.<br/><br/><strong>Reason:</strong> ${esc(ticket.rejectionReason)}<br/><br/>No work will be done on this ticket. You can raise a new request at any time.`;
+      const subject = approved
+        ? `[${ticket.ticketNumber}] Your ${ticket.templateName} has been approved`
+        : `[${ticket.ticketNumber}] Your ${ticket.templateName} was not approved`;
+      // One failed address must not cost the other theirs, so each send is
+      // caught on its own.
+      for (const [to, name] of recipients) {
+        await this.mailer
+          .sendMail(
+            {
+              to,
+              subject,
+              html: reassignmentHtml(approved ? 'Request approved' : 'Request not approved', esc(name) || 'there', body),
+              text: `${subject}\n\n${body.replace(/<br\/>/g, '\n').replace(/<[^>]+>/g, '')
+                .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&')}`,
+            },
+            clientId,
+          )
+          .catch((err) => this.logger.error(
+            `Failed to email the ${decision.toLowerCase()} notice for ${ticket.ticketNumber}`,
+            err instanceof Error ? err.stack : String(err),
+          ));
+      }
+    } catch (err) {
+      this.logger.error(
+        `Failed to send the ${decision.toLowerCase()} notice for ${ticket.ticketNumber}`,
+        err instanceof Error ? err.stack : String(err),
+      );
+    }
   }
 
   // ---- Stage 1: customer company admin approves/rejects an employee ticket ----

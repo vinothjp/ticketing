@@ -79,6 +79,12 @@ interface TicketDetail {
   // worklog or task endpoints — still sees the time charged to their contract.
   totalHoursSpent?: number;
   openTaskCount?: number;
+  // Approval bars: who raised a held ticket, and who refused it.
+  createdBy?: string | null;
+  raisedByName?: string | null;
+  raisedByCustomer?: boolean;
+  rejectedByName?: string | null;
+  rejectedAt?: string | null;
   createdAt: string;
   customFields: Record<string, unknown>;
   template: { id: string; name: string; category?: string | null };
@@ -433,11 +439,17 @@ export default function TicketDetailPage() {
           </div>
         </div>
       )}
-      {/* Stage 2: tenant Admin approves/rejects a customer-submitted ticket. */}
+      {/* Stage 2: tenant Admin approves/rejects a ticket held by its template's
+          "Needs admin approval" switch — raised by an agent or a customer. */}
       {isTenantAdmin && ticket.approvalStatus === 'PENDING' && (
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
-          <div className="text-sm text-amber-700 dark:text-amber-300">
-            This ticket was submitted by a customer and is awaiting your approval.
+          <div className="min-w-0 space-y-0.5 text-amber-700 dark:text-amber-300">
+            <div className="text-sm font-medium">{ticket.template?.name ?? 'Ticket'} awaiting your approval</div>
+            <div className="text-xs">
+              Raised by {ticket.raisedByName ?? 'someone'} ({ticket.raisedByCustomer ? 'customer' : 'agent'}) on {fmtDateTime(ticket.createdAt)}
+              {ticket.customerCompany ? ` for ${ticket.customerCompany.name}` : ''}.
+              Nobody can be assigned or work on it until it is approved; its SLA clock starts on approval.
+            </div>
           </div>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" onClick={() => setRejectOpen(true)}>Reject</Button>
@@ -480,11 +492,30 @@ export default function TicketDetailPage() {
           )}
         </div>
       )}
+      {/* Everyone else on a held ticket — the agent or customer who raised it —
+          sees why nothing is happening yet. No actions: the decision is the Admin's. */}
+      {!isTenantAdmin && ticket.approvalStatus === 'PENDING' && (
+        <div className="mb-5 flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-amber-700 dark:text-amber-300">
+          <Clock className="mt-0.5 size-4 shrink-0" />
+          <div className="min-w-0 space-y-0.5">
+            <div className="text-sm font-medium">Waiting for admin approval</div>
+            <div className="text-xs">
+              {ticket.template?.name ?? 'This'} tickets need an Admin's approval before work starts.
+              {ticket.createdBy === user?.id && " You'll get an email and a notification as soon as it's decided."}
+            </div>
+          </div>
+        </div>
+      )}
       {ticket.approvalStatus === 'REJECTED' && (
         <div className="mb-5 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3">
           <div className="text-sm font-medium text-destructive">This ticket request was rejected.</div>
           {ticket.rejectionReason && (
             <div className="mt-1 text-sm text-foreground whitespace-pre-wrap"><span className="text-muted-foreground">Reason: </span>{ticket.rejectionReason}</div>
+          )}
+          {(ticket.rejectedByName || ticket.rejectedAt) && (
+            <div className="mt-1 text-xs text-muted-foreground">
+              Rejected{ticket.rejectedByName ? ` by ${ticket.rejectedByName}` : ''}{ticket.rejectedAt ? ` · ${fmtDateTime(ticket.rejectedAt)}` : ''}
+            </div>
           )}
         </div>
       )}
@@ -763,7 +794,21 @@ export default function TicketDetailPage() {
                 countdown reads as its own thing beside the tab content. Its colour
                 is the same green/amber/red grade the SLA pill on the ticket list
                 carries, from the shared `SLA_PANEL_CLASS` table. */}
-            {slaClockRunning && (
+            {/* A held ticket has no deadline yet: its clock starts on approval. */}
+            {ticket.approvalStatus === 'PENDING' && (
+              <Card className="rounded-lg border bg-muted/40">
+                <CardContent className="px-4 py-4">
+                  <div className="text-xs text-muted-foreground">SLA — resolution</div>
+                  <div className="text-xl font-bold text-muted-foreground">Starts on approval</div>
+                  {ticket.slaHours ? (
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {ticket.priority ? `${ticket.priority} · ` : ''}resolve in {ticket.slaHours}h once approved
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
+            )}
+            {slaClockRunning && ticket.approvalStatus !== 'PENDING' && (
               <Card className={`rounded-lg border ${slaPanel.box}`}>
                 <CardContent className="px-4 py-4">
                   <div className={`text-xs ${slaPanel.label}`}>SLA — resolution</div>

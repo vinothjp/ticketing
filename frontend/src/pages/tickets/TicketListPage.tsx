@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, ChevronDown, Download, X } from 'lucide-react';
+import { Plus, ChevronDown, Download, X, ArrowRight, ArrowUpDown, CalendarDays } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { downloadFilePost, blobErrorMessage } from '../../lib/download';
@@ -178,6 +178,7 @@ export default function TicketListPage() {
     overdue: byType.filter(isOverdueTicket).length,
     unassigned: byType.filter((t) => t.technicians.length === 0).length,
     tasks: myTasks.length,
+    pending: byType.filter((t) => t.approvalStatus === 'PENDING').length,
   }), [byType, user?.id, myTasks.length]);
 
   const filtered = useMemo(() => {
@@ -186,6 +187,7 @@ export default function TicketListPage() {
     if (view === 'today') list = list.filter(isCreatedTodayTicket);
     if (view === 'overdue') list = list.filter(isOverdueTicket);
     if (view === 'unassigned') list = list.filter((t) => t.technicians.length === 0);
+    if (view === 'pending') list = list.filter((t) => t.approvalStatus === 'PENDING');
     if (priorityFilter !== 'all') list = list.filter((t) => (t.priority ?? '').toLowerCase() === priorityFilter);
     if (categoryFilter !== 'all') list = list.filter((t) => t.ticketCategory === categoryFilter);
     if (statusFilter !== 'all') list = list.filter((t) => t.ticketStatus === statusFilter);
@@ -220,6 +222,9 @@ export default function TicketListPage() {
     { key: 'today', label: 'Created today', count: viewCounts.today },
     { key: 'overdue', label: 'Overdue', count: viewCounts.overdue },
     { key: 'unassigned', label: 'Unassigned', count: viewCounts.unassigned },
+    // The Admin's queue of tickets held for their decision (templates with
+    // "Needs admin approval" on). Approving is Admin-only, so only they get it.
+    ...(isAdmin ? [{ key: 'pending' as const, label: 'Awaiting approval', count: viewCounts.pending }] : []),
   ];
   // Customers only get their own ticket views — agent/task concepts are hidden.
   const views = isCustomer ? allViews.filter((v) => ['all', 'today', 'overdue', 'pending'].includes(v.key)) : allViews;
@@ -245,7 +250,7 @@ export default function TicketListPage() {
 
   return (
     <div>
-      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-foreground">
             {view === 'tasks' ? 'Assigned tasks' : (typeFilter || 'All tickets')}
@@ -270,8 +275,53 @@ export default function TicketListPage() {
         </div>
       </div>
 
-      {/* Views (segmented) — the month picker rides the same row, pushed right,
-          because it scopes the counts beside it rather than filtering under them. */}
+      {/* Period — sits above the views, right-aligned, because it scopes their
+          counts rather than filtering the list under them. */}
+      <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
+        {badRange && <span className="text-xs text-destructive">From is after To</span>}
+        <Select value={month} onValueChange={pickMonth}>
+          <SelectTrigger className="w-44">
+            <span className="flex items-center gap-2">
+              <CalendarDays className="size-4 text-muted-foreground" />
+              <SelectValue placeholder="All months" />
+            </span>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All months</SelectItem>
+            {monthOptions.map((m) => <SelectItem key={m} value={m}>{monthLabel(m)}</SelectItem>)}
+            <SelectItem value="custom" disabled>Custom range</SelectItem>
+          </SelectContent>
+        </Select>
+        <div className={cn(
+          'flex h-9 items-center gap-2 rounded-md border border-input pl-3 pr-1 shadow-sm',
+          badRange && 'border-destructive',
+        )}>
+          <Input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setRange(e.target.value, dateTo)}
+            className="h-auto w-auto border-0 px-0 shadow-none focus-visible:ring-0"
+            aria-label="Created from"
+            title="Created from"
+          />
+          <ArrowRight className="size-3.5 shrink-0 text-muted-foreground" />
+          <Input
+            type="date"
+            value={dateTo}
+            onChange={(e) => setRange(dateFrom, e.target.value)}
+            className="h-auto w-auto border-0 px-0 shadow-none focus-visible:ring-0"
+            aria-label="Created to"
+            title="Created to"
+          />
+          {(dateFrom || dateTo) ? (
+            <Button variant="ghost" size="icon" className="size-7" onClick={() => setRange('', '')} aria-label="Clear dates" title="Clear dates">
+              <X className="size-3.5" />
+            </Button>
+          ) : <span className="w-2" />}
+        </div>
+      </div>
+
+      {/* Views (segmented) */}
       <div className="flex flex-wrap items-center gap-1 border-b pb-3">
         {views.map((v) => (
           <button
@@ -279,53 +329,26 @@ export default function TicketListPage() {
             type="button"
             onClick={() => setView(v.key)}
             className={cn(
-              'flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors hover:bg-accent',
+              'flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-sm transition-colors hover:bg-accent',
               view === v.key ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground',
             )}
           >
             {v.label}
-            <span className={cn('rounded-full px-1.5 text-xs', view === v.key ? 'bg-primary/15' : 'bg-muted text-muted-foreground')}>{v.count}</span>
+            <span className={cn(
+              'rounded-full px-1.5 text-xs',
+              v.key === 'pending' && v.count > 0
+                ? 'bg-amber-200 font-semibold text-amber-900 dark:bg-amber-500/30 dark:text-amber-200'
+                : view === v.key ? 'bg-primary/15' : 'bg-muted text-muted-foreground',
+            )}>{v.count}</span>
           </button>
         ))}
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Input
-            type="date"
-            value={dateFrom}
-            onChange={(e) => setRange(e.target.value, dateTo)}
-            className={cn('w-auto', badRange && 'border-destructive')}
-            aria-label="Created from"
-            title="Created from"
-          />
-          <span className="text-muted-foreground">-</span>
-          <Input
-            type="date"
-            value={dateTo}
-            onChange={(e) => setRange(dateFrom, e.target.value)}
-            className={cn('w-auto', badRange && 'border-destructive')}
-            aria-label="Created to"
-            title="Created to"
-          />
-          {(dateFrom || dateTo) && (
-            <Button variant="ghost" size="icon" onClick={() => setRange('', '')} aria-label="Clear dates" title="Clear dates">
-              <X className="size-4" />
-            </Button>
-          )}
-          {badRange && <span className="text-xs text-destructive">From is after To</span>}
-          <Select value={month} onValueChange={pickMonth}>
-            <SelectTrigger className="w-44"><SelectValue placeholder="All months" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All months</SelectItem>
-              {monthOptions.map((m) => <SelectItem key={m} value={m}>{monthLabel(m)}</SelectItem>)}
-              <SelectItem value="custom" disabled>Custom range</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
       </div>
 
-      {/* Filters + sort (tickets only) — single row */}
-      <div className={cn('mb-5 flex items-center gap-2 py-3', view === 'tasks' && 'hidden')}>
+      {/* Filters + sort (tickets only) — equal widths, wrapping rather than
+          scrolling when the screen is too narrow for one row. */}
+      <div className={cn('mb-5 flex flex-wrap items-center gap-2 py-3', view === 'tasks' && 'hidden')}>
         <Select value={priorityFilter} onValueChange={setPriorityFilter}>
-          <SelectTrigger className="min-w-0 flex-1"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="min-w-36 flex-1"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All priorities</SelectItem>
             <SelectItem value="critical">Critical</SelectItem>
@@ -335,21 +358,21 @@ export default function TicketListPage() {
           </SelectContent>
         </Select>
         <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-          <SelectTrigger className="min-w-0 flex-1"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="min-w-36 flex-1"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All categories</SelectItem>
             {categories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="min-w-0 flex-1"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="min-w-36 flex-1"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All statuses</SelectItem>
             {statuses.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={typeFilter || 'all'} onValueChange={(v) => setSearchParams(v === 'all' ? {} : { type: v })}>
-          <SelectTrigger className="min-w-0 flex-1"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="min-w-36 flex-1"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All templates</SelectItem>
             {templates.map((t) => <SelectItem key={t.id} value={t.name}>{t.name}</SelectItem>)}
@@ -361,12 +384,17 @@ export default function TicketListPage() {
             onChange={setCompanyFilter}
             options={companies}
             allLabel="All customers"
-            className="min-w-0 flex-1"
+            className="min-w-36 flex-1"
           />
         )}
-        <div className="min-w-0 flex-1">
+        <div className="min-w-44 flex-1">
           <Select value={sort} onValueChange={(v) => setSort(v as SortKey)}>
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-full">
+              <span className="flex min-w-0 items-center gap-2 truncate whitespace-nowrap">
+                <ArrowUpDown className="size-4 text-muted-foreground" />
+                <SelectValue />
+              </span>
+            </SelectTrigger>
             <SelectContent>
               <SelectItem value="newest">Newest first</SelectItem>
               <SelectItem value="oldest">Oldest first</SelectItem>
@@ -498,12 +526,17 @@ export default function TicketListPage() {
                       {sep}
                       <span className="inline-flex items-center gap-1.5">
                         SLA :
-                        <span
-                          title={sla.title}
-                          className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${sla.className}`}
-                        >
-                          {sla.label}
-                        </span>
+                        {t.approvalStatus === 'PENDING' ? (
+                          // A held ticket's clock hasn't started — it starts on approval.
+                          <span className="text-foreground">starts on approval</span>
+                        ) : (
+                          <span
+                            title={sla.title}
+                            className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${sla.className}`}
+                          >
+                            {sla.label}
+                          </span>
+                        )}
                       </span>
                     </div>
                   </div>

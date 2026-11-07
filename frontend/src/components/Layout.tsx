@@ -178,6 +178,13 @@ export default function Layout({ children }: { children: ReactNode }) {
   const isCustomerAdmin = !!user?.roles.includes('CustomerAdmin');
   // Customer side = a company's own admin + its employees. Restricted portal.
   const isCustomer = (!!user?.roles.includes('Customer') || isCustomerAdmin) && !isAdmin;
+  // A client's account manager decides that client's product requests, so a
+  // non-admin staff member who manages any client gets the screen too.
+  const { data: requestsAccess } = useQuery<{ allowed: boolean }>({
+    queryKey: ['product-requests-access'],
+    queryFn: async () => (await api.get('/api/customer-companies/product-requests/access')).data,
+    enabled: !!user && !isSuperAdmin && !isAdmin && !isCustomer,
+  });
   const navGroups = isSuperAdmin
     ? superAdminNavGroups
     : (() => {
@@ -214,7 +221,11 @@ export default function Layout({ children }: { children: ReactNode }) {
             if (group.label === 'Workspace' && !isAdmin && !isCustomer) {
               return {
                 ...group,
-                items: [...group.items, { to: '/admin/customer-companies', label: 'Clients', icon: Building2 }],
+                items: [
+                  ...group.items,
+                  { to: '/admin/customer-companies', label: 'Clients', icon: Building2 },
+                  ...(requestsAccess?.allowed ? [{ to: '/admin/product-requests', label: 'Product Requests', icon: PackagePlus }] : []),
+                ],
               };
             }
             return group;

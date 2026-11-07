@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useConfirm } from '@/hooks/useConfirm';
 import { invalidateProject, type ProjectDetail, type UserOption } from '../projectMeta';
+import { staffLabel } from '@/lib/staffLabel';
 
 interface ActionItem { text: string; owner?: string; done?: boolean }
 interface Meeting { id: string; title: string; date?: string | null; attendees?: string | null; notes?: string | null; actionItems: ActionItem[] }
@@ -149,7 +150,7 @@ export default function MeetingsTab({ project, users }: { project: ProjectDetail
                       onCheckedChange={() => toggleAttendee(u.username)}
                       onSelect={(e) => e.preventDefault()}
                     >
-                      {u.username}
+                      {staffLabel(u)}
                     </DropdownMenuCheckboxItem>
                   ))}
                   {/* Customer-side attendees — only the company linked to this project. */}
@@ -212,7 +213,7 @@ export default function MeetingsTab({ project, users }: { project: ProjectDetail
                       className="w-40" placeholder="Owner" emptyText="No matching user"
                       value={a.owner || ''}
                       onChange={(v) => updateRow(i, { owner: v })}
-                      options={[{ value: '', label: 'No owner' }, ...users.map((u) => ({ value: u.username, label: u.username }))]}
+                      options={[{ value: '', label: 'No owner' }, ...users.map((u) => ({ value: u.username, label: staffLabel(u) }))]}
                     />
                     <Button type="button" size="icon" variant="ghost" className="size-8 text-destructive hover:text-destructive" onClick={() => removeRow(i)}><X className="size-4" /></Button>
                   </div>

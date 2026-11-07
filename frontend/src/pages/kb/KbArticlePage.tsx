@@ -29,7 +29,7 @@ export default function KbArticlePage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { user } = useAuth();
-  const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer');
+  const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer' || r === 'Manager');
   const fmt = (d?: string | null) => (d ? new Date(d).toLocaleDateString() : null);
 
   const { data: article, isLoading, isError } = useQuery<KbArticle>({

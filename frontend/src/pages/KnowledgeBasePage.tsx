@@ -41,7 +41,7 @@ export interface KbArticle {
 
 export default function KnowledgeBasePage() {
   const { user } = useAuth();
-  const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer');
+  const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer' || r === 'Manager');
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('all');
 

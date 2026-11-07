@@ -29,6 +29,8 @@ export class SetContractDto {
   @IsOptional() @IsBoolean() carryForward?: boolean;
   @IsOptional() @IsBoolean() allowExcess?: boolean;
   @IsOptional() @IsNumber() @Min(0) excessRate?: number | null;
+  // Hours still loggable past the allowance before the excess rule applies (null clears).
+  @IsOptional() @IsNumber() @Min(0) toleranceHours?: number | null;
   // Whether the customer may still raise tickets once the allowance is spent.
   @IsOptional() @IsBoolean() allowTicketsAfterHours?: boolean;
   // What else the contract covers. `crMaxPerMonth` / `crMaxHours` only mean
@@ -84,6 +86,8 @@ class ProductTermsFields {
   @IsOptional() @IsBoolean() carryForward?: boolean;
   @IsOptional() @IsBoolean() allowExcess?: boolean;
   @IsOptional() @IsNumber() @Min(0) excessRate?: number | null;
+  // Hours still loggable past the allowance before the excess rule applies (null clears).
+  @IsOptional() @IsNumber() @Min(0) toleranceHours?: number | null;
   @IsOptional() @IsBoolean() allowTicketsAfterHours?: boolean;
   // What else the contract covers. `crMaxPerMonth` / `crMaxHours` only mean
   // anything with `crApplicable` on — the service clears them when it is off.

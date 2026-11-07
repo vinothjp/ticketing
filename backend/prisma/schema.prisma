@@ -68,6 +68,8 @@ model Client {
   projectSequence Int @default(0)
   crSequence   Int @default(0)
   clientVisitSequence Int @default(0) @map("clientLogSequence")
+  // Powers CustomerCompany.companyCode (CC-000001), the auto-generated client id.
+  companySequence Int @default(0)
   // How many days after a ticket is resolved it may still be reopened. Tenant-
   // editable on the Organization screen; past the window the UI sends the user
   // to raise a fresh ticket instead.
@@ -180,7 +182,13 @@ model CustomerCompany {
   clientId     String
   client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
   name         String
+  // "Short name" in the UI: admin-typed, optional, not unique.
   code         String?
+  // Auto-generated on create from Client.companySequence; never typed or edited.
+  companyCode  String?
+  // Department values (PicklistOption.value of listKey "department") offered on
+  // this client's New Ticket form. Empty = every department.
+  departments  String[] @default([])
   contactEmail String?
   contactPerson String?
   contactNumber String?
@@ -250,6 +258,9 @@ model CustomerCompany {
   // What an hour beyond the allowance is charged at (needs contractAllowExcess).
   // Money: withheld from non-Admins server-side, like contractMonthlyCost.
   contractExcessRate       Decimal?
+  // Hours that may still be logged past the allowance before the excess rule
+  // (contractAllowExcess) applies. Null = none.
+  contractToleranceHours   Decimal?
   // DORMANT — the excess-hours approval flow was removed. Nothing reads or writes
   // these (nor SupportHoursExcessRequest); they are kept only because dropping
   // them from the schema would make start-up `db push --accept-data-loss` delete
@@ -291,6 +302,7 @@ model CustomerCompany {
   clientVisits ClientVisit[]
   galleryAlbums GalleryAlbum[]
 
+  @@unique([clientId, companyCode])
   @@unique([clientId, name])
 }
 
@@ -569,6 +581,8 @@ model CustomerCompanyProduct {
   amcAllowExcess       Boolean  @default(false)
   // Per-product mirror of contractExcessRate.
   amcExcessRate        Decimal?
+  // Per-product twin of CustomerCompany.contractToleranceHours.
+  amcToleranceHours    Decimal?
   // DORMANT — see contractExcessApproval.
   amcExcessApproval    Boolean  @default(false)
   // Per-product mirror of contractAllowTicketsAfterHours.

@@ -26,6 +26,7 @@ import MeetingsTab from './detail/MeetingsTab';
 import DocumentsTab from './detail/DocumentsTab';
 import FinancialsTab from './detail/FinancialsTab';
 import CalendarTab from './detail/CalendarTab';
+import { staffLabel } from '@/lib/staffLabel';
 
 const NONE = '__none__';
 const fmtDate = (v?: string | null) => (v ? new Date(v).toLocaleDateString() : '—');
@@ -141,7 +142,7 @@ export default function ProjectDetailPage() {
                   placeholder="Unassigned" emptyText="No matching user"
                   value={project.managerUserId ?? ''}
                   onChange={(v) => { if (v !== (project.managerUserId ?? '')) updateMutation.mutate({ managerUserId: v || null }); }}
-                  options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.username }))]}
+                  options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: staffLabel(u) }))]}
                 />
               </div>
             </CardContent>

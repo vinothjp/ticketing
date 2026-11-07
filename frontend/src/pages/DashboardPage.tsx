@@ -9,8 +9,9 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { getPriorityMeta, formatDueStatus, isTerminalStatus, isOverdueTicket, isCreatedTodayTicket, type TicketSummary } from './tickets/ticketHelpers';
+import { staffLabel } from '@/lib/staffLabel';
 
-interface UserOption { id: string; username: string; }
+interface UserOption { id: string; username: string; name?: string | null; }
 interface MyTask {
   id: string;
   title: string;
@@ -220,7 +221,7 @@ export default function DashboardPage() {
               <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All agents</SelectItem>
-                {agents.map((a) => <SelectItem key={a.id} value={a.id}>{a.username}</SelectItem>)}
+                {agents.map((a) => <SelectItem key={a.id} value={a.id}>{staffLabel(a)}</SelectItem>)}
               </SelectContent>
             </Select>
           )}

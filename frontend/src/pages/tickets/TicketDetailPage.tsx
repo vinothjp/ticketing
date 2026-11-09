@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Clock, Timer, Paperclip, FolderKanban, X, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Clock, Timer, Paperclip, FolderKanban, X, CheckCircle2, RotateCcw, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
-import { getPriorityMeta, formatCountdown, getApprovalMeta, SLA_PANEL_CLASS, type TicketTechnicianRow } from './ticketHelpers';
+import { getPriorityMeta, formatCountdown, getApprovalMeta, getReopenMeta, SLA_PANEL_CLASS, type TicketTechnicianRow } from './ticketHelpers';
 import type { MergedTemplateField } from './DynamicTicketField';
 import HistoryTab from './detail/HistoryTab';
 import ResolutionTab from './detail/ResolutionTab';
@@ -24,6 +24,7 @@ import ApprovalsTab from './detail/ApprovalsTab';
 import ConversationTab from './detail/ConversationTab';
 import { ClientVisitsPanel } from '../client-visits/ClientVisitsPanel';
 import { useDateFormat } from '@/lib/dateFormat';
+import { staffLabel } from '@/lib/staffLabel';
 
 interface TicketDetail {
   id: string;
@@ -74,11 +75,29 @@ interface TicketDetail {
   reopenReason?: string | null;
   reopenedAt?: string | null;
   reopenedByName?: string | null;
+  // A client's request to reopen it — decided by the client product's project
+  // manager or an Admin. `reopenApproverName` null while pending = no project
+  // manager set, so the Admins decide. `canDecideReopen` is this viewer's right.
+  reopenRequestStatus?: string | null;
+  reopenRequestReason?: string | null;
+  reopenRequestedAt?: string | null;
+  reopenRequestedByName?: string | null;
+  reopenApproverName?: string | null;
+  reopenDecidedAt?: string | null;
+  reopenDecidedByName?: string | null;
+  reopenDecisionNote?: string | null;
+  canDecideReopen?: boolean;
   // Σ worklog hours on the ticket, and the tasks still blocking a resolution.
   // Both come off the ticket itself so a customer — who cannot call the staff-only
   // worklog or task endpoints — still sees the time charged to their contract.
   totalHoursSpent?: number;
   openTaskCount?: number;
+  // Approval bars: who raised a held ticket, and who refused it.
+  createdBy?: string | null;
+  raisedByName?: string | null;
+  raisedByCustomer?: boolean;
+  rejectedByName?: string | null;
+  rejectedAt?: string | null;
   createdAt: string;
   customFields: Record<string, unknown>;
   template: { id: string; name: string; category?: string | null };
@@ -99,7 +118,7 @@ interface SupportHours {
   left: number | null;
 }
 interface PicklistOption { value: string; label: string; }
-interface UserOption { id: string; username: string; }
+interface UserOption { id: string; username: string; name?: string | null; }
 
 const OMIT_FROM_TEMPLATE_FIELDS = new Set([
   'subject', 'description', 'attachments', 'templateName', 'createdDate', 'closedDate', 'ticketStatus', 'sla',
@@ -157,7 +176,7 @@ export default function TicketDetailPage() {
   // so its columns are not squeezed into a horizontal scroll.
   const showOverview = tab !== 'tasks';
   const { user } = useAuth();
-  const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer');
+  const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer' || r === 'Manager');
   const isTenantAdmin = !!user?.roles.includes('Admin');
   const isCustomerAdmin = !!user?.roles.includes('CustomerAdmin');
   // Both external roles may sign off a resolution; findOne() still limits an
@@ -165,6 +184,9 @@ export default function TicketDetailPage() {
   const isCustomerSide = !!user?.roles.some((r) => r === 'Customer' || r === 'CustomerAdmin');
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
+  // The reopen-request Reject dialog is its own — different audience, different words.
+  const [reopenRejectOpen, setReopenRejectOpen] = useState(false);
+  const [reopenRejectReason, setReopenRejectReason] = useState('');
 
   const { data: ticket, isLoading } = useQuery<TicketDetail>({
     queryKey: ['tickets', id],
@@ -286,6 +308,31 @@ export default function TicketDetailPage() {
     onSuccess: () => { invalidateTicket(); toast.success('Ticket reopened — the team has been notified'); },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error reopening'),
   });
+  // A customer ticket reopens only on approval: the client asks, the client
+  // product's project manager (or an Admin) decides.
+  const requestReopenMutation = useMutation({
+    mutationFn: (reason: string) => api.post(`/api/tickets/${id}/reopen-request`, { reason }),
+    onSuccess: () => { invalidateTicket(); toast.success('Reopen request sent for approval'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error sending the reopen request'),
+  });
+  const withdrawReopenMutation = useMutation({
+    mutationFn: () => api.post(`/api/tickets/${id}/reopen-request/withdraw`),
+    onSuccess: () => { invalidateTicket(); toast.success('Reopen request withdrawn'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error withdrawing the request'),
+  });
+  const approveReopenMutation = useMutation({
+    mutationFn: () => api.post(`/api/tickets/${id}/reopen-request/approve`),
+    onSuccess: () => { invalidateTicket(); toast.success('Approved — the ticket is open again'); },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error approving the reopen'),
+  });
+  const rejectReopenMutation = useMutation({
+    mutationFn: (reason: string) => api.post(`/api/tickets/${id}/reopen-request/reject`, { reason }),
+    onSuccess: () => {
+      invalidateTicket(); setReopenRejectOpen(false); setReopenRejectReason('');
+      toast.success('Reopen request rejected — the ticket stays closed');
+    },
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error rejecting the reopen'),
+  });
   // The Reject dialog serves whichever stage applies to this viewer.
   const submitReject = (reason: string) => {
     if (isCustomerAdmin && ticket?.approvalStatus === 'PENDING_CUSTOMER') custRejectMutation.mutate(reason);
@@ -337,7 +384,11 @@ export default function TicketDetailPage() {
   // One green banner above the tabs carries the resolution state on every tab,
   // and every action on it. It stands whether the ticket is awaiting sign-off or
   // already acknowledged; the Resolution tab deliberately renders none of this.
-  const showResolutionBanner = awaitingSignOff || !!ticket.acknowledgedAt;
+  // A ticket closed by the auto-close sweep was never acknowledged, but it is
+  // still closed and still reopenable, so it gets the bar too.
+  const closedUnacknowledged = statusMeaning === 'closed' && !!ticket.resolvedAt && !ticket.acknowledgedAt;
+  const showResolutionBanner = awaitingSignOff || !!ticket.acknowledgedAt || closedUnacknowledged;
+  const reopenPending = ticket.reopenRequestStatus === 'PENDING';
   // The client's own people reopen their tickets; an internal ticket (no customer
   // on it) has no client, so the call stays with staff. Same rule as the API.
   const canReopenTicket = isCustomerSide || (isStaff && !ticket.customerCompany);
@@ -354,6 +405,8 @@ export default function TicketDetailPage() {
   ].filter(Boolean) as string[];
   const resolutionHeadline = ticket.acknowledgedAt
     ? 'Resolution acknowledged by the client — ticket closed.'
+    : closedUnacknowledged
+      ? 'This ticket is closed.'
     : canAcknowledge
       ? 'This ticket has been resolved — acknowledge the resolution to close it.'
       : ticket.customerCompany
@@ -384,11 +437,11 @@ export default function TicketDetailPage() {
             <span className="shrink-0 text-sm text-muted-foreground">#{ticket.ticketNumber}</span>
             <h1 className="min-w-0 truncate text-xl font-bold text-foreground" title={ticket.subject}>{ticket.subject}</h1>
             <Badge variant={priority.code === 'P1' ? 'destructive' : 'secondary'} className="shrink-0">{priority.label}</Badge>
-            {getApprovalMeta(ticket.approvalStatus) && (
-              <span className={`shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-medium ${getApprovalMeta(ticket.approvalStatus)!.className}`}>
-                {getApprovalMeta(ticket.approvalStatus)!.label}
+            {[getApprovalMeta(ticket.approvalStatus), getReopenMeta(ticket.reopenRequestStatus)].map((m) => m && (
+              <span key={m.label} className={`shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-medium ${m.className}`}>
+                {m.label}
               </span>
-            )}
+            ))}
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {/* Total time on this ticket. Shown whatever the status — an ongoing
@@ -424,8 +477,12 @@ export default function TicketDetailPage() {
       {/* Stage 1: the customer company admin reviews their employee's ticket. */}
       {isCustomerAdmin && ticket.approvalStatus === 'PENDING_CUSTOMER' && (
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
-          <div className="text-sm text-amber-700 dark:text-amber-300">
-            A team member raised this ticket. Approve to send it on for provider approval, or reject it.
+          <div className="min-w-0 space-y-0.5 text-amber-700 dark:text-amber-300">
+            <div className="text-sm font-medium">{ticket.template?.name ?? 'Ticket'} awaiting your approval</div>
+            <div className="text-xs">
+              Raised by {ticket.raisedByName ?? 'a member of your team'} on {fmtDateTime(ticket.createdAt)}.
+              Approve to send it to your service provider for their approval, or reject it.
+            </div>
           </div>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" onClick={() => setRejectOpen(true)}>Reject</Button>
@@ -433,11 +490,17 @@ export default function TicketDetailPage() {
           </div>
         </div>
       )}
-      {/* Stage 2: tenant Admin approves/rejects a customer-submitted ticket. */}
+      {/* Stage 2: tenant Admin approves/rejects a ticket held by its template's
+          "Needs admin approval" switch — raised by an agent or a customer. */}
       {isTenantAdmin && ticket.approvalStatus === 'PENDING' && (
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
-          <div className="text-sm text-amber-700 dark:text-amber-300">
-            This ticket was submitted by a customer and is awaiting your approval.
+          <div className="min-w-0 space-y-0.5 text-amber-700 dark:text-amber-300">
+            <div className="text-sm font-medium">{ticket.template?.name ?? 'Ticket'} awaiting your approval</div>
+            <div className="text-xs">
+              Raised by {ticket.raisedByName ?? 'someone'} ({ticket.raisedByCustomer ? 'customer' : 'agent'}) on {fmtDateTime(ticket.createdAt)}
+              {ticket.customerCompany ? ` for ${ticket.customerCompany.name}` : ''}.
+              Nobody can be assigned or work on it until it is approved; its SLA clock starts on approval.
+            </div>
           </div>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" onClick={() => setRejectOpen(true)}>Reject</Button>
@@ -454,7 +517,11 @@ export default function TicketDetailPage() {
           where it applies: Acknowledge for the client on a ticket awaiting
           sign-off, Reopen for whoever owns that call and only while the window is
           open, the icon always (it says why a button is missing). */}
-      {showResolutionBanner && (
+      {/* ONE bar, one state at a time: while a reopen request waits, the violet
+          bar below takes this bar's place rather than sitting under it; once the
+          request is decided the ticket is either open again (no bar) or closed
+          again, which brings this green bar back. */}
+      {showResolutionBanner && !reopenPending && (
         <div className="mb-5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
             <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-emerald-700 dark:text-emerald-400">
@@ -470,14 +537,128 @@ export default function TicketDetailPage() {
               <ReopenControl
                 ticket={ticket}
                 canReopen={canReopenTicket}
-                onReopen={(reason) => reopenMutation.mutate(reason)}
-                reopening={reopenMutation.isPending}
+                requestMode={!!ticket.customerCompany}
+                approverName={ticket.reopenApproverName}
+                onReopen={(reason) =>
+                  ticket.customerCompany ? requestReopenMutation.mutate(reason) : reopenMutation.mutate(reason)}
+                reopening={reopenMutation.isPending || requestReopenMutation.isPending}
               />
             </div>
           </div>
           {resolutionMeta.length > 0 && (
             <div className="mt-1 pl-6 text-xs text-muted-foreground">{resolutionMeta.join(' · ')}</div>
           )}
+          {/* The last reopen request was turned down, so the ticket is closed
+              again — said on one line inside this same bar, not a box of its own. */}
+          {ticket.reopenRequestStatus === 'REJECTED' && (
+            <div className="mt-1 flex items-start gap-1.5 pl-6 text-xs text-destructive">
+              <XCircle className="mt-px size-3.5 shrink-0" />
+              <span className="min-w-0">
+                Reopen declined{ticket.reopenDecidedByName ? ` by ${ticket.reopenDecidedByName}` : ''}
+                {ticket.reopenDecidedAt ? ` on ${fmtDateTime(ticket.reopenDecidedAt)}` : ''}
+                {ticket.reopenDecisionNote ? `: ${ticket.reopenDecisionNote}` : ''}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+      {/* A client's reopen request waiting for a decision. The decider (the
+          client product's project manager, or any Admin) gets the actions; the
+          client gets Withdraw; every other member of staff just reads it. */}
+      {reopenPending && (
+        <div className="mb-5 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+            <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-violet-700 dark:text-violet-300">
+              {ticket.canDecideReopen ? <RotateCcw className="size-4 shrink-0" /> : <Clock className="size-4 shrink-0" />}
+              <span>
+                {ticket.canDecideReopen
+                  ? 'Reopen Ticket Approval'
+                  : isCustomerSide
+                    ? `Reopen requested. Waiting for ${ticket.reopenApproverName ? `${ticket.reopenApproverName} (project manager)` : 'your provider'} to approve.`
+                    : `The client asked to reopen this ticket. Waiting for ${ticket.reopenApproverName ? `${ticket.reopenApproverName} (project manager)` : 'an admin'} to approve.`}
+              </span>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {ticket.canDecideReopen && (
+                <>
+                  <Button size="sm" variant="outline" className="border-destructive/40 text-destructive hover:text-destructive" onClick={() => setReopenRejectOpen(true)}>
+                    Reject
+                  </Button>
+                  <Button size="sm" onClick={() => approveReopenMutation.mutate()} disabled={approveReopenMutation.isPending}>
+                    Approve &amp; reopen
+                  </Button>
+                </>
+              )}
+              {isCustomerSide && (
+                <Button size="sm" variant="outline" onClick={() => withdrawReopenMutation.mutate()} disabled={withdrawReopenMutation.isPending}>
+                  Withdraw request
+                </Button>
+              )}
+            </div>
+          </div>
+          <div className="mt-1 pl-6 text-xs text-muted-foreground">
+            {[
+              ticket.reopenRequestedByName && `Requested by ${ticket.reopenRequestedByName}`,
+              ticket.reopenRequestedAt && fmtDateTime(ticket.reopenRequestedAt),
+              ticket.closedDate && `Closed ${fmtDateTime(ticket.closedDate)}`,
+              'The ticket stays closed until this is decided',
+            ].filter(Boolean).join(' · ')}
+          </div>
+          {ticket.reopenRequestReason && (
+            <div className="mt-2.5 ml-6 rounded-md border bg-background px-3 py-2 text-sm whitespace-pre-wrap">
+              <span className="font-medium">Reason: </span>{ticket.reopenRequestReason}
+            </div>
+          )}
+        </div>
+      )}
+      <Dialog open={reopenRejectOpen} onOpenChange={setReopenRejectOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Reject reopen request</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            The ticket stays closed. {ticket.reopenRequestedByName ?? 'The client'} is notified by email and sees the reason you give here.
+          </p>
+          <Textarea
+            rows={4}
+            value={reopenRejectReason}
+            onChange={(e) => setReopenRejectReason(e.target.value)}
+            placeholder="Why isn't this ticket being reopened?"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReopenRejectOpen(false)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={!reopenRejectReason.trim() || rejectReopenMutation.isPending}
+              onClick={() => rejectReopenMutation.mutate(reopenRejectReason.trim())}
+            >
+              Reject request
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* A client's employee whose change request waits on their own company admin. */}
+      {isCustomerSide && !isCustomerAdmin && ticket.approvalStatus === 'PENDING_CUSTOMER' && (
+        <div className="mb-5 flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-amber-700 dark:text-amber-300">
+          <Clock className="mt-0.5 size-4 shrink-0" />
+          <div className="min-w-0 space-y-0.5">
+            <div className="text-sm font-medium">Waiting for your company admin's approval</div>
+            <div className="text-xs">
+              Once your company admin approves it, it goes to your service provider for their approval. You'll get an email at each step.
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Everyone else on a held ticket — the agent or customer who raised it —
+          sees why nothing is happening yet. No actions: the decision is the Admin's. */}
+      {!isTenantAdmin && ticket.approvalStatus === 'PENDING' && (
+        <div className="mb-5 flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-amber-700 dark:text-amber-300">
+          <Clock className="mt-0.5 size-4 shrink-0" />
+          <div className="min-w-0 space-y-0.5">
+            <div className="text-sm font-medium">Waiting for admin approval</div>
+            <div className="text-xs">
+              {ticket.template?.name ?? 'This'} tickets need an Admin's approval before work starts.
+              {ticket.createdBy === user?.id && " You'll get an email and a notification as soon as it's decided."}
+            </div>
+          </div>
         </div>
       )}
       {ticket.approvalStatus === 'REJECTED' && (
@@ -485,6 +666,11 @@ export default function TicketDetailPage() {
           <div className="text-sm font-medium text-destructive">This ticket request was rejected.</div>
           {ticket.rejectionReason && (
             <div className="mt-1 text-sm text-foreground whitespace-pre-wrap"><span className="text-muted-foreground">Reason: </span>{ticket.rejectionReason}</div>
+          )}
+          {(ticket.rejectedByName || ticket.rejectedAt) && (
+            <div className="mt-1 text-xs text-muted-foreground">
+              Rejected{ticket.rejectedByName ? ` by ${ticket.rejectedByName}` : ''}{ticket.rejectedAt ? ` · ${fmtDateTime(ticket.rejectedAt)}` : ''}
+            </div>
           )}
         </div>
       )}
@@ -645,7 +831,7 @@ export default function TicketDetailPage() {
                               <SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="none">Unassigned</SelectItem>
-                                {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
+                                {users.map((u) => <SelectItem key={u.id} value={u.id}>{staffLabel(u)}</SelectItem>)}
                               </SelectContent>
                             </Select>
                           );
@@ -709,7 +895,6 @@ export default function TicketDetailPage() {
                 readOnly={!isStaff}
                 loggedHours={loggedHours}
                 openTasks={openTasks}
-                onLogTime={() => setTab('tasks')}
                 onViewTasks={sendToOpenTasks}
               />
             </TabsContent>
@@ -763,7 +948,21 @@ export default function TicketDetailPage() {
                 countdown reads as its own thing beside the tab content. Its colour
                 is the same green/amber/red grade the SLA pill on the ticket list
                 carries, from the shared `SLA_PANEL_CLASS` table. */}
-            {slaClockRunning && (
+            {/* A held ticket has no deadline yet: its clock starts on approval. */}
+            {ticket.approvalStatus === 'PENDING' && (
+              <Card className="rounded-lg border bg-muted/40">
+                <CardContent className="px-4 py-4">
+                  <div className="text-xs text-muted-foreground">SLA — resolution</div>
+                  <div className="text-xl font-bold text-muted-foreground">Starts on approval</div>
+                  {ticket.slaHours ? (
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {ticket.priority ? `${ticket.priority} · ` : ''}resolve in {ticket.slaHours}h once approved
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
+            )}
+            {slaClockRunning && ticket.approvalStatus !== 'PENDING' && (
               <Card className={`rounded-lg border ${slaPanel.box}`}>
                 <CardContent className="px-4 py-4">
                   <div className={`text-xs ${slaPanel.label}`}>SLA — resolution</div>
@@ -801,8 +1000,8 @@ export default function TicketDetailPage() {
                           return;
                         }
                         if (signingOff && loggedHours <= 0) {
-                          toast.error(`Log the time spent on this ticket before marking it ${meaning} — add a task on the Tasks tab and log against it`);
-                          setTab('tasks');
+                          toast.error(`Log the time spent on this ticket before marking it ${meaning} — use Log time on the Resolution tab`);
+                          setTab('resolution');
                           return;
                         }
                         // Nothing is signed off with nothing said about how. Only

@@ -19,13 +19,13 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import WorklogSection from './WorklogSection';
 import { useWorklogInvalidate, useWorklogs } from './ticketQueries';
 import TicketTaskDialog from './TicketTaskDialog';
 import { useDateFormat } from '@/lib/dateFormat';
 import {
   COMPLETED_TASK_STATUS, TASK_STATUSES, hrs, isSettledTask, taskCode, taskStatusLabel, taskStatusPill,
 } from './taskMeta';
+import { staffLabel } from '@/lib/staffLabel';
 
 export interface Task {
   id: string;
@@ -41,7 +41,7 @@ export interface Task {
   hoursSpent?: number | string | null;
   commentCount?: number;
 }
-export interface UserOption { id: string; username: string; }
+export interface UserOption { id: string; username: string; name?: string | null; }
 
 export default function TasksTab({
   ticketId,
@@ -89,6 +89,9 @@ export default function TasksTab({
   // task's own assignee, who is the person that called it finished. Mirrors
   // `assertMayReopen` on the backend.
   const mayReopen = isAdmin || (!!ticketAssigneeId && ticketAssigneeId === user?.id);
+  // Editing a task's fields (title, description, assignee, due date): the
+  // ticket's agent, the task's own assignee, or an admin — as `assertMayEdit`.
+  const mayEdit = (t: Task) => mayReopen || (!!t.assigneeUserId && t.assigneeUserId === user?.id);
   const isCompleted = (t: Task) => t.status === COMPLETED_TASK_STATUS;
 
   const { data: tasks = [] } = useQuery<Task[]>({
@@ -324,7 +327,7 @@ export default function TasksTab({
                   value={assignee}
                   options={[
                     { value: '', label: 'Unassigned' },
-                    ...users.map((u) => ({ value: u.id, label: u.username })),
+                    ...users.map((u) => ({ value: u.id, label: staffLabel(u) })),
                   ]}
                   onChange={setAssignee}
                   placeholder="Unassigned"
@@ -372,7 +375,7 @@ export default function TasksTab({
                 <DropdownMenuContent align="end" className="max-h-64 overflow-y-auto">
                   <DropdownMenuItem onSelect={() => bulkAssign('')}>Unassigned</DropdownMenuItem>
                   {users.map((u) => (
-                    <DropdownMenuItem key={u.id} onSelect={() => bulkAssign(u.id)}>{u.username}</DropdownMenuItem>
+                    <DropdownMenuItem key={u.id} onSelect={() => bulkAssign(u.id)}>{staffLabel(u)}</DropdownMenuItem>
                   ))}
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -566,10 +569,8 @@ export default function TasksTab({
         </div>
       </div>
 
-      {/* Only the entries that belong to no task — task time is already totalled
-          in its own row. Renders nothing at all when there are none, so it owns
-          its heading rather than leaving an empty one behind. */}
-      <WorklogSection ticketId={ticketId} />
+      {/* Time booked against the ticket itself (no task) is listed and logged on
+          the Resolution tab, next to the notes it goes with. */}
 
       {ConfirmDialog}
 
@@ -578,6 +579,7 @@ export default function TasksTab({
         taskId={openTaskId}
         users={users}
         canTrack={(t) => mayTrack(t)}
+        canEdit={(t) => mayEdit(t)}
         canReopen={mayReopen}
         pendingStatus={pendingStatus}
         onPendingHandled={() => setPendingStatus(null)}

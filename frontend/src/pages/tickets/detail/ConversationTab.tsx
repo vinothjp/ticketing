@@ -34,7 +34,7 @@ export default function ConversationTab({ ticketId }: { ticketId: string }) {
   // Chat is a shared thread — the client sees it and can post in it too. Staff
   // still start on Chat (their working channel), the client on Email reply
   // (theirs), and either side can switch.
-  const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer');
+  const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer' || r === 'Manager');
   const [channel, setChannel] = useState<'EMAIL' | 'INTERNAL'>(isStaff ? 'INTERNAL' : 'EMAIL');
   const [body, setBody] = useState('');
   const [files, setFiles] = useState<File[]>([]);

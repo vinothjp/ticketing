@@ -11,6 +11,9 @@ export interface TicketSummary {
   ticketStatus: string;
   approvalStatus?: string | null;
   rejectionReason?: string | null;
+  // A client's request to reopen it, and who it was put to (null = the Admins).
+  reopenRequestStatus?: string | null;
+  reopenApproverUserId?: string | null;
   requestorName?: string | null;
   requestorUserId?: string | null;
   department?: string | null;
@@ -24,15 +27,25 @@ export interface TicketSummary {
   customerCompany?: { id: string; name: string } | null;
 }
 
-/** Badge for the creation-approval gate. Returns null for NONE/APPROVED (no badge needed). */
+/**
+ * Badge for the creation-approval gate. Returns null for NONE/APPROVED (no badge
+ * needed). Both pending stages read the same, since a template that needs
+ * approval is a change request; the Awaiting approval list mixes these with
+ * reopen requests, so the label says which kind it is.
+ */
 export function getApprovalMeta(status?: string | null): { label: string; className: string } | null {
   const amber = 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30';
-  if (status === 'PENDING_CUSTOMER')
-    return { label: 'Awaiting manager', className: amber };
-  if (status === 'PENDING')
-    return { label: 'Approval Pending', className: amber };
+  if (status === 'PENDING_CUSTOMER' || status === 'PENDING')
+    return { label: 'Change request approval pending', className: amber };
   if (status === 'REJECTED')
     return { label: 'Rejected', className: 'bg-destructive/15 text-destructive border-destructive/30' };
+  return null;
+}
+
+/** Badge for a client's reopen request while it waits for a decision. Violet, so it never reads as a change request. */
+export function getReopenMeta(status?: string | null): { label: string; className: string } | null {
+  if (status === 'PENDING')
+    return { label: 'Ticket reopen approval pending', className: 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/30' };
   return null;
 }
 
@@ -71,6 +84,18 @@ const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
 /** A sortable 'YYYY-MM' key for the month a date falls in, in local time. */
 export function monthKey(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/** A sortable 'YYYY-MM-DD' key for the day a date falls on, in local time — the shape a date input holds. */
+export function dayKey(d: Date) {
+  return `${monthKey(d)}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** The first and last day of a monthKey, as dayKeys. */
+export function monthRange(key: string): [string, string] {
+  const [year, month] = key.split('-').map(Number);
+  const last = new Date(year, month, 0).getDate();
+  return [`${key}-01`, `${key}-${String(last).padStart(2, '0')}`];
 }
 
 /**

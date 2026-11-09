@@ -13,6 +13,7 @@ import { COMPLETED_TASK_STATUS, TASK_STATUSES, hrs, taskCode } from './taskMeta'
 import type { Task, UserOption } from './TasksTab';
 import TaskComments from './TaskComments';
 import { useWorklogInvalidate, useWorklogs } from './ticketQueries';
+import { staffLabel } from '@/lib/staffLabel';
 
 const UNASSIGNED = '__none__';
 
@@ -40,6 +41,7 @@ export default function TicketTaskDialog({
   taskId,
   users,
   canTrack,
+  canEdit,
   canReopen,
   pendingStatus,
   onPendingHandled,
@@ -50,6 +52,8 @@ export default function TicketTaskDialog({
   taskId: string | null;
   users: UserOption[];
   canTrack: (task: Task) => boolean;
+  /** Title, description, assignee and due date: the ticket's agent, the task's assignee, or an admin. */
+  canEdit: (task: Task) => boolean;
   /** Whether the viewer may pull a completed task back open — the ticket's agent, or an admin. */
   canReopen: boolean;
   /** A move picked in the grid, queued for the panel below rather than written there. */
@@ -119,7 +123,7 @@ export default function TicketTaskDialog({
   // on it, so clearing the field has to be as reachable as picking someone.
   const assigneeOptions = [
     { value: UNASSIGNED, label: 'Unassigned' },
-    ...users.map((u) => ({ value: u.id, label: u.username })),
+    ...users.map((u) => ({ value: u.id, label: staffLabel(u) })),
   ];
 
   /**
@@ -190,10 +194,16 @@ export default function TicketTaskDialog({
     onPendingHandled();
   };
 
-  const editable = !!task && canTrack(task);
+  // Two different rights. The task's *fields* — title, description, assignee,
+  // due date — belong to the ticket's agent, the task's assignee or an admin
+  // (`assertMayEdit`). Gating them on the status right instead left an
+  // unassigned task editable by Admins alone, so nobody could even assign it.
+  // The *status* — the timesheet — belongs to the task's assignee or an admin.
+  const editable = !!task && canEdit(task);
+  const mayTrack = !!task && canTrack(task);
   // Moving a completed task at all is a reopen, so the status control answers to
   // that rule instead: the ticket's own agent or an admin.
-  const statusEditable = completed ? canReopen : editable;
+  const statusEditable = completed ? canReopen : mayTrack;
 
   /** Save a text field only when it actually changed, on blur. */
   const commit = (field: 'title' | 'description', value: string) => {

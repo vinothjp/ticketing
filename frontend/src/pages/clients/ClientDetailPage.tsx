@@ -37,9 +37,12 @@ interface Support {
   period: 'FULL_AMC' | 'MONTHLY'; carryForward: boolean; allowTicketsAfterHours: boolean; allowExcess: boolean;
   // Per excess hour; null for non-Admins (withheld server-side) or when unset.
   excessRate: number | null;
+  toleranceHours?: number | null;
   currentAllocated: number | null; carriedIn: number; currentUsed: number; available: number | null;
 }
 interface Contract {
+  // IMPLEMENTATION = services only: no contract type, coverage or terms on this screen.
+  clientType?: 'IMPLEMENTATION' | 'AMC';
   scope: 'PRODUCT' | 'CUSTOMER'; coverageType: 'WARRANTY' | 'AMC'; start: string | null; end: string | null; hoursUnlimited: boolean; hours: number | null; visits: number | null; monthlyCost: number | null;
   productIds: string[]; period: { pct: number; daysLeft: number | null; active: boolean }; hoursPool: CPool; visitsPool: CPool; support?: Support;
   services?: { thirdPartyIntegration: boolean; planRollout: boolean; crApplicable: boolean; crMaxPerMonth: number | null; crMaxHours: number | null };
@@ -47,8 +50,8 @@ interface Contract {
   // every product, so it lives here; per-product POs are on ClientProductPage.
   poNumber: string | null; poFileUrl: string | null; poFileName: string | null;
 }
-interface Consultant { id: string; userId: string; username: string | null; productId: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
-interface CatAgent { track: string; user: { id: string; username: string } }
+interface Consultant { id: string; userId: string; username: string | null; name?: string | null; productId: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
+interface CatAgent { track: string; user: { id: string; username: string; name?: string | null } }
 interface CatModule { id: string; name: string; consultants: CatAgent[] }
 interface CatProduct { id: string; name: string; imageUrl?: string | null; modules: CatModule[]; consultants: CatAgent[] }
 interface StaffUser { id: string; username: string; name?: string | null; isActive?: boolean }
@@ -88,21 +91,21 @@ export default function ClientDetailPage() {
   const [scope, setScope] = useState<'PRODUCT' | 'CUSTOMER'>('PRODUCT');
   const num = (n: number | null): number | '' => (n == null ? '' : n);
   const [cust, setCust] = useState({ coverageType: 'AMC' as 'WARRANTY' | 'AMC', productIds: [] as string[], start: today(), end: '', hoursUnlimited: false, hours: '' as number | '', visits: '' as number | '', monthlyCost: '' as number | '',
-    hoursPeriod: 'FULL_AMC' as 'FULL_AMC' | 'MONTHLY', carryForward: false, allowTicketsAfterHours: true, allowExcess: false, excessRate: '' as number | '' });
+    hoursPeriod: 'FULL_AMC' as 'FULL_AMC' | 'MONTHLY', carryForward: false, allowTicketsAfterHours: true, allowExcess: false, excessRate: '' as number | '', toleranceHours: '' as number | '' });
   // Hydrate from the saved contract once it lands. Keyed on the saved *content*,
   // not the object identity: TanStack refetches on window focus, and re-running
   // this for every new object threw away whatever the admin had typed each time
   // they tabbed away and back.
   const contractKey = contract && JSON.stringify([contract.scope, contract.coverageType, contract.start, contract.end, contract.hoursUnlimited, contract.hours, contract.visits, contract.monthlyCost, contract.productIds,
-    contract.support?.period, contract.support?.carryForward, contract.support?.allowTicketsAfterHours, contract.support?.allowExcess, contract.support?.excessRate, contract.services]);
-  // Third-party integration, plan roll-out and CR terms — saved with Save contract.
+    contract.support?.period, contract.support?.carryForward, contract.support?.allowTicketsAfterHours, contract.support?.allowExcess, contract.support?.excessRate, contract.support?.toleranceHours, contract.services]);
+  // Third-party integration, plant roll-out and CR terms — saved with Save contract.
   const [services, setServices] = useState<ContractServicesValue>(servicesForm(null));
   useEffect(() => {
     if (contract) {
       setScope(contract.scope);
       const s = contract.support;
       setCust({ coverageType: contract.coverageType ?? 'AMC', productIds: contract.productIds, start: contract.start?.slice(0, 10) ?? today(), end: contract.end?.slice(0, 10) ?? '', hoursUnlimited: contract.hoursUnlimited ?? false, hours: num(contract.hours), visits: num(contract.visits), monthlyCost: num(contract.monthlyCost),
-        hoursPeriod: s?.period ?? 'FULL_AMC', carryForward: s?.carryForward ?? false, allowTicketsAfterHours: s?.allowTicketsAfterHours ?? true, allowExcess: s?.allowExcess ?? false, excessRate: num(s?.excessRate ?? null) });
+        hoursPeriod: s?.period ?? 'FULL_AMC', carryForward: s?.carryForward ?? false, allowTicketsAfterHours: s?.allowTicketsAfterHours ?? true, allowExcess: s?.allowExcess ?? false, excessRate: num(s?.excessRate ?? null), toleranceHours: num(s?.toleranceHours ?? null) });
       setServices(servicesForm(contract.services));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -164,6 +167,7 @@ export default function ClientDetailPage() {
       allowTicketsAfterHours: cust.allowTicketsAfterHours,
       allowExcess: cust.allowExcess,
       excessRate: cust.excessRate === '' ? null : Number(cust.excessRate),
+      toleranceHours: cust.toleranceHours === '' ? null : Number(cust.toleranceHours),
       ...servicesPayload(services),
       productIds: cust.productIds,
     }), 'Contract saved');
@@ -182,6 +186,13 @@ export default function ClientDetailPage() {
   // is Admin-only on the API.
   const { user } = useAuth();
   const isAdmin = !!user?.roles.includes('Admin');
+  // What the client bought is set on the client's Edit dialog, never here. An
+  // Implementation client has no AMC, so this screen drops the contract type,
+  // coverage, terms and support-hours settings and keeps its products, contract
+  // services (CR terms), auto assignment and consultants.
+  const impl = contract?.clientType === 'IMPLEMENTATION';
+  const saveServices = () =>
+    run(api.patch(`/api/customer-companies/${companyId}/services`, servicesPayload(services)), 'Contract services saved');
 
   // Auto-assignment is a client-level switch, not a contract term, so it writes
   // on click through PATCH :id rather than riding the Save contract payload —
@@ -247,13 +258,13 @@ export default function ClientDetailPage() {
           <ManagerSelect label="Account manager" value={client.accountManagerId} valueName={client.accountManagerName}
             staff={staff} readOnly={!isAdmin} onChange={setAccountManager} />
         )}
-        <div className="ml-auto flex items-center gap-4">
+        {!impl && <div className="ml-auto flex items-center gap-4">
           <span className="text-sm font-medium text-muted-foreground">Contract type</span>
           <RadioGroup value={scope} onValueChange={onScope} disabled={!contractLoaded || !isAdmin} className="flex gap-5">
             <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="PRODUCT" /> Per product</label>
             <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="CUSTOMER" /> One customer contract</label>
           </RadioGroup>
-        </div>
+        </div>}
       </div>
 
       {/* Nothing below is meaningful until we know which contract this client is
@@ -265,7 +276,7 @@ export default function ClientDetailPage() {
           products this contract covers across the top, then read-only Coverage
           on the left and the editable Terms on the right. Default consultants
           stay full-width below. */}
-      {contractLoaded && scope === 'CUSTOMER' && (
+      {contractLoaded && !impl && scope === 'CUSTOMER' && (
         <section className="mb-6 space-y-6">
           {/* Products covered — only the products this customer has. Assigning one
               works the same in either scope; the shared contract just governs its
@@ -294,7 +305,7 @@ export default function ClientDetailPage() {
                           <span title={productPill(p).title} className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${productPill(p).cls}`}>{productPill(p).label}</span>
                         </div>
                         <div className="mt-0.5 text-xs text-muted-foreground">Primary agents: {p.agents.length ? p.agents.join(', ') : 'none'}</div>
-                        <div className="text-xs text-muted-foreground">Product manager: {p.productManagerName ?? 'not assigned'}</div>
+                        <div className="text-xs text-muted-foreground">Project manager: {p.productManagerName ?? 'not assigned'}</div>
                         <div className="mt-1 text-[11px] font-medium text-primary">Manage consultants →</div>
                       </div>
                       <span onClick={(e) => e.stopPropagation()} className="mt-0.5 shrink-0" title={selected ? 'Remove from contract' : 'Add to contract'}>
@@ -334,8 +345,8 @@ export default function ClientDetailPage() {
                   pct={hAlloc ? Math.round((hUsed / hAlloc) * 100) : 0}
                   active={hUnlimited || (hLeft ?? 0) > 0}
                   right={hUnlimited ? 'Unlimited' : ''} />
-                <CoverageMeter icon={<MapPin className="size-4" />} title="Site visits"
-                  subtitle={contract.visitsPool.allocated == null ? 'Not included' : `${contract.visitsPool.left} of ${contract.visitsPool.allocated} left`}
+                <CoverageMeter icon={<MapPin className="size-4" />} title="Site visits (this month)"
+                  subtitle={contract.visitsPool.allocated == null ? 'Not included' : `${contract.visitsPool.left} of ${contract.visitsPool.allocated} left this month`}
                   pct={contract.visitsPool.allocated ? Math.round((contract.visitsPool.used / contract.visitsPool.allocated) * 100) : 0}
                   active={(contract.visitsPool.left ?? 0) > 0} right="" />
               </div>
@@ -360,7 +371,7 @@ export default function ClientDetailPage() {
                 {!cust.hoursUnlimited && (
                   <Field label={cust.hoursPeriod === 'MONTHLY' ? 'Support hours / month' : 'Support hours (for the term)'} min={1} disabled={!isAdmin} value={cust.hours} onChange={(v) => setCust({ ...cust, hours: v === '' ? '' : Number(v) })} />
                 )}
-                <Field label="No. of visits" disabled={!isAdmin} value={cust.visits} onChange={(v) => setCust({ ...cust, visits: v === '' ? '' : Number(v) })} />
+                <Field label="No. of visits / month" disabled={!isAdmin} value={cust.visits} onChange={(v) => setCust({ ...cust, visits: v === '' ? '' : Number(v) })} />
                 {/* What the client pays is withheld from non-Admins server-side — it
                     arrives null, so don't render an empty box for it. */}
                 {isAdmin && paidCoverage && (
@@ -405,7 +416,7 @@ export default function ClientDetailPage() {
                 </p>
               ) : (
                 <SupportHoursConfig
-                  value={{ hoursPeriod: cust.hoursPeriod, carryForward: cust.carryForward, allowTicketsAfterHours: cust.allowTicketsAfterHours, allowExcess: cust.allowExcess, excessRate: cust.excessRate }}
+                  value={{ hoursPeriod: cust.hoursPeriod, carryForward: cust.carryForward, allowTicketsAfterHours: cust.allowTicketsAfterHours, allowExcess: cust.allowExcess, excessRate: cust.excessRate, toleranceHours: cust.toleranceHours }}
                   // Saved with the rest of the contract by Save contract.
                   onChange={(patch) => setCust((c) => ({ ...c, ...patch }))}
                   live={contract?.support ?? null}
@@ -424,8 +435,9 @@ export default function ClientDetailPage() {
         </section>
       )}
 
-      {/* Per-product management (only in per-product mode) */}
-      {contractLoaded && scope === 'PRODUCT' && (
+      {/* Per-product management (per-product mode), and an Implementation client's
+          products — the same cards, without the coverage line it doesn't have. */}
+      {contractLoaded && (impl || scope === 'PRODUCT') && (
       <section className="mb-6 space-y-4">
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-base font-semibold text-foreground">Products</h2>
@@ -442,13 +454,15 @@ export default function ClientDetailPage() {
                     <span className="truncate font-semibold text-foreground">{p.productName}</span>
                     <span title={productPill(p).title} className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${productPill(p).cls}`}>{productPill(p).label}</span>
                   </div>
-                  <div className="mt-0.5 grid grid-cols-2 gap-x-3 text-xs text-muted-foreground">
-                    <span>{p.amc.type === 'FREE' ? 'Warranty (free)' : 'AMC (paid)'}: {p.amc.active ? p.amc.label : 'ended'}</span>
-                    <span>Hours: {p.hours.allocated == null ? '—' : `${p.hours.left}/${p.hours.allocated}`}</span>
-                    <span>Visits: {p.visits.allocated == null ? '—' : `${p.visits.left}/${p.visits.allocated}`}</span>
-                  </div>
+                  {!impl && (
+                    <div className="mt-0.5 grid grid-cols-2 gap-x-3 text-xs text-muted-foreground">
+                      <span>{p.amc.type === 'FREE' ? 'Warranty (free)' : 'AMC (paid)'}: {p.amc.active ? p.amc.label : 'ended'}</span>
+                      <span>Hours: {p.hours.allocated == null ? '—' : `${p.hours.left}/${p.hours.allocated}`}</span>
+                      <span>Visits this month: {p.visits.allocated == null ? '—' : `${p.visits.left}/${p.visits.allocated}`}</span>
+                    </div>
+                  )}
                   <div className="mt-0.5 text-xs text-muted-foreground">Primary agents: {p.agents.length ? p.agents.join(', ') : 'none'}</div>
-                        <div className="text-xs text-muted-foreground">Product manager: {p.productManagerName ?? 'not assigned'}</div>
+                        <div className="text-xs text-muted-foreground">Project manager: {p.productManagerName ?? 'not assigned'}</div>
                 </div>
                 <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
               </button>
@@ -457,6 +471,31 @@ export default function ClientDetailPage() {
         )}
 
       </section>
+      )}
+
+      {/* An Implementation client keeps the two client-level settings that have
+          nothing to do with an AMC: how its tickets are routed (saves on click,
+          as on the AMC screens) and its contract services, which CR limits read. */}
+      {contractLoaded && impl && (
+        <div className="mb-6 grid items-stretch gap-4 lg:grid-cols-2">
+          <section className="flex h-full flex-col gap-3 rounded-lg border bg-card p-4">
+            <h2 className="text-base font-semibold text-foreground">Ticket assignment</h2>
+            <AutoAssignChoice
+              value={client?.autoAssignTickets ?? true}
+              disabled={!isAdmin || !client}
+              onChange={setAutoAssign} />
+          </section>
+          <section className="flex h-full flex-col gap-3 rounded-lg border bg-card p-4">
+            <h2 className="text-base font-semibold text-foreground">Contract services</h2>
+            <ContractServicesConfig value={services} readOnly={!isAdmin}
+              onChange={(patch) => setServices((s) => ({ ...s, ...patch }))} />
+            {isAdmin && (
+              <div className="mt-auto flex justify-end pt-2">
+                <Button size="sm" onClick={saveServices}>Save services</Button>
+              </div>
+            )}
+          </section>
+        </div>
       )}
 
       {/* The client's common team. One shared set whatever the contract scope —
@@ -513,7 +552,7 @@ export default function ClientDetailPage() {
               <Field label="Support hours" min={1} value={renew.hours}
                 onChange={(v) => setRenew({ ...renew, hours: v === '' ? '' : Number(v) })} />
             )}
-            <Field label="Visits" value={renew.visits}
+            <Field label="Visits / month" value={renew.visits}
               onChange={(v) => setRenew({ ...renew, visits: v === '' ? '' : Number(v) })} />
             {paidCoverage && (
               <Field label="Monthly cost" value={renew.monthlyCost}

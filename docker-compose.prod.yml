@@ -1,0 +1,75 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:-rbac_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Not exposed — only backend talks to it
+
+  backend:
+    image: kt-ticketing-api:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-rbac_db}?schema=public
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      FRONTEND_URL: ${FRONTEND_URL:-https://tickets.kumaraitech.com}   # base for reset / gallery links in emails
+      OTP_SERVICE_URL: http://otp:3001
+      OTP_SERVICE_API_KEY: ${OTP_API_KEY}
+      SUPER_ADMIN_OTP: ${SUPER_ADMIN_OTP:-true}
+      PORT: 3000
+      RUN_SEED: ${RUN_SEED:-false}
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otp:
+        condition: service_started
+    # Not exposed — Caddy proxies to it
+
+  otp:
+    image: kt-ticketing-otp:latest
+    restart: unless-stopped
+    environment:
+      API_KEY: ${OTP_API_KEY}
+      SMTP_HOST: ${OTP_SMTP_HOST}
+      SMTP_PORT: ${OTP_SMTP_PORT:-587}
+      SMTP_USER: ${OTP_SMTP_USER}
+      SMTP_PASS: ${OTP_SMTP_PASS}
+      SMTP_FROM: ${OTP_SMTP_FROM:-}
+      PORT: 3001
+    # Not exposed — only backend talks to it
+
+  web:
+    image: kt-ticketing-web:latest
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  uploads:
+  caddy_data:
+  caddy_config:

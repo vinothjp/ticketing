@@ -2,6 +2,7 @@ import { useState, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Star } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
+import { staffLabel, staffMatches } from '@/lib/staffLabel';
 
 // Module × Technical / Functional / Others grid for assigning a client's per-product
 // consultants. "Others" maps to no specific track (module-wide fallback).
@@ -12,8 +13,9 @@ const CCOLS = [
 ] as const;
 
 export interface GridModule { id: string; name: string }
-export interface GridConsultant { id: string; userId: string; username: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
-interface StaffUser { id: string; username: string }
+export interface GridConsultant { id: string; userId: string; username: string | null; name?: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
+interface StaffUser { id: string; username: string; name?: string | null }
+
 
 export default function ConsultantGrid({ modules, consultants, staff, onAdd, onRemove, onPrimary, emptyRowLabel = 'Whole product', readOnly = false, inactiveModuleIds, onToggleModule }: {
   modules: GridModule[];
@@ -82,7 +84,7 @@ export default function ConsultantGrid({ modules, consultants, staff, onAdd, onR
                             ? <Star className="size-3 shrink-0 fill-amber-500 text-amber-500" />
                             : readOnly ? null
                             : <button title="Make primary" className="shrink-0 text-muted-foreground hover:text-amber-500" onClick={() => onPrimary?.(a.id)}><Star className="size-3" /></button>}
-                          <span className="flex-1 truncate text-foreground">{a.username}</span>
+                          <span className="flex-1 truncate text-foreground" title={staffLabel({ username: a.username ?? '', name: a.name })}>{staffLabel({ username: a.username ?? '', name: a.name })}</span>
                           {!readOnly && <button className="shrink-0 text-muted-foreground hover:text-destructive" onClick={() => onRemove(a.id)}><X className="size-3" /></button>}
                         </div>
                       ))}
@@ -107,7 +109,7 @@ function ConsultantTypeahead({ staff, exclude, onPick }: { staff: StaffUser[]; e
   const [open, setOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const [pos, setPos] = useState<{ left: number; width: number; top?: number; bottom?: number } | null>(null);
-  const matches = staff.filter((u) => !exclude.has(u.id) && u.username.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 8);
+  const matches = staff.filter((u) => !exclude.has(u.id) && staffMatches(u, q)).slice(0, 8);
 
   const reposition = () => {
     const el = inputRef.current;
@@ -145,8 +147,8 @@ function ConsultantTypeahead({ staff, exclude, onPick }: { staff: StaffUser[]; e
           style={{ position: 'fixed', left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width, zIndex: 50 }}
           className="max-h-48 min-w-36 overflow-y-auto rounded-md border bg-popover shadow-md">
           {matches.map((u) => (
-            <button key={u.id} className="block w-full truncate px-2 py-1.5 text-left text-xs hover:bg-muted" onMouseDown={(e) => { e.preventDefault(); onPick(u.id); setQ(''); }}>
-              {u.username}
+            <button key={u.id} title={staffLabel(u)} className="block w-full truncate px-2 py-1.5 text-left text-xs hover:bg-muted" onMouseDown={(e) => { e.preventDefault(); onPick(u.id); setQ(''); }}>
+              {staffLabel(u)}
             </button>
           ))}
         </div>,

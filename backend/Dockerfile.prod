@@ -1,0 +1,60 @@
+# ── Build stage ──────────────────────────────────────────────
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+COPY backend/package*.json ./
+# xlsx is vendored from cdn.sheetjs.com (npm stops at the vulnerable 0.18.5), so npm ci needs the tarball
+COPY backend/vendor ./vendor/
+RUN npm ci
+
+COPY backend/prisma ./prisma/
+COPY backend/prisma.config.js ./prisma.config.js
+RUN npx prisma generate
+
+COPY backend/tsconfig*.json backend/nest-cli.json ./
+COPY backend/src ./src/
+
+RUN npm run build
+
+# Strip source maps and declaration files — no source in the artifact
+RUN find dist -name '*.js.map' -delete && find dist -name '*.d.ts' -delete
+
+# Bundle the seed script so ts-node isn't needed at runtime
+RUN npx esbuild prisma/seed.ts --bundle --platform=node \
+    --outfile=dist/seed.js --packages=external
+
+# ── Production deps ─────────────────────────────────────────
+FROM node:20-alpine AS deps
+WORKDIR /app
+
+COPY backend/package*.json ./
+COPY backend/vendor ./vendor/
+RUN npm ci --omit=dev
+
+COPY backend/prisma ./prisma/
+COPY backend/prisma.config.js ./prisma.config.js
+RUN npx prisma generate
+
+# ── Final image (no source) ─────────────────────────────────
+FROM node:20-alpine
+WORKDIR /app
+
+RUN apk add --no-cache postgresql16-client
+
+# Only compiled JS + production node_modules + prisma client
+COPY --from=deps /app/node_modules ./node_modules/
+COPY --from=deps /app/package.json ./
+COPY --from=builder /app/dist ./dist/
+
+# Prisma schema (for db push) + migrations + compiled seed
+COPY backend/prisma/schema.prisma ./prisma/schema.prisma
+COPY backend/prisma.config.js ./prisma.config.js
+COPY backend/prisma/migrations/manual ./prisma/migrations/manual/
+COPY --from=builder /app/dist/seed.js ./dist/seed.js
+
+COPY deploy/backend-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 3000
+
+ENTRYPOINT ["/entrypoint.sh"]

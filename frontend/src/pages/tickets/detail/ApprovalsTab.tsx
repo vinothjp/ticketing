@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Combobox, type ComboboxOption } from '@/components/ui/combobox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { useDateFormat } from '@/lib/dateFormat';
+import { staffLabel } from '@/lib/staffLabel';
 
 interface Approval {
   id: string;
@@ -42,9 +43,6 @@ const STATUS_VARIANT: Record<string, 'secondary' | 'success' | 'destructive'> = 
 
 /** Radix cannot hold an empty SelectItem value, so "no asset" needs a sentinel. */
 const NO_ASSET = '__none__';
-
-const personName = (u?: { name?: string | null; username?: string } | null) =>
-  u?.name || u?.username || '';
 
 /**
  * Asset requests on a ticket. The row asks a named approver for a specific
@@ -230,7 +228,7 @@ export default function ApprovalsTab({ ticketId, canManage }: { ticketId: string
               <Select value={approver || undefined} onValueChange={(v) => { if (v) setApprover(v); }}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="Select approver..." /></SelectTrigger>
                 <SelectContent>
-                  {users.map((u) => <SelectItem key={u.id} value={u.id}>{personName(u) || u.username}</SelectItem>)}
+                  {users.map((u) => <SelectItem key={u.id} value={u.id}>{staffLabel(u)}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>

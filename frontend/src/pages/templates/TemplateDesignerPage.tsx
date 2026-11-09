@@ -77,6 +77,7 @@ export default function TemplateDesignerPage() {
   const [icon, setIcon] = useState('layout-template');
   const [color, setColor] = useState(TEMPLATE_COLORS[6]);
   const [isActive, setIsActive] = useState(true);
+  const [requiresApproval, setRequiresApproval] = useState(false);
   const [fields, setFields] = useState<DesignerField[]>([]);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [previewValues, setPreviewValues] = useState<Record<string, any>>({});
@@ -101,6 +102,7 @@ export default function TemplateDesignerPage() {
     setIcon(template.icon ?? 'layout-template');
     setColor(template.color ?? TEMPLATE_COLORS[6]);
     setIsActive(template.isActive ?? true);
+    setRequiresApproval(template.requiresApproval ?? false);
     setFields(
       (template.fields ?? [])
         .filter((f: any) => f.visibility === 'VISIBLE')
@@ -271,6 +273,7 @@ export default function TemplateDesignerPage() {
         icon,
         color,
         isActive,
+        requiresApproval,
       };
       if (isNew) {
         return (await api.post('/api/templates', { ...meta, fields: buildFieldsPayload() })).data;
@@ -381,6 +384,15 @@ export default function TemplateDesignerPage() {
               <div className="flex items-center justify-between border-t pt-4 sm:col-span-2">
                 <span className="text-sm font-medium">Active</span>
                 <Switch checked={isActive} onCheckedChange={setIsActive} />
+              </div>
+              <div className="flex items-start justify-between gap-6 sm:col-span-2">
+                <div className="space-y-1">
+                  <span className="text-sm font-medium">Needs admin approval</span>
+                  <p className="text-xs text-muted-foreground">
+                    Tickets that agents or customers raise on this template wait for an Admin to approve them before anyone can work on them. Tickets an Admin raises go straight through.
+                  </p>
+                </div>
+                <Switch checked={requiresApproval} onCheckedChange={setRequiresApproval} />
               </div>
             </div>
           </section>

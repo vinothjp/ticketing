@@ -2,6 +2,7 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
+  ServiceUnavailableException,
   Logger,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -14,6 +15,7 @@ import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { VerifyOtpDto } from './dto/verify-otp.dto';
 
 @Injectable()
 export class AuthService {
@@ -26,10 +28,19 @@ export class AuthService {
     private mailer: MailerService,
   ) {}
 
+  // Pending OTP challenges: challengeId → userId (in-memory, lives alongside
+  // the OTP service's own store — this side just remembers WHO the challenge
+  // was for so verify-otp can issue their JWT without a second password prompt).
+  private otpChallenges = new Map<string, { userId: string; expiresAt: number }>();
+
   async login(dto: LoginDto) {
+    const login = dto.username.toLowerCase();
     const user = await this.prisma.user.findFirst({
       where: {
-        OR: [{ username: dto.username }, { email: dto.username }],
+        OR: [
+          { username: { equals: login, mode: 'insensitive' } },
+          { email: { equals: login, mode: 'insensitive' } },
+        ],
         isActive: true,
       },
       include: { userRoles: { include: { role: true } } },
@@ -56,6 +67,80 @@ export class AuthService {
     }
 
     const roles = user.userRoles.map((ur) => ur.role.name);
+    const isSuperAdmin = roles.includes('SuperAdmin');
+
+    // ── SuperAdmin 2FA gate ─────────────────────────────────
+    // Fails closed: no code sent = no sign-in. SUPER_ADMIN_OTP=false is the
+    // only bypass (break-glass for a dead mail server).
+    if (isSuperAdmin && this.config.get('SUPER_ADMIN_OTP') !== 'false') {
+      if (!this.isOtpServiceConfigured()) {
+        throw new ServiceUnavailableException(
+          'Super Admin sign-in needs an emailed code, but the OTP service is not configured.',
+        );
+      }
+      const challenge = await this.requestOtp(user.email, user.username ?? user.name ?? 'Super Admin');
+      if (!challenge?.challengeId) {
+        this.logger.error('OTP send failed — SuperAdmin sign-in refused');
+        throw new ServiceUnavailableException(
+          'Could not send the Super Admin sign-in code. Check the OTP service and its SMTP settings.',
+        );
+      }
+      // Remember the user behind this challenge so verify-otp can issue tokens
+      this.otpChallenges.set(challenge.challengeId, {
+        userId: user.id,
+        expiresAt: Date.now() + 6 * 60 * 1000, // 6 min (slightly longer than OTP TTL)
+      });
+      return {
+        requiresOtp: true,
+        challengeId: challenge.challengeId,
+        otpSentTo: this.maskEmail(user.email),
+      };
+    }
+
+    return this.issueTokens(user, roles);
+  }
+
+  async verifyOtp(dto: VerifyOtpDto) {
+    const pending = this.otpChallenges.get(dto.challengeId);
+    if (!pending || Date.now() > pending.expiresAt) {
+      this.otpChallenges.delete(dto.challengeId);
+      throw new UnauthorizedException('Challenge expired or not found — please log in again');
+    }
+
+    const result = await this.callOtpService('/otp/verify', {
+      challengeId: dto.challengeId,
+      otp: dto.otp,
+    });
+
+    if (!result || !result.valid) {
+      const msg = result?.attemptsLeft != null
+        ? `Invalid code. ${result.attemptsLeft} attempt(s) left.`
+        : result?.error || 'Invalid code';
+      // If attempts exhausted, clean up our side too
+      if (result?.attemptsLeft === 0) {
+        this.otpChallenges.delete(dto.challengeId);
+      }
+      throw new UnauthorizedException(msg);
+    }
+
+    // OTP verified — issue tokens
+    this.otpChallenges.delete(dto.challengeId);
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: pending.userId },
+      include: { userRoles: { include: { role: true } } },
+    });
+
+    if (!user || !user.isActive) throw new UnauthorizedException('Account is inactive or no longer exists');
+
+    const roles = user.userRoles.map((ur) => ur.role.name);
+    // The challenge only ever vouches for a SuperAdmin sign-in
+    if (!roles.includes('SuperAdmin')) throw new UnauthorizedException('Not authorized');
+    return this.issueTokens(user, roles);
+  }
+
+  // ── Token helpers ─────────────────────────────────────────
+  private issueTokens(user: any, roles: string[]) {
     const payload = {
       sub: user.id,
       username: user.username,
@@ -86,6 +171,39 @@ export class AuthService {
         customerCompanyId: user.customerCompanyId,
       },
     };
+  }
+
+  // ── OTP service integration ───────────────────────────────
+  private isOtpServiceConfigured(): boolean {
+    return !!this.config.get('OTP_SERVICE_URL') && !!this.config.get('OTP_SERVICE_API_KEY');
+  }
+
+  private async callOtpService(path: string, body: Record<string, unknown>): Promise<any> {
+    const baseUrl = this.config.get('OTP_SERVICE_URL');
+    const apiKey = this.config.get('OTP_SERVICE_API_KEY');
+    try {
+      const res = await fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+      return await res.json();
+    } catch (err) {
+      this.logger.error(`OTP service call failed: ${path}`, err instanceof Error ? err.message : err);
+      return null;
+    }
+  }
+
+  private async requestOtp(email: string, username: string): Promise<{ challengeId: string } | null> {
+    return this.callOtpService('/otp/send', { email, username, appName: 'KT Ticketing' });
+  }
+
+  private maskEmail(email: string): string {
+    const [local, domain] = email.split('@');
+    return local[0] + '***@' + domain;
   }
 
   async forgotPassword(dto: ForgotPasswordDto) {

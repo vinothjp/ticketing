@@ -48,11 +48,14 @@ export interface CustomerCompanyOption {
   name: string;
   /** Coverage model — PRODUCT makes the visit's product field mandatory. */
   contractScope?: 'PRODUCT' | 'CUSTOMER';
+  /** IMPLEMENTATION has no visits allowance, so its visits never need a product. */
+  clientType?: 'IMPLEMENTATION' | 'AMC';
 }
 
 export interface UserOption {
   id: string;
   username: string;
+  name?: string | null;
   isActive?: boolean;
 }
 
@@ -68,6 +71,7 @@ export interface CustomerConsultantOption {
   id: string;
   userId: string;
   username: string | null;
+  name?: string | null;
   productId: string | null;
   isPrimary: boolean;
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { Plus, Pencil, Download,
   Hash, Calendar, Building2, AtSign, Package, Timer, CircleDot, AlignLeft } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -8,7 +9,7 @@ import type { ReactNode } from 'react';
 import api from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
 import { VisitReportDialog } from './VisitReportDialog';
-import { exportCsv } from '../../lib/exportCsv';
+import { downloadFile, blobErrorMessage } from '../../lib/download';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -25,6 +26,7 @@ import {
   needsNewDate,
   wasRescheduled
 } from './clientVisitsMeta';
+import { staffLabel } from '@/lib/staffLabel';
 
 /**
  * A column heading: its icon, then its label. Muted and small, so the headings
@@ -112,18 +114,14 @@ export function ClientVisitsPage() {
   }, [openVisitId, visits]);
   const reportVisit = visits.find((v) => v.id === reportVisitId) ?? null;
 
-  const handleExport = () => {
-    exportCsv('client-visits.csv', visits, [
-      { header: 'Visit #', value: (v) => v.visitNumber ?? '' },
-      { header: 'Date', value: (v) => new Date(v.visitDate).toLocaleDateString() },
-      { header: 'Client', value: (v) => v.customerCompany?.name ?? '' },
-      { header: 'Consultant', value: (v) => v.consultantName ?? '' },
-      { header: 'Product', value: (v) => v.productName ?? '' },
-      { header: 'Hours', value: (v) => v.hours ?? 0 },
-      { header: 'Status', value: (v) => VISIT_STATUS_LABELS[v.status] ?? v.status },
-      { header: 'Purpose', value: (v) => v.purpose ?? '' },
-    ]);
-  };
+  // Export what the screen is showing: the server runs the list's own query
+  // with the same filters, so the file is exactly these rows. A server-built
+  // sheet rather than a browser CSV — that one had no column widths and wrote
+  // dates in whatever locale the user's machine was set to.
+  const exportSheet = useMutation({
+    mutationFn: () => downloadFile(`/api/client-visits/export?${queryParams.toString()}`, 'client-visits.xlsx'),
+    onError: async (e) => toast.error(await blobErrorMessage(e, 'Export failed')),
+  });
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -137,9 +135,13 @@ export function ClientVisitsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={handleExport}>
+          <Button
+            variant="outline"
+            onClick={() => exportSheet.mutate()}
+            disabled={visits.length === 0 || exportSheet.isPending}
+          >
             <Download className="mr-2 h-4 w-4" />
-            Export
+            {exportSheet.isPending ? 'Exporting…' : 'Export'}
           </Button>
           {isAdmin && (
             <Button onClick={() => navigate('/client-visits/new')}>
@@ -173,7 +175,7 @@ export function ClientVisitsPage() {
           <SelectContent>
             <SelectItem value="all">All Consultants</SelectItem>
             {users.map(u => (
-              <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>
+              <SelectItem key={u.id} value={u.id}>{staffLabel(u)}</SelectItem>
             ))}
           </SelectContent>
         </Select>

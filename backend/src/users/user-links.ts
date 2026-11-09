@@ -18,6 +18,7 @@ export async function assertUserDeletable(prisma: PrismaService, userId: string,
     [['ticket raised by them', 'tickets raised by them'], prisma.ticket.count({ where: { requestorUserId: userId } })],
     [['ticket task', 'ticket tasks'], prisma.ticketTask.count({ where: { assigneeUserId: userId } })],
     [['ticket approval', 'ticket approvals'], prisma.ticketApproval.count({ where: { approverUserId: userId } })],
+    [['pending ticket reopen request', 'pending ticket reopen requests'], prisma.ticket.count({ where: { reopenApproverUserId: userId, reopenRequestStatus: 'PENDING' } })],
     [['ticket time entry', 'ticket time entries'], prisma.ticketWorklog.count({ where: { userId } })],
     [['project they manage', 'projects they manage'], prisma.project.count({ where: { managerUserId: userId } })],
     [['project resource', 'project resources'], prisma.projectResource.count({ where: { userId } })],
@@ -30,7 +31,7 @@ export async function assertUserDeletable(prisma: PrismaService, userId: string,
     [['product consultant list', 'product consultant lists'], prisma.productConsultant.count({ where: { userId } })],
     [['module consultant list', 'module consultant lists'], prisma.moduleConsultant.count({ where: { userId } })],
     [['client as account manager', 'clients as account manager'], prisma.customerCompany.count({ where: { accountManagerId: userId } })],
-    [['client product as product manager', 'client products as product manager'], prisma.customerCompanyProduct.count({ where: { productManagerId: userId } })],
+    [['client product as project manager', 'client products as project manager'], prisma.customerCompanyProduct.count({ where: { productManagerId: userId } })],
   ];
   const counts = await Promise.all(checks.map(([, c]) => c));
   const links = checks

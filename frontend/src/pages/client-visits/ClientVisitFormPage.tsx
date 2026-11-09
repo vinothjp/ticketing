@@ -21,6 +21,7 @@ import {
   VISIT_STATUSES,
   VISIT_STATUS_LABELS,
 } from './clientVisitsMeta';
+import { staffLabel } from '@/lib/staffLabel';
 
 const Req = () => <span className="text-destructive">*</span>;
 
@@ -92,7 +93,7 @@ export function ClientVisitFormPage() {
   const awaitingNewDate = visit?.status === 'RESCHEDULE_REQUESTED';
 
   const selectedCompany = customerCompanies.find((c) => c.id === customerCompanyId);
-  const productRequired = selectedCompany?.contractScope === 'PRODUCT';
+  const productRequired = selectedCompany?.contractScope === 'PRODUCT' && selectedCompany.clientType !== 'IMPLEMENTATION';
 
   // Product + consultant choices are whatever this client actually has — the
   // products assigned to them and the consultants assigned to them on the
@@ -133,14 +134,14 @@ export function ClientVisitFormPage() {
         customerConsultants
           .filter((c) => !c.productId || c.productId === productId)
           .reduce((acc, c) => {
-            if (!acc.has(c.userId)) acc.set(c.userId, c.username || c.userId);
+            if (!acc.has(c.userId)) acc.set(c.userId, staffLabel({ username: c.username || c.userId, name: c.name }));
             return acc;
           }, new Map<string, string>()),
-        ([userId, username]) => ({ userId, username }),
+        ([userId, label]) => ({ userId, label }),
       )
     : staff
         .filter((u) => u.isActive !== false)
-        .map((u) => ({ userId: u.id, username: u.username }));
+        .map((u) => ({ userId: u.id, label: staffLabel(u) }));
 
   // Tickets narrow to the chosen client once one is picked.
   const customerTickets = customerCompanyId
@@ -292,7 +293,7 @@ export function ClientVisitFormPage() {
               </SelectTrigger>
               <SelectContent>
                 {consultantOptions.map((c) => (
-                  <SelectItem key={c.userId} value={c.userId}>{c.username}</SelectItem>
+                  <SelectItem key={c.userId} value={c.userId}>{c.label}</SelectItem>
                 ))}
               </SelectContent>
             </Select>

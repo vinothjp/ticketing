@@ -169,7 +169,7 @@ export interface TaskComment {
 export interface TaskWatcher {
   id: string;
   userId: string;
-  user: { id: string; username: string };
+  user: { id: string; username: string; name?: string | null };
 }
 
 export interface DependencyRef {
@@ -240,7 +240,7 @@ export interface ProjectResource {
   startDate?: string | null;
   endDate?: string | null;
   billable: boolean;
-  user?: { id: string; username: string } | null;
+  user?: { id: string; username: string; name?: string | null } | null;
 }
 
 export interface ProjectTimesheet {
@@ -308,5 +308,5 @@ export function wbsOrder(tasks: ProjectTask[]): { task: ProjectTask; depth: numb
   return out;
 }
 
-export interface UserOption { id: string; username: string; }
+export interface UserOption { id: string; username: string; name?: string | null; }
 export interface CustomerCompanyOption { id: string; name: string; }

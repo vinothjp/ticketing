@@ -41,7 +41,7 @@ export class SupportHoursService {
    * and the DTO as dormant data — see CLAUDE.md.
    */
   async usageForCompany(company: CustomerCompany): Promise<SupportUsage> {
-    if (company.contractScope !== 'CUSTOMER') return { hasPool: false };
+    if (company.contractScope !== 'CUSTOMER' || company.clientType === 'IMPLEMENTATION') return { hasPool: false };
     if (company.contractHoursUnlimited || company.contractHours == null) return { hasPool: false };
     const agreed = Number(company.contractHours);
 

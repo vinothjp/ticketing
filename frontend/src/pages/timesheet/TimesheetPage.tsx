@@ -15,8 +15,9 @@ import {
   projectLabel, weekStartOf, addDays, dayHeader, statusVariant,
   type WeekResponse, type GridRow,
 } from './timesheetMeta';
+import { staffLabel } from '@/lib/staffLabel';
 
-interface UserOption { id: string; username: string }
+interface UserOption { id: string; username: string; name?: string | null }
 
 const emptyRow = (): GridRow => ({ projectId: '', taskId: null, activity: '', workPerformed: '', status: 'DRAFT', days: {} });
 // The Activity box's value: the task, or — for an entry from before rows named a
@@ -56,7 +57,7 @@ export default function TimesheetPage() {
     queryKey: ['users', 'timesheet-consultants'],
     enabled: isAdmin,
     queryFn: async () =>
-      (await api.get('/api/users')).data.map((u: { id: string; username: string }) => ({ id: u.id, username: u.username })),
+      (await api.get('/api/users')).data.map((u: { id: string; username: string; name?: string | null }) => ({ id: u.id, username: u.username, name: u.name ?? null })),
   });
 
   // Seed the editable grid from the server whenever the week/consultant loads or
@@ -179,8 +180,8 @@ export default function TimesheetPage() {
               value={consultantId}
               onChange={setConsultantId}
               options={[
-                ...(user && !users.some((u) => u.id === user.id) ? [{ value: user.id, label: `${user.username} (me)` }] : []),
-                ...users.map((u) => ({ value: u.id, label: u.id === user?.id ? `${u.username} (me)` : u.username })),
+                ...(user && !users.some((u) => u.id === user.id) ? [{ value: user.id, label: `${staffLabel(user)} (me)` }] : []),
+                ...users.map((u) => ({ value: u.id, label: u.id === user?.id ? `${staffLabel(u)} (me)` : staffLabel(u) })),
               ]}
             />
           ) : (

@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { staffLabel, staffMatches } from '@/lib/staffLabel';
 
 type Track = 'TECHNICAL' | 'FUNCTIONAL' | 'OTHERS';
 const COLS: { key: Track; label: string }[] = [
@@ -20,8 +21,8 @@ const COLS: { key: Track; label: string }[] = [
 const inCol = (agents: Agent[], col: Track) =>
   col === 'OTHERS' ? agents.filter((a) => a.track !== 'TECHNICAL' && a.track !== 'FUNCTIONAL') : agents.filter((a) => a.track === col);
 
-interface StaffUser { id: string; username: string }
-interface Agent { id: string; track: string; isPrimary: boolean; user: { id: string; username: string } }
+interface StaffUser { id: string; username: string; name?: string | null }
+interface Agent { id: string; track: string; isPrimary: boolean; user: { id: string; username: string; name?: string | null } }
 interface Module { id: string; name: string; consultants: Agent[] }
 interface Product { id: string; name: string; code: string; description?: string | null; imageUrl?: string | null; consultants: Agent[]; modules: Module[] }
 
@@ -42,7 +43,8 @@ function draftAgents(list: DraftLink[], staff: StaffUser[]): Agent[] {
   const seen = new Set<string>();
   return list.map((a) => {
     const isPrimary = !seen.has(a.track); seen.add(a.track);
-    return { id: `${a.track}${CID}${a.userId}`, track: a.track, isPrimary, user: { id: a.userId, username: staff.find((s) => s.id === a.userId)?.username ?? a.userId } };
+    const u = staff.find((s) => s.id === a.userId);
+    return { id: `${a.track}${CID}${a.userId}`, track: a.track, isPrimary, user: { id: a.userId, username: u?.username ?? a.userId, name: u?.name ?? null } };
   });
 }
 
@@ -62,10 +64,25 @@ export default function ProductEditorPage() {
   const { data: product } = useQuery<Product>({ queryKey: ['product', id], queryFn: async () => (await api.get(`/api/products/${id}`)).data, enabled: !isNew });
   const { data: staff = [] } = useQuery<StaffUser[]>({ queryKey: ['users'], queryFn: async () => (await api.get('/api/users')).data });
 
+  // Hydrate from the saved product. Keyed on its saved *content*, not the query
+  // object: every agent add/remove refetches the product (and so does window
+  // focus), which used to re-run this, wiping unsaved name/code edits.
+  const detailsKey = product && JSON.stringify([product.id, product.name, product.code, product.description, product.imageUrl]);
   useEffect(() => {
     if (product) {
       setDetails({ name: product.name, code: product.code, description: product.description ?? '' });
       setImageUrl(product.imageUrl ?? null);
+    }
+  }, [detailsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The Whole product / Modules choice is derived once per product, then it is
+  // the admin's. Re-deriving it on each refetch snapped a product that has
+  // modules back to Modules the moment an agent was added under Whole product.
+  // (Product-level agents are still meaningful there: routing falls back to
+  // them when a ticket's module has no agent of its own.)
+  const modeFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (product && modeFor.current !== product.id) {
+      modeFor.current = product.id;
       setMode(product.modules.length > 0 ? 'MODULES' : 'PRODUCT');
     }
   }, [product]);
@@ -256,7 +273,7 @@ function AgentGrid({
                           {a.isPrimary
                             ? <Star className="size-3 shrink-0 fill-amber-500 text-amber-500" />
                             : <button title="Make primary" className="shrink-0 text-muted-foreground hover:text-amber-500" onClick={() => onPrimary(row.key, a.id)}><Star className="size-3" /></button>}
-                          <span className="flex-1 truncate text-foreground">{a.user.username}</span>
+                          <span className="flex-1 truncate text-foreground" title={staffLabel(a.user)}>{staffLabel(a.user)}</span>
                           <button className="shrink-0 text-muted-foreground hover:text-destructive" onClick={() => onRemove(row.key, a.id)}><X className="size-3" /></button>
                         </div>
                       ))}
@@ -291,7 +308,7 @@ function AgentTypeahead({ staff, exclude, onPick }: { staff: StaffUser[]; exclud
   const [open, setOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const [pos, setPos] = useState<{ left: number; width: number; top?: number; bottom?: number } | null>(null);
-  const matches = staff.filter((u) => !exclude.has(u.id) && u.username.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 8);
+  const matches = staff.filter((u) => !exclude.has(u.id) && staffMatches(u, q)).slice(0, 8);
 
   const reposition = () => {
     const el = inputRef.current;
@@ -329,8 +346,8 @@ function AgentTypeahead({ staff, exclude, onPick }: { staff: StaffUser[]; exclud
           style={{ position: 'fixed', left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width, zIndex: 50 }}
           className="max-h-48 min-w-36 overflow-y-auto rounded-md border bg-popover shadow-md">
           {matches.map((u) => (
-            <button key={u.id} className="block w-full truncate px-2 py-1.5 text-left text-xs hover:bg-muted" onMouseDown={(e) => { e.preventDefault(); onPick(u.id); setQ(''); }}>
-              {u.username}
+            <button key={u.id} title={staffLabel(u)} className="block w-full truncate px-2 py-1.5 text-left text-xs hover:bg-muted" onMouseDown={(e) => { e.preventDefault(); onPick(u.id); setQ(''); }}>
+              {staffLabel(u)}
             </button>
           ))}
         </div>,

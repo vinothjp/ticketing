@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import CompanyLogo from '@/components/CompanyLogo';
+import MultiCheckSelect from '@/components/MultiCheckSelect';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAuth } from '../context/AuthContext';
 import ImportExportBar from '@/components/ImportExportBar';
@@ -38,6 +39,10 @@ interface Company {
   id: string;
   name: string;
   code?: string | null;
+  /** Auto-generated client id (CC-000001); set by the server on create, never edited. */
+  companyCode?: string | null;
+  /** Departments offered on this client's New Ticket form; empty = all. */
+  departments?: string[];
   contactEmail?: string | null;
   contactPerson?: string | null;
   contactNumber?: string | null;
@@ -46,7 +51,9 @@ interface Company {
   maxContacts: number;
   ticketCount: number;
   contractScope?: 'PRODUCT' | 'CUSTOMER';
+  clientType?: ClientType;
 }
+type ClientType = 'IMPLEMENTATION' | 'AMC';
 interface Contact { id: string; username: string; name?: string | null; email: string; isActive: boolean; isAdmin: boolean; }
 interface AdminUser { id: string; username: string; name?: string | null; email: string; }
 
@@ -66,7 +73,21 @@ const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 
 const empty = {
   name: '', code: '', contactEmail: '', contactPerson: '', contactNumber: '', maxContacts: 5,
+  departments: [] as string[],
+  // Required on New Client and deliberately not preselected: what the client
+  // bought decides which screens they get, so the admin has to say.
+  clientType: '' as ClientType | '',
 };
+
+/** The list's Type pill: what the client bought and, for AMC, which coverage model. */
+function typePill(c: Company) {
+  if (c.clientType === 'IMPLEMENTATION') {
+    return { label: 'Implementation', title: 'Implementation of services only — no AMC', cls: 'border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300' };
+  }
+  return c.contractScope === 'CUSTOMER'
+    ? { label: 'AMC · One contract', title: 'AMC — one shared contract covering every product', cls: 'border-primary/30 bg-primary/10 text-primary' }
+    : { label: 'AMC · Per product', title: 'AMC — each product carries its own warranty/AMC coverage', cls: 'border-primary/30 bg-primary/10 text-primary' };
+}
 
 export default function CustomerCompaniesPage() {
   const { user } = useAuth();
@@ -74,9 +95,19 @@ export default function CustomerCompaniesPage() {
   const qc = useQueryClient();
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Company | null>(null);
+  // The Department option list, for the dialog's Departments picker (active values only).
+  const { data: departmentOptions = [] } = useQuery<{ value: string; label: string }[]>({
+    queryKey: ['picklist-options', 'department'],
+    queryFn: async () => (await api.get('/api/picklist-options', { params: { listKey: 'department' } })).data,
+    enabled: formOpen,
+  });
   const [form, setForm] = useState<typeof empty>(empty);
   const [admin, setAdmin] = useState<AdminInput>(emptyAdmin);
   const [q, setQ] = useState('');
+  const [typeFilter, setTypeFilter] = useState<'all' | ClientType>('all');
+  // A client-type change on Edit waits here for its confirmation: going to
+  // Implementation clears every AMC term, so it is never applied on Save alone.
+  const [confirmType, setConfirmType] = useState<ClientType | null>(null);
   // A new client has no id yet, so its logo is held here and uploaded once the
   // company exists. `pendingPreview` is an object URL we must revoke.
   const [pendingLogo, setPendingLogo] = useState<File | null>(null);
@@ -92,9 +123,10 @@ export default function CustomerCompaniesPage() {
 
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
-    if (!term) return companies;
-    return companies.filter((c) => c.name.toLowerCase().includes(term) || (c.code ?? '').toLowerCase().includes(term));
-  }, [companies, q]);
+    return companies.filter((c) =>
+      (typeFilter === 'all' || (c.clientType ?? 'AMC') === typeFilter)
+      && (!term || c.name.toLowerCase().includes(term) || (c.code ?? '').toLowerCase().includes(term) || (c.companyCode ?? '').toLowerCase().includes(term)));
+  }, [companies, q, typeFilter]);
 
   // The edited client, re-read from the list so the logo refreshes after upload.
   const current = editing ? companies.find((c) => c.id === editing.id) ?? editing : null;
@@ -116,8 +148,18 @@ export default function CustomerCompaniesPage() {
         name: c.name, code: c.code || undefined, contactEmail: c.contactEmail || undefined,
         contactPerson: c.contactPerson || undefined, contactNumber: c.contactNumber || undefined,
         maxContacts: Number(c.maxContacts),
+        departments: c.departments,
       };
-      if (editing) return api.patch(`/api/customer-companies/${editing.id}`, body);
+      if (editing) {
+        // A confirmed type change goes first, on its own route — it is the half
+        // that clears terms, so the rest of the save never runs without it.
+        if (c.clientType && c.clientType !== (editing.clientType ?? 'AMC')) {
+          await api.put(`/api/customer-companies/${editing.id}/client-type`, { type: c.clientType });
+          for (const key of ['client', 'client-contract', 'client-products']) qc.invalidateQueries({ queryKey: [key, editing.id] });
+        }
+        return api.patch(`/api/customer-companies/${editing.id}`, body);
+      }
+      body.clientType = c.clientType;
       // The customer admin rides on the create — linked or new, never neither.
       if (admin.mode === 'link') body.adminUserId = admin.userId;
       else Object.assign(body, { adminUsername: admin.username.trim(), adminEmail: admin.email.trim(), adminPassword: admin.password });
@@ -173,17 +215,31 @@ export default function CustomerCompaniesPage() {
     setForm({
       ...empty, name: c.name, code: c.code ?? '', contactEmail: c.contactEmail ?? '',
       contactPerson: c.contactPerson ?? '', contactNumber: c.contactNumber ?? '', maxContacts: c.maxContacts,
+      departments: c.departments ?? [],
+      clientType: c.clientType ?? 'AMC',
     });
     setFormOpen(true);
   };
 
   const hasLogo = editing ? !!current?.logoUrl : !!pendingPreview;
 
+  // Save on Edit asks first when the client type is being changed.
+  const typeChanged = !!editing && !!form.clientType && form.clientType !== (editing.clientType ?? 'AMC');
+  const onSave = () => {
+    if (typeChanged) { setConfirmType(form.clientType as ClientType); return; }
+    saveMutation.mutate(form);
+  };
+
   return (
     <div>
-      <div className="mb-4 min-w-0">
-        <h1 className="text-2xl font-bold text-foreground">Clients</h1>
-        <p className="text-sm text-muted-foreground">External clients whose contacts can log in and raise tickets.</p>
+      {/* New Client sits on the heading's right, so it never wraps under the
+          search/filter/import row on a narrower window. */}
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold text-foreground">Clients</h1>
+          <p className="text-sm text-muted-foreground">External clients whose contacts can log in and raise tickets.</p>
+        </div>
+        {isAdmin && <Button onClick={openCreate}><Plus className="size-4" /> New Client</Button>}
       </div>
 
       {/* Search and every action on one row, the shape both masters use. The
@@ -194,6 +250,14 @@ export default function CustomerCompaniesPage() {
           <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search clients…" className="pl-8" />
         </div>
+        <Select value={typeFilter} onValueChange={(v) => { if (v) setTypeFilter(v as typeof typeFilter); }}>
+          <SelectTrigger className="w-40" aria-label="Filter by client type"><SelectValue placeholder="All types" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All types</SelectItem>
+            <SelectItem value="IMPLEMENTATION">Implementation</SelectItem>
+            <SelectItem value="AMC">AMC</SelectItem>
+          </SelectContent>
+        </Select>
         {isAdmin && (
           <>
             <ImportExportBar
@@ -204,7 +268,6 @@ export default function CustomerCompaniesPage() {
               importUrl="/api/customer-companies/import"
               onImported={() => qc.invalidateQueries({ queryKey: ['customer-companies'] })}
             />
-            <Button onClick={openCreate}><Plus className="size-4" /> New Client</Button>
           </>
         )}
       </div>
@@ -235,9 +298,16 @@ export default function CustomerCompaniesPage() {
               <label className="text-sm font-medium">Company name</label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Globex Ltd" />
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
+              {/* Generated by the server when the client is created, so it is shown,
+                  never typed — a new client has no number until it is saved. */}
               <div className="space-y-1.5">
-                <label className="text-sm font-medium">Code</label>
+                <label className="text-sm font-medium">Company code</label>
+                <Input value={current?.companyCode ?? ''} readOnly disabled
+                  placeholder={editing ? '—' : 'Generated on save'} title="Generated automatically" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Short name</label>
                 <Input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="GLX" />
               </div>
               <div className="space-y-1.5">
@@ -245,6 +315,20 @@ export default function CustomerCompaniesPage() {
                 <Input type="number" min={1} max={50} value={form.maxContacts} onChange={(e) => setForm({ ...form, maxContacts: Number(e.target.value) })} />
               </div>
             </div>
+
+            {/* Which departments this client's New Ticket form offers. Values come
+                from the Department option list; none ticked = every department. */}
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Departments</label>
+              <MultiCheckSelect
+                options={departmentOptions}
+                value={form.departments}
+                onChange={(departments) => setForm({ ...form, departments })}
+                emptyLabel="All departments" />
+              <p className="text-xs text-muted-foreground">Shown in the Department dropdown on this client's new tickets.</p>
+            </div>
+
+            <ClientTypeChoice value={form.clientType} onChange={(t) => setForm({ ...form, clientType: t })} />
 
             {/* The client's one customer admin, right under its identity: required
                 on create; on edit, set here once if the client has none. */}
@@ -288,9 +372,39 @@ export default function CustomerCompaniesPage() {
             )}
           </div>
           <DialogFooter>
-            <Button onClick={() => saveMutation.mutate(form)} disabled={!form.name.trim() || (!editing && !adminValid(admin)) || saveMutation.isPending}>
+            <Button onClick={onSave} disabled={!form.name.trim() || !form.clientType || (!editing && !adminValid(admin)) || saveMutation.isPending}>
               {saveMutation.isPending ? 'Saving…' : editing ? 'Save' : 'Create'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Changing what a client bought, confirmed before anything is written. */}
+      <Dialog open={!!confirmType} onOpenChange={(o) => { if (!o) setConfirmType(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Switch {editing?.name ?? 'this client'} to {confirmType === 'IMPLEMENTATION' ? 'Implementation' : 'AMC'}?</DialogTitle>
+          </DialogHeader>
+          {confirmType === 'IMPLEMENTATION' ? (
+            <div className="space-y-2 text-sm text-muted-foreground">
+              <p>Implementation clients have no AMC. Once you switch:</p>
+              <ul className="list-disc space-y-1 pl-5">
+                <li>The AMC terms, support-hours pool, visits allowance, contract services and purchase order are <strong className="text-foreground">cleared</strong> — on this client and on each of its products.</li>
+                <li>Tickets are no longer counted against support hours, and no expiry or hours-low reminders go out.</li>
+                <li>Products, consultants and existing tickets are <strong className="text-foreground">kept</strong>.</li>
+              </ul>
+              <p>Switching back to AMC later starts with blank terms to fill in.</p>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              The client gets a support contract. It starts as <strong className="text-foreground">Per product</strong> with
+              blank terms — choose the contract type on the client screen, then enter and save the terms. Products,
+              consultants and tickets are kept.
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmType(null)}>Cancel</Button>
+            <Button disabled={saveMutation.isPending} onClick={() => { setConfirmType(null); saveMutation.mutate(form); }}>Switch</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -311,11 +425,11 @@ export default function CustomerCompaniesPage() {
             <TableHeader>
               <TableRow className="bg-muted/50 hover:bg-muted/50">
                 <TableHead className="border-r"><HeadLabel icon={Building2}>Client</HeadLabel></TableHead>
-                <TableHead className="border-r"><HeadLabel icon={Hash}>Code</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={Hash}>Short name</HeadLabel></TableHead>
                 <TableHead className="border-r"><HeadLabel icon={AtSign}>Contact</HeadLabel></TableHead>
                 <TableHead className="border-r"><HeadLabel icon={Mail}>Email</HeadLabel></TableHead>
                 <TableHead className="border-r"><HeadLabel icon={Phone}>Phone</HeadLabel></TableHead>
-                <TableHead className="border-r"><HeadLabel icon={FileText}>Contract</HeadLabel></TableHead>
+                <TableHead className="border-r"><HeadLabel icon={FileText}>Type</HeadLabel></TableHead>
                 <TableHead className="border-r"><HeadLabel icon={MessageSquare} className="justify-end">Tickets</HeadLabel></TableHead>
                 <TableHead className="border-r"><HeadLabel icon={CircleDot}>Status</HeadLabel></TableHead>
                 <TableHead className="text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
@@ -353,13 +467,11 @@ export default function CustomerCompaniesPage() {
                       : <span className="text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className="w-px border-r">
-                    {/* Which coverage model this client is on. A client is always on
-                        exactly one, so this reads as a fact, not a toggle. */}
-                    <Badge variant="outline" title={c.contractScope === 'CUSTOMER'
-                      ? 'One shared contract covering every product'
-                      : 'Each product carries its own warranty/AMC coverage'}>
-                      {c.contractScope === 'CUSTOMER' ? 'One contract' : 'Per product'}
-                    </Badge>
+                    {/* What the client bought and, for AMC, which coverage model it is on. */}
+                    <span title={typePill(c).title}
+                      className={`whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-semibold ${typePill(c).cls}`}>
+                      {typePill(c).label}
+                    </span>
                   </TableCell>
                   <TableCell className="w-px border-r text-right tabular-nums text-muted-foreground">{c.ticketCount}</TableCell>
                   <TableCell className="w-px border-r">
@@ -558,6 +670,42 @@ function CustomerAdminSection({ companyId }: { companyId: string }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * What the client bought, as two choice cards. Set here and only here — the
+ * client screen carries just the AMC contract type. Changing it on Edit is
+ * confirmed before it is written (see `onSave`).
+ */
+function ClientTypeChoice({ value, onChange }: { value: ClientType | ''; onChange: (t: ClientType) => void }) {
+  const options: { value: ClientType; label: string; hint: string }[] = [
+    { value: 'IMPLEMENTATION', label: 'Implementation', hint: 'Implementation of services only. No AMC, support hours or coverage.' },
+    { value: 'AMC', label: 'AMC', hint: 'Implementation + AMC: contract terms, support hours, coverage and renewals.' },
+  ];
+  return (
+    <div className="space-y-1.5">
+      <div className="text-sm font-medium">Client type <span className="text-destructive">*</span></div>
+      <div role="radiogroup" aria-label="Client type" className="grid gap-2 sm:grid-cols-2">
+        {options.map((o) => {
+          const on = value === o.value;
+          return (
+            <button key={o.value} type="button" role="radio" aria-checked={on}
+              onClick={() => { if (!on) onChange(o.value); }}
+              className={`flex items-start gap-2.5 rounded-lg border p-3 text-left transition-colors ${
+                on ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:border-primary/50 hover:bg-muted/40'}`}>
+              <span className={`mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border ${on ? 'border-primary' : 'border-muted-foreground/50'}`}>
+                {on && <span className="size-2 rounded-full bg-primary" />}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-foreground">{o.label}</span>
+                <span className="block text-xs text-muted-foreground">{o.hint}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

@@ -4,6 +4,8 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CreateClientVisitDto, UpdateClientVisitDto, VISIT_STATUS_LABELS } from './dto/client-visit.dto';
+import { exportSheet } from '../lib/spreadsheet';
+import { CLIENT_VISIT_COLUMNS } from './client-visit-sheet';
 
 /** The one status that books a visit against the customer's visit allowance. */
 const DEDUCTING_STATUS = 'VISITED';
@@ -25,6 +27,17 @@ const sameDay = (a: Date, b: Date) =>
 export type VisitActor = { id: string; roles: string[] };
 
 const isAdmin = (a: VisitActor) => a.roles.includes('Admin');
+
+/** The list screen's filters, all optional; `from` / `to` are `YYYY-MM-DD`. */
+export type VisitFilters = {
+  customerCompanyId?: string;
+  consultantId?: string;
+  productId?: string;
+  ticketId?: string;
+  status?: string;
+  from?: string;
+  to?: string;
+};
 
 /**
  * What a consultant may change on their own visit: they report back on the work,
@@ -70,7 +83,7 @@ export class ClientVisitsService {
   private async assertCompany(clientId: string, customerCompanyId: string) {
     const company = await this.prisma.customerCompany.findFirst({
       where: { id: customerCompanyId, clientId },
-      select: { id: true, name: true, contractScope: true },
+      select: { id: true, name: true, contractScope: true, clientType: true },
     });
     if (!company) throw new BadRequestException('Customer company not found');
     return company;
@@ -88,9 +101,11 @@ export class ClientVisitsService {
    *   optional and every visit draws from that single allowance.
    */
   private assertProductForScope(
-    company: { name: string; contractScope: string },
+    company: { name: string; contractScope: string; clientType: string },
     productId?: string | null,
   ) {
+    // An Implementation client has no allowance to spend, so nothing needs naming.
+    if (company.clientType === 'IMPLEMENTATION') return;
     if (company.contractScope === 'PRODUCT' && !productId) {
       throw new BadRequestException(
         `${company.name} is on per-product coverage, so a visit must name the product it is booked against`,
@@ -315,7 +330,12 @@ export class ClientVisitsService {
     }
   }
 
-  async findAll(clientId: string, filters: { customerCompanyId?: string, consultantId?: string, productId?: string, ticketId?: string, status?: string, from?: string, to?: string }, actor: VisitActor) {
+  /**
+   * The list's filter, shared with the export so the download is always exactly
+   * the rows on screen. `to` covers the whole of its day: a visit stamped with a
+   * time on the last day must not fall out of a range that names that day.
+   */
+  private listWhere(clientId: string, filters: VisitFilters, actor: VisitActor) {
     const where: any = { clientId };
     // A consultant's list is their own visits, whatever they ask for.
     if (!isAdmin(actor)) where.consultantId = actor.id;
@@ -327,8 +347,35 @@ export class ClientVisitsService {
     if (filters.from || filters.to) {
       where.visitDate = {};
       if (filters.from) where.visitDate.gte = new Date(filters.from);
-      if (filters.to) where.visitDate.lte = new Date(filters.to);
+      if (filters.to) {
+        const end = new Date(filters.to);
+        end.setUTCDate(end.getUTCDate() + 1);
+        where.visitDate.lt = end;
+      }
     }
+    return where;
+  }
+
+  /** The filtered list as a spreadsheet — the same rows, in the same order. */
+  async exportSheet(clientId: string, filters: VisitFilters, actor: VisitActor) {
+    const visits = await this.findAll(clientId, filters, actor);
+    const ticketIds = [...new Set(visits.map((v) => v.ticketId).filter((id): id is string => !!id))];
+    const tickets = ticketIds.length
+      ? await this.prisma.ticket.findMany({
+          where: { clientId, id: { in: ticketIds } },
+          select: { id: true, ticketNumber: true },
+        })
+      : [];
+    const numberOf = new Map(tickets.map((t) => [t.id, t.ticketNumber]));
+    return exportSheet(
+      'Client visits',
+      CLIENT_VISIT_COLUMNS,
+      visits.map((v) => ({ ...v, ticketNumber: v.ticketId ? numberOf.get(v.ticketId) ?? null : null })),
+    );
+  }
+
+  async findAll(clientId: string, filters: VisitFilters, actor: VisitActor) {
+    const where = this.listWhere(clientId, filters, actor);
 
     return this.prisma.clientVisit.findMany({
       where,
@@ -369,7 +416,8 @@ export class ClientVisitsService {
     });
 
     const visitNumber = `CL-${String(updatedClient.clientVisitSequence).padStart(6, '0')}`;
-    const contractDeducted = dto.status === DEDUCTING_STATUS;
+    // An Implementation client has no visits allowance: its visits are logged, never drawn down.
+    const contractDeducted = dto.status === DEDUCTING_STATUS && company.clientType !== 'IMPLEMENTATION';
     const deductedCpId = contractDeducted
       ? await this.resolvePool(dto.customerCompanyId, dto.productId)
       : null;
@@ -447,7 +495,6 @@ export class ClientVisitsService {
     this.assertScheduleDate(newStatus, newDate);
     this.assertConsultantHours(actor, dto, newStatus, Number(existingVisit.hours ?? 0));
     const customerCompanyId = dto.customerCompanyId || existingVisit.customerCompanyId;
-    const contractDeducted = newStatus === DEDUCTING_STATUS;
 
     // A product only stays on the visit while the (possibly new) customer owns it.
     const productId = dto.productId !== undefined ? dto.productId : existingVisit.productId;
@@ -456,6 +503,8 @@ export class ClientVisitsService {
     // have to leave a row whose draw-down has somewhere to land.
     const effectiveCompany = company ?? (await this.assertCompany(clientId, customerCompanyId));
     this.assertProductForScope(effectiveCompany, productId);
+    // An Implementation client has no visits allowance: its visits are logged, never drawn down.
+    const contractDeducted = newStatus === DEDUCTING_STATUS && effectiveCompany.clientType !== 'IMPLEMENTATION';
     let productName = existingVisit.productName;
     if (!productId) {
       productName = null;

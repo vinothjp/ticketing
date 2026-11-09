@@ -7,10 +7,11 @@ import { MailerService } from '../mail/mailer.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import {
   AssignProductDto, UpdateProductTermsDto, RenewAmcDto, CreateProductRequestDto, GrantRequestDto, SetContractDto,
-  RenewContractDto, AddCustomerConsultantDto,
+  RenewContractDto, AddCustomerConsultantDto, SetClientServicesDto,
 } from './dto/customer-product.dto';
 import { productOffForClient } from './module-switch';
 import { assertAssignableManager, managerName, MANAGER_SELECT } from './client-managers';
+import { isImplementation, type ClientType } from './client-type';
 
 const DAY = 86_400_000;
 /**
@@ -71,6 +72,7 @@ const BLANK_CONTRACT = {
   contractCarryForward: false,
   contractAllowExcess: false,
   contractExcessRate: null,
+  contractToleranceHours: null,
   contractAllowTicketsAfterHours: true,
   contractThirdPartyIntegration: false,
   contractPlanRollout: false,
@@ -104,6 +106,7 @@ const BLANK_PRODUCT_TERMS = {
   amcCarryForward: false,
   amcAllowExcess: false,
   amcExcessRate: null,
+  amcToleranceHours: null,
   amcAllowTicketsAfterHours: true,
   amcThirdPartyIntegration: false,
   amcPlanRollout: false,
@@ -198,6 +201,30 @@ export class CustomerProductsService {
   }
 
   /**
+   * Site visits used **this calendar month** from one pool. The visit allowance
+   * (`freeAmcVisits` / `paidAmcVisits` / `contractVisits`) is per month, so this
+   * is counted on read from the visits themselves — every VISITED row whose
+   * draw-down landed on this pool (`contractDeducted` + `deductedCpId`, the same
+   * markers `client-visits` writes), bucketed by its `visitDate`. It resets on
+   * the 1st with no sweep, and a visit back-dated into last month counts there.
+   * The stored `visitsUsed` / `contractVisitsUsed` counters are lifetime totals
+   * and are deliberately not what any screen quotes.
+   */
+  private visitsThisMonth(pool: { cpId: string } | { companyId: string }) {
+    const from = this.monthStart();
+    const to = new Date(from.getFullYear(), from.getMonth() + 1, 1);
+    return this.prisma.clientVisit.count({
+      where: {
+        contractDeducted: true,
+        visitDate: { gte: from, lt: to },
+        ...('cpId' in pool
+          ? { deductedCpId: pool.cpId }
+          : { customerCompanyId: pool.companyId, deductedCpId: null }),
+      },
+    });
+  }
+
+  /**
    * The support-hours pool that actually governs a (company, product): the shared
    * customer contract when the customer is on CUSTOMER scope, otherwise the named
    * product's active (paid/free) pool. `hours` is read per the pool's period —
@@ -207,11 +234,15 @@ export class CustomerProductsService {
   private async resolvePoolConfig(clientId: string, companyId: string, productId: string | null) {
     const company = await this.prisma.customerCompany.findFirst({ where: { id: companyId, clientId } });
     if (!company) return null;
+    // An Implementation client has no pool at all: nothing caps, ledgers or
+    // blocks its hours, which is what every caller of this resolver relies on.
+    if (isImplementation(company)) return null;
     if (company.contractScope === 'CUSTOMER') {
       return {
         scope: 'CONTRACT' as const, ownerId: company.id, clientId,
         period: company.contractHoursPeriod, unlimited: company.contractHoursUnlimited, hours: company.contractHours,
         carryForward: company.contractCarryForward, allowExcess: company.contractAllowExcess,
+        toleranceHours: Number(company.contractToleranceHours ?? 0),
         allowTicketsAfterHours: company.contractAllowTicketsAfterHours,
       };
     }
@@ -224,6 +255,7 @@ export class CustomerProductsService {
       period: cp.amcHoursPeriod, unlimited: paid ? cp.paidAmcHoursUnlimited : cp.freeAmcHoursUnlimited,
       hours: paid ? cp.paidAmcHours : cp.freeAmcHours,
       carryForward: cp.amcCarryForward, allowExcess: cp.amcAllowExcess,
+      toleranceHours: Number(cp.amcToleranceHours ?? 0),
       allowTicketsAfterHours: cp.amcAllowTicketsAfterHours,
     };
   }
@@ -291,6 +323,7 @@ export class CustomerProductsService {
     scope: 'CONTRACT' | 'PRODUCT'; ownerId: string; clientId: string;
     period: string; unlimited: boolean; hours: number | null;
     carryForward: boolean; allowExcess: boolean; excessRate: Prisma.Decimal | null;
+    toleranceHours: Prisma.Decimal | null;
     allowTicketsAfterHours: boolean;
   }, hideMoney = false) {
     const base = {
@@ -298,6 +331,8 @@ export class CustomerProductsService {
       allowExcess: cfg.allowExcess,
       // What an excess hour is charged at — money, so withheld from non-Admins.
       excessRate: hideMoney || cfg.excessRate == null ? null : Number(cfg.excessRate),
+      // Hours loggable past the allowance before the excess rule applies.
+      toleranceHours: cfg.toleranceHours == null ? null : Number(cfg.toleranceHours),
       allowTicketsAfterHours: cfg.allowTicketsAfterHours,
     };
     if (cfg.period !== 'MONTHLY' || cfg.unlimited || cfg.hours == null) {
@@ -321,7 +356,8 @@ export class CustomerProductsService {
     if (!cfg) return;
     const pool = await this.productSupportHours(clientId, companyId, productId ?? '');
     if (!pool.hasPool || pool.allocated == null) return; // unlimited / unmapped — no cap
-    if (pool.used + addHours <= pool.allocated) return;  // within allowance
+    // Within the allowance plus its tolerance: the excess rule doesn't apply yet.
+    if (pool.used + addHours <= pool.allocated + cfg.toleranceHours) return;
     if (!cfg.allowExcess) {
       throw new BadRequestException('Support-hours allowance exhausted — enable excess hours to log more time.');
     }
@@ -392,6 +428,7 @@ export class CustomerProductsService {
     // deliberately draw down only the visit count, never these hours.
     const loggedHours = Number(cp.hoursUsed);
     const hoursUsed = loggedHours + ticketHours;
+    const visitsUsedNow = allocVisits == null ? 0 : await this.visitsThisMonth({ cpId: cp.id });
     const warranty = this.timeLeft(cp.warrantyEnd);
     const amc = this.timeLeft(cp.amcEnd);
     return {
@@ -429,10 +466,11 @@ export class CustomerProductsService {
         fromLogged: loggedHours,
         fromTickets: ticketHours,
       },
+      // Per month: `used` is this month's visits (see visitsThisMonth).
       visits: {
         allocated: allocVisits,
-        used: cp.visitsUsed,
-        left: allocVisits == null ? null : Math.max(0, allocVisits - cp.visitsUsed),
+        used: visitsUsedNow,
+        left: allocVisits == null ? null : Math.max(0, allocVisits - visitsUsedNow),
       },
       // This product's own purchase order, used when the client is on PRODUCT
       // scope. On CUSTOMER scope one PO covers everything and the screens read
@@ -459,6 +497,7 @@ export class CustomerProductsService {
         scope: 'PRODUCT', ownerId: cp.id, clientId,
         period: cp.amcHoursPeriod, unlimited: hoursUnlimited, hours: allocHours,
         carryForward: cp.amcCarryForward, allowExcess: cp.amcAllowExcess, excessRate: cp.amcExcessRate,
+        toleranceHours: cp.amcToleranceHours,
         allowTicketsAfterHours: cp.amcAllowTicketsAfterHours,
       }, hideMoney),
       services: servicesView({
@@ -544,7 +583,8 @@ export class CustomerProductsService {
    * other one must be refused rather than silently landing in a pool nothing
    * reads. The UI already hides these controls; this closes the API behind them.
    */
-  private assertScope(company: { contractScope: string }, expected: 'PRODUCT' | 'CUSTOMER') {
+  private assertScope(company: { contractScope: string; clientType?: string }, expected: 'PRODUCT' | 'CUSTOMER') {
+    this.assertAmc(company);
     if (company.contractScope === expected) return;
     throw new BadRequestException(
       expected === 'PRODUCT'
@@ -553,11 +593,34 @@ export class CustomerProductsService {
     );
   }
 
+  /**
+   * An Implementation client has no AMC: no contract, terms, pool, PO or renewal.
+   * Every AMC write funnels through here (directly or via `assertScope`) so the
+   * API refuses what the screens never offer.
+   */
+  private assertAmc(company: { clientType?: string }) {
+    if (!isImplementation(company)) return;
+    throw new BadRequestException(
+      'This is an Implementation client — it has no AMC terms. Change its client type to AMC to add a support contract.',
+    );
+  }
+
+  /** `ownedCp`, refused for an Implementation client — for AMC paperwork that is scope-agnostic (the PO). */
+  private async assertCpAmc(cpId: string, clientId: string) {
+    const cp = await this.prisma.customerCompanyProduct.findFirst({
+      where: { id: cpId, customerCompany: { clientId } },
+      include: { customerCompany: { select: { clientType: true } } },
+    });
+    if (!cp) throw new NotFoundException('Customer product not found');
+    this.assertAmc(cp.customerCompany);
+    return cp;
+  }
+
   /** `ownedCp` plus the owning company, for scope-guarded per-product writes. */
   private async ownedCpInScope(cpId: string, clientId: string) {
     const cp = await this.prisma.customerCompanyProduct.findFirst({
       where: { id: cpId, customerCompany: { clientId } },
-      include: { product: true, customerCompany: { select: { contractScope: true } } },
+      include: { product: true, customerCompany: { select: { contractScope: true, clientType: true } } },
     });
     if (!cp) throw new NotFoundException('Customer product not found');
     this.assertScope(cp.customerCompany, 'PRODUCT');
@@ -574,7 +637,8 @@ export class CustomerProductsService {
     // Under a shared contract the contract owns the one timeline, so assigning
     // only records that it covers the product — the same row `setContract`'s
     // `productIds` writes. Per-product terms here would be a pool nothing reads.
-    if (company.contractScope === 'CUSTOMER') {
+    // An Implementation client has no timeline at all, so it records the same.
+    if (company.contractScope === 'CUSTOMER' || isImplementation(company)) {
       return this.prisma.customerCompanyProduct.upsert({
         where: { customerCompanyId_productId: { customerCompanyId: companyId, productId: dto.productId } },
         update: { status: 'ACTIVE' },
@@ -623,6 +687,7 @@ export class CustomerProductsService {
       amcCarryForward: dto.carryForward ?? false,
       amcAllowExcess: dto.allowExcess ?? false,
       amcExcessRate: dto.excessRate ?? null,
+      amcToleranceHours: dto.toleranceHours ?? null,
       amcAllowTicketsAfterHours: dto.allowTicketsAfterHours ?? true,
       amcThirdPartyIntegration: dto.thirdPartyIntegration ?? false,
       amcPlanRollout: dto.planRollout ?? false,
@@ -702,6 +767,7 @@ export class CustomerProductsService {
         ...(dto.carryForward !== undefined ? { amcCarryForward: dto.carryForward } : {}),
         ...(dto.allowExcess !== undefined ? { amcAllowExcess: dto.allowExcess } : {}),
         ...(dto.excessRate !== undefined ? { amcExcessRate: dto.excessRate } : {}),
+        ...(dto.toleranceHours !== undefined ? { amcToleranceHours: dto.toleranceHours } : {}),
         ...(dto.allowTicketsAfterHours !== undefined ? { amcAllowTicketsAfterHours: dto.allowTicketsAfterHours } : {}),
         ...(dto.thirdPartyIntegration !== undefined ? { amcThirdPartyIntegration: dto.thirdPartyIntegration } : {}),
         ...(dto.planRollout !== undefined ? { amcPlanRollout: dto.planRollout } : {}),
@@ -877,7 +943,7 @@ export class CustomerProductsService {
   /** Name (or clear) the one product manager for this client's product. Either scope. */
   async setProductManager(cpId: string, userId: string | null | undefined, clientId: string) {
     await this.ownedCp(cpId, clientId);
-    if (userId) await assertAssignableManager(this.prisma, userId, clientId, 'product manager');
+    if (userId) await assertAssignableManager(this.prisma, userId, clientId, 'project manager');
     await this.prisma.customerCompanyProduct.update({ where: { id: cpId }, data: { productManagerId: userId || null } });
     return { productManagerId: userId || null };
   }
@@ -903,7 +969,11 @@ export class CustomerProductsService {
     const hoursUsed = loggedHours + ticketHours;
     // Unlimited coverage has no allocation at all — nothing to spend down.
     const allocHours = c.contractHoursUnlimited ? null : c.contractHours;
+    const contractVisitsNow = c.contractVisits == null ? 0 : await this.visitsThisMonth({ companyId: c.id });
     return {
+      // IMPLEMENTATION = no contract at all; the screens and the customer's My
+      // Products read this before anything below.
+      clientType: c.clientType as ClientType,
       scope: c.contractScope,
       coverageType: c.contractCoverageType,
       start: c.contractStart,
@@ -931,15 +1001,17 @@ export class CustomerProductsService {
         fromLogged: loggedHours,
         fromTickets: ticketHours,
       },
+      // Per month, like the per-product pool (see visitsThisMonth).
       visitsPool: {
-        allocated: c.contractVisits, used: c.contractVisitsUsed,
-        left: c.contractVisits == null ? null : Math.max(0, c.contractVisits - c.contractVisitsUsed),
+        allocated: c.contractVisits, used: contractVisitsNow,
+        left: c.contractVisits == null ? null : Math.max(0, c.contractVisits - contractVisitsNow),
       },
       // Period / carry-forward / excess config + (MONTHLY) this month's availability.
       support: await this.buildSupportView({
         scope: 'CONTRACT', ownerId: c.id, clientId: c.clientId,
         period: c.contractHoursPeriod, unlimited: c.contractHoursUnlimited, hours: allocHours,
         carryForward: c.contractCarryForward, allowExcess: c.contractAllowExcess, excessRate: c.contractExcessRate,
+        toleranceHours: c.contractToleranceHours,
         allowTicketsAfterHours: c.contractAllowTicketsAfterHours,
       }, hideMoney),
       services: servicesView({
@@ -969,6 +1041,57 @@ export class CustomerProductsService {
    * withdrawal of coverage. `hoursUsed` / `visitsUsed` are left alone too — they
    * record work that really was done, and are not terms anyone re-enters.
    */
+  /**
+   * Switch what a client bought. Confirmed in the Edit Client dialog, because
+   * going to IMPLEMENTATION clears every AMC term: the shared contract
+   * (`BLANK_CONTRACT`, PO invoice unlinked) and each product's terms
+   * (`resetProductTerms`), with the scope back on PRODUCT. Going back to AMC
+   * starts per product with those blank terms for the admin to enter. Products,
+   * consultants, managers, module switches, hours/visits already used and every
+   * ticket are untouched either way. A re-send of the current type is a no-op.
+   */
+  async setClientType(companyId: string, type: ClientType, clientId: string) {
+    const company = await this.ownedCompany(companyId, clientId);
+    if (company.clientType === type) return { clientType: type };
+    if (type === 'IMPLEMENTATION') {
+      if (company.contractPoFileUrl) await this.deletePoFile(company.contractPoFileUrl);
+      await this.resetProductTerms(companyId);
+      await this.prisma.customerCompany.update({
+        where: { id: companyId },
+        data: { ...BLANK_CONTRACT, clientType: type, contractScope: 'PRODUCT', contractAlertSentAt: null },
+      });
+    } else {
+      await this.prisma.customerCompany.update({
+        where: { id: companyId },
+        data: { clientType: type, contractScope: 'PRODUCT' },
+      });
+    }
+    return { clientType: type };
+  }
+
+  /**
+   * An Implementation client's contract services — the one part of a contract it
+   * keeps. Stored on the client-level `contract*` columns a shared contract uses,
+   * which is what `cr-limits.ts` reads for it. AMC clients save these with their
+   * terms instead, so this route refuses them rather than writing a second copy.
+   * Absent = keep, explicit null clears; CR applicable off clears both limits.
+   */
+  async setClientServices(companyId: string, dto: SetClientServicesDto, clientId: string) {
+    const company = await this.ownedCompany(companyId, clientId);
+    if (!isImplementation(company)) {
+      throw new BadRequestException('Contract services of an AMC client are saved with its terms.');
+    }
+    const data: Prisma.CustomerCompanyUpdateInput = {};
+    if (dto.thirdPartyIntegration !== undefined) data.contractThirdPartyIntegration = dto.thirdPartyIntegration;
+    if (dto.planRollout !== undefined) data.contractPlanRollout = dto.planRollout;
+    if (dto.crApplicable !== undefined) data.contractCrApplicable = dto.crApplicable;
+    if (dto.crMaxPerMonth !== undefined) data.contractCrMaxPerMonth = dto.crMaxPerMonth;
+    if (dto.crMaxHours !== undefined) data.contractCrMaxHours = dto.crMaxHours;
+    if (dto.crApplicable === false) { data.contractCrMaxPerMonth = null; data.contractCrMaxHours = null; }
+    await this.prisma.customerCompany.update({ where: { id: companyId }, data });
+    return this.getContract(companyId, clientId);
+  }
+
   private async resetProductTerms(companyId: string) {
     const rows = await this.prisma.customerCompanyProduct.findMany({
       where: { customerCompanyId: companyId },
@@ -985,6 +1108,7 @@ export class CustomerProductsService {
 
   async setContract(companyId: string, dto: SetContractDto, clientId: string, actorId?: string) {
     const company = await this.ownedCompany(companyId, clientId);
+    this.assertAmc(company);
 
     // Changing scope moves which pool governs the client, so the contract they
     // are arriving at starts from nothing: its terms, purchase order, invoice and
@@ -1058,6 +1182,7 @@ export class CustomerProductsService {
       if (dto.carryForward !== undefined) data.contractCarryForward = dto.carryForward;
       if (dto.allowExcess !== undefined) data.contractAllowExcess = dto.allowExcess;
       if (dto.excessRate !== undefined) data.contractExcessRate = dto.excessRate;
+      if (dto.toleranceHours !== undefined) data.contractToleranceHours = dto.toleranceHours;
       if (dto.allowTicketsAfterHours !== undefined) data.contractAllowTicketsAfterHours = dto.allowTicketsAfterHours;
       if (dto.thirdPartyIntegration !== undefined) data.contractThirdPartyIntegration = dto.thirdPartyIntegration;
       if (dto.planRollout !== undefined) data.contractPlanRollout = dto.planRollout;
@@ -1109,7 +1234,7 @@ export class CustomerProductsService {
   // have no business firing because someone typed a PO number.
 
   async setContractPoNumber(companyId: string, clientId: string, poNumber?: string | null) {
-    await this.ownedCompany(companyId, clientId);
+    this.assertAmc(await this.ownedCompany(companyId, clientId));
     await this.prisma.customerCompany.update({
       where: { id: companyId },
       data: { contractPoNumber: poNumber?.trim() || null },
@@ -1118,7 +1243,7 @@ export class CustomerProductsService {
   }
 
   async setProductPoNumber(cpId: string, clientId: string, poNumber?: string | null) {
-    await this.ownedCp(cpId, clientId);
+    await this.assertCpAmc(cpId, clientId);
     return this.prisma.customerCompanyProduct.update({
       where: { id: cpId },
       data: { poNumber: poNumber?.trim() || null },
@@ -1140,6 +1265,7 @@ export class CustomerProductsService {
     companyId: string, clientId: string, file: { url: string; name: string },
   ) {
     const c = await this.ownedCompany(companyId, clientId);
+    this.assertAmc(c);
     if (c.contractPoFileUrl) await this.deletePoFile(c.contractPoFileUrl);
     await this.prisma.customerCompany.update({
       where: { id: companyId },
@@ -1159,7 +1285,7 @@ export class CustomerProductsService {
   }
 
   async setProductPoInvoice(cpId: string, clientId: string, file: { url: string; name: string }) {
-    const cp = await this.ownedCp(cpId, clientId);
+    const cp = await this.assertCpAmc(cpId, clientId);
     if (cp.poFileUrl) await this.deletePoFile(cp.poFileUrl);
     return this.prisma.customerCompanyProduct.update({
       where: { id: cpId },
@@ -1284,7 +1410,7 @@ export class CustomerProductsService {
    */
   async productSupportHours(clientId: string, companyId: string, productId: string) {
     const company = await this.prisma.customerCompany.findFirst({ where: { id: companyId, clientId } });
-    if (!company) return { hasPool: false as const, allocated: null, used: 0, left: null };
+    if (!company || isImplementation(company)) return { hasPool: false as const, allocated: null, used: 0, left: null };
     const logged = await this.ticketHours(companyId, clientId);
 
     if (company.contractScope === 'CUSTOMER') {
@@ -1364,17 +1490,54 @@ export class CustomerProductsService {
     const req = await this.prisma.productRequest.create({
       data: { clientId, customerCompanyId: companyId, productId: dto.productId, note: dto.note?.trim() || null, requestedById: userId },
     });
-    const company = await this.prisma.customerCompany.findUnique({ where: { id: companyId }, select: { name: true } });
-    // Notify all provider admins of the tenant.
-    const admins = await this.prisma.user.findMany({
-      where: { clientId, isActive: true, userRoles: { some: { role: { name: 'Admin' } } } },
-      select: { id: true },
-    });
-    await this.notifications.notifyMany(admins.map((a) => a.id), {
-      clientId, type: 'PRODUCT_REQUEST', title: 'New product request',
-      body: `${company?.name ?? 'A customer'} requested ${product.name}.`,
+    const company = await this.prisma.customerCompany.findUnique({ where: { id: companyId }, select: { name: true, accountManagerId: true } });
+    await this.alertRequestDeciders(clientId, company?.accountManagerId ?? null, {
+      type: 'PRODUCT_REQUEST', title: 'New product request',
+      body: `${company?.name ?? 'A customer'} requested ${product.name}.${req.note ? ` Note: ${req.note}` : ''}`,
+      link: '/admin/product-requests',
     });
     return req;
+  }
+
+  /**
+   * Who decides a client's product request: every tenant Admin, plus that
+   * client's account manager (any active internal staff user). Each gets a bell
+   * and an email - one send per person, so no address is exposed to another.
+   * Best-effort: a mail failure never fails the request.
+   */
+  private async alertRequestDeciders(
+    clientId: string, accountManagerId: string | null,
+    n: { type: string; title: string; body: string; link: string },
+  ) {
+    const people = await this.prisma.user.findMany({
+      where: {
+        clientId, isActive: true, customerCompanyId: null,
+        OR: [
+          { userRoles: { some: { role: { name: 'Admin' } } } },
+          ...(accountManagerId ? [{ id: accountManagerId }] : []),
+        ],
+      },
+      select: { id: true, email: true },
+    });
+    if (!people.length) return;
+    await this.notifications.notifyMany(people.map((p) => p.id), { clientId, ...n });
+    if (!(await this.mailer.isConfigured(clientId))) return;
+    const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+    const html = `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;max-width:520px;margin:0 auto;">
+        <div style="background:#4f46e5;padding:24px;border-radius:12px 12px 0 0;text-align:center;">
+          <h1 style="color:#fff;margin:0;font-size:18px;">${esc(n.title)}</h1>
+        </div>
+        <div style="background:#fff;padding:28px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
+          <p style="color:#374151;font-size:14px;">${esc(n.body)}</p>
+          <p style="color:#6b7280;font-size:12px;">Open Product Requests in the app to grant or decline it.</p>
+        </div>
+      </div>`;
+    for (const email of new Set(people.map((p) => p.email).filter(Boolean))) {
+      try {
+        await this.mailer.sendMail({ to: email, subject: n.title, html, text: n.body }, clientId);
+      } catch { /* best-effort */ }
+    }
   }
 
   async listMyRequests(companyId: string, clientId: string) {
@@ -1406,16 +1569,33 @@ export class CustomerProductsService {
 
   // ---- provider: request queue -----------------------------------------------
 
-  async listRequests(clientId: string) {
+  /**
+   * Which requests a viewer may see and decide: all of the tenant's for an
+   * Admin; otherwise only those of clients they are the account manager of.
+   */
+  private requestScope(clientId: string, actor: { id: string; roles: string[] }): Prisma.ProductRequestWhereInput {
+    if (actor.roles.includes('Admin')) return { clientId };
+    return { clientId, customerCompany: { accountManagerId: actor.id } };
+  }
+
+  async requestsAccess(clientId: string, actor: { id: string; roles: string[] }) {
+    if (actor.roles.includes('Admin')) return { allowed: true };
+    const managed = await this.prisma.customerCompany.count({ where: { clientId, accountManagerId: actor.id } });
+    return { allowed: managed > 0 };
+  }
+
+  async listRequests(clientId: string, actor: { id: string; roles: string[] }) {
     return this.prisma.productRequest.findMany({
-      where: { clientId },
+      where: this.requestScope(clientId, actor),
       include: { product: { select: { name: true, code: true } }, customerCompany: { select: { name: true } } },
       orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
     });
   }
 
-  async grantRequest(requestId: string, dto: GrantRequestDto, clientId: string, actorId: string) {
-    const req = await this.prisma.productRequest.findFirst({ where: { id: requestId, clientId }, include: { product: true } });
+  async grantRequest(requestId: string, dto: GrantRequestDto, clientId: string, actor: { id: string; roles: string[] }) {
+    const actorId = actor.id;
+    // Out of scope reads as not found, the same as another tenant's request.
+    const req = await this.prisma.productRequest.findFirst({ where: { id: requestId, ...this.requestScope(clientId, actor) }, include: { product: true } });
     if (!req) throw new NotFoundException('Request not found');
     if (req.status !== 'PENDING') throw new BadRequestException('This request has already been decided');
 
@@ -1428,8 +1608,9 @@ export class CustomerProductsService {
     return { message: 'Request granted' };
   }
 
-  async declineRequest(requestId: string, note: string | undefined, clientId: string, actorId: string) {
-    const req = await this.prisma.productRequest.findFirst({ where: { id: requestId, clientId }, include: { product: true } });
+  async declineRequest(requestId: string, note: string | undefined, clientId: string, actor: { id: string; roles: string[] }) {
+    const actorId = actor.id;
+    const req = await this.prisma.productRequest.findFirst({ where: { id: requestId, ...this.requestScope(clientId, actor) }, include: { product: true } });
     if (!req) throw new NotFoundException('Request not found');
     if (req.status !== 'PENDING') throw new BadRequestException('This request has already been decided');
     await this.prisma.productRequest.update({ where: { id: requestId }, data: { status: 'DECLINED', decisionNote: note?.trim() || null, decidedById: actorId, decidedAt: new Date() } });
@@ -1445,9 +1626,10 @@ export class CustomerProductsService {
   async listCustomerConsultants(companyId: string, clientId: string) {
     await this.ownedCompany(companyId, clientId);
     const rows = await this.prisma.customerConsultant.findMany({ where: { customerCompanyId: companyId, clientId }, orderBy: { createdAt: 'asc' } });
-    const users = await this.prisma.user.findMany({ where: { id: { in: rows.map((r) => r.userId) } }, select: { id: true, username: true } });
-    const nameById = new Map(users.map((u) => [u.id, u.username]));
-    return rows.map((r) => ({ id: r.id, userId: r.userId, username: nameById.get(r.userId) ?? null, productId: r.productId, moduleId: r.moduleId, track: r.track, isPrimary: r.isPrimary }));
+    const users = await this.prisma.user.findMany({ where: { id: { in: rows.map((r) => r.userId) } }, select: { id: true, username: true, name: true } });
+    const byId = new Map(users.map((u) => [u.id, u]));
+    // `name` rides beside `username` so the consultant grids can show "Full name · username".
+    return rows.map((r) => ({ id: r.id, userId: r.userId, username: byId.get(r.userId)?.username ?? null, name: byId.get(r.userId)?.name ?? null, productId: r.productId, moduleId: r.moduleId, track: r.track, isPrimary: r.isPrimary }));
   }
 
   async addCustomerConsultant(companyId: string, dto: AddCustomerConsultantDto, clientId: string) {
@@ -1583,7 +1765,7 @@ export class CustomerProductsService {
 
     const companies = await this.prisma.customerCompany.findMany({
       where: {
-        contractScope: 'CUSTOMER', contractHoursPeriod: 'MONTHLY',
+        contractScope: 'CUSTOMER', clientType: 'AMC', contractHoursPeriod: 'MONTHLY',
         contractHoursUnlimited: false, contractHours: { not: null },
       },
       select: { id: true, clientId: true, contractHours: true, contractCarryForward: true },
@@ -1598,7 +1780,7 @@ export class CustomerProductsService {
     }
 
     const cps = await this.prisma.customerCompanyProduct.findMany({
-      where: { customerCompany: { contractScope: 'PRODUCT' }, amcHoursPeriod: 'MONTHLY' },
+      where: { customerCompany: { contractScope: 'PRODUCT', clientType: 'AMC' }, amcHoursPeriod: 'MONTHLY' },
       select: {
         id: true, amcType: true, amcCarryForward: true, customerCompanyId: true, productId: true,
         paidAmcHours: true, paidAmcHoursUnlimited: true, freeAmcHours: true, freeAmcHoursUnlimited: true,
@@ -1639,7 +1821,7 @@ export class CustomerProductsService {
       where: {
         status: 'ACTIVE',
         amcEnd: { not: null },
-        customerCompany: { contractScope: 'PRODUCT' },
+        customerCompany: { contractScope: 'PRODUCT', clientType: 'AMC' },
       },
       include: { product: true, customerCompany: { select: { id: true, name: true, clientId: true, contactEmail: true } } },
     });
@@ -1669,7 +1851,7 @@ export class CustomerProductsService {
     const widest = Math.max(...EXPIRY_REMINDER_DAYS);
     const contracts = await this.prisma.customerCompany.findMany({
       where: {
-        contractScope: 'CUSTOMER',
+        contractScope: 'CUSTOMER', clientType: 'AMC',
         contractEnd: { gt: new Date(now), lte: new Date(now + widest * DAY) },
       },
       select: {
@@ -1710,7 +1892,7 @@ export class CustomerProductsService {
     // product nothing is switched off here, so the wording promises no pause.
     const ended = await this.prisma.customerCompany.findMany({
       where: {
-        contractScope: 'CUSTOMER',
+        contractScope: 'CUSTOMER', clientType: 'AMC',
         contractEnd: { lte: new Date(now), gt: new Date(now - ENDED_NOTICE_WINDOW_DAYS * DAY) },
         OR: [{ contractExpiryReminderDays: null }, { contractExpiryReminderDays: { not: 0 } }],
       },

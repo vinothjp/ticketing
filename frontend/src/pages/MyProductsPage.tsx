@@ -93,6 +93,7 @@ export default function MyProductsPage() {
   const [note, setNote] = useState('');
 
   const { data: contract } = useQuery<{
+    clientType?: 'IMPLEMENTATION' | 'AMC';
     scope: 'PRODUCT' | 'CUSTOMER'; start: string | null; end: string | null; hours: number | null; visits: number | null;
     period?: { pct: number; daysLeft: number | null; active: boolean };
     hoursPool?: Pool;
@@ -105,7 +106,10 @@ export default function MyProductsPage() {
     queryKey: ['my-products'],
     queryFn: async () => (await api.get('/api/my-company/purchased-products')).data,
   });
-  const customerScope = contract?.scope === 'CUSTOMER';
+  // An Implementation client bought services only — no warranty, AMC, hours or
+  // visits to count down — so each product card shows just the product.
+  const impl = contract?.clientType === 'IMPLEMENTATION';
+  const customerScope = !impl && contract?.scope === 'CUSTOMER';
   // Contract-period progress for the customer-specific view (from the shared pool).
   const cPct = contract?.period?.pct ?? 0;
   const cDaysLeft = contract?.period?.daysLeft ?? null;
@@ -182,7 +186,7 @@ export default function MyProductsPage() {
             {/* Stat tiles — live pool */}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Stat label={contract?.hours != null ? `Hours left of ${contract.hours}` : 'Support hours'} value={hoursLeft != null ? String(hoursLeft) : '—'} />
-              <Stat label={contract?.visits != null ? `Visits left of ${contract.visits}` : 'Site visits'} value={visitsLeft != null ? String(visitsLeft) : '—'} />
+              <Stat label={contract?.visits != null ? `Visits left this month (of ${contract.visits})` : 'Site visits'} value={visitsLeft != null ? String(visitsLeft) : '—'} />
               <Stat label="Days remaining" value={cDaysLeft != null ? String(cDaysLeft) : '—'} />
               <Stat label="Products covered" value={String(products.length)} />
             </div>
@@ -231,7 +235,7 @@ export default function MyProductsPage() {
               : statusBadge(p.status);
             const amcWarn = p.amc.active && p.amc.pct >= 90;
             const isFree = p.amc.type === 'FREE';
-            const showPaidCta = p.status !== 'ACTIVE' || (isFree && amcWarn);
+            const showPaidCta = !impl && (p.status !== 'ACTIVE' || (isFree && amcWarn));
             return (
               <Card key={p.id}>
                 <CardContent className="space-y-4 py-4">
@@ -250,6 +254,7 @@ export default function MyProductsPage() {
                     )}
                   </div>
 
+                  {!impl && <>
                   {/* One coverage timeline: Warranty (free) → AMC (paid) */}
                   <div className="grid grid-cols-1 gap-3">
                     <Countdown icon={isFree ? <ShieldCheck className="size-4" /> : <Wrench className="size-4" />} label={`${isFree ? 'Warranty' : 'AMC'} left`} value={p.amc.label} active={p.amc.active} />
@@ -263,8 +268,8 @@ export default function MyProductsPage() {
                     ].filter(Boolean).join(' — ')}
                     pct={p.hours.allocated ? Math.round((p.hours.used / p.hours.allocated) * 100) : 0}
                     active={(p.hours.left ?? 0) > 0} daysLeft={null} hideRight />
-                  <Meter icon={<MapPin className="size-3.5" />} title="Site visits"
-                    subtitle={p.visits.allocated == null ? 'Not included' : `${p.visits.left} of ${p.visits.allocated} visits left`}
+                  <Meter icon={<MapPin className="size-3.5" />} title="Site visits (this month)"
+                    subtitle={p.visits.allocated == null ? 'Not included' : `${p.visits.left} of ${p.visits.allocated} visits left this month`}
                     pct={p.visits.allocated ? Math.round((p.visits.used / p.visits.allocated) * 100) : 0}
                     active={(p.visits.left ?? 0) > 0} daysLeft={null} hideRight />
 
@@ -277,6 +282,7 @@ export default function MyProductsPage() {
                       {p.paidTerms.months != null && <> · {p.paidTerms.months} months</>}
                     </div>
                   )}
+                  </>}
 
                   {showPaidCta && (
                     <div className="flex items-center justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2">

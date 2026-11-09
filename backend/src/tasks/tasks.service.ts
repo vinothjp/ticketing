@@ -101,6 +101,27 @@ export class TasksService {
   }
 
   /**
+   * A task's fields — title, description, assignee, due date — belong to the
+   * people answerable for the work: the ticket's assigned agent, the task's own
+   * assignee, or a tenant Admin. Anyone else who can merely see the ticket (a
+   * task assignee on a sibling task, an approver) reads it but cannot rewrite it.
+   * The ticket's agent is what keeps an *unassigned* task editable by someone
+   * other than an Admin — they can hand it to themselves or a colleague.
+   */
+  private async assertMayEdit(ticketId: string, task: { assigneeUserId: string | null }, viewer: TicketViewer) {
+    if (viewer.roles.includes('Admin')) return;
+    if (task.assigneeUserId && task.assigneeUserId === viewer.id) return;
+    const holds = await this.prisma.ticketTechnician.findFirst({
+      where: { ticketId, userId: viewer.id },
+      select: { id: true },
+    });
+    if (holds) return;
+    throw new ForbiddenException(
+      "Only the ticket's agent, this task's assignee or an admin can edit this task",
+    );
+  }
+
+  /**
    * Pulling a completed task back open is a *wider* right than running it, and a
    * deliberately different one: the task's own assignee is the person who called
    * it finished, so letting them quietly undo that would make "completed" mean
@@ -267,6 +288,7 @@ export class TasksService {
 
   async create(ticketId: string, clientId: string, dto: CreateTaskDto, actorId: string, viewer: TicketViewer) {
     const ticket = await this.tickets.findOne(ticketId, clientId, viewer);
+    this.tickets.assertNotHeld(ticket);
     // Both counters are max+1 rather than a count, so deleting a task never hands
     // its number to the next one — the grid's Task ID has to keep meaning the same
     // task in a comment or a conversation about it.
@@ -325,6 +347,10 @@ export class TasksService {
       }
     } else if (movingTo) {
       this.assertMayTrack(existing, viewer);
+    }
+    // Editing the task itself, as opposed to moving its status.
+    if (dto.title !== undefined || dto.description !== undefined || dto.assigneeUserId !== undefined || dto.dueDate !== undefined) {
+      await this.assertMayEdit(ticketId, existing, viewer);
     }
 
     // Work in progress is somebody's work. A task may be *raised* unassigned —

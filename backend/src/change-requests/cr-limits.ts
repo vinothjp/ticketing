@@ -50,12 +50,14 @@ async function crTerms(prisma: PrismaService, clientId: string, customerCompanyI
   const company = await prisma.customerCompany.findFirst({
     where: { id: customerCompanyId, clientId },
     select: {
-      name: true, contractScope: true, contractCrApplicable: true, contractCrMaxPerMonth: true,
+      name: true, clientType: true, contractScope: true, contractCrApplicable: true, contractCrMaxPerMonth: true,
       products: { select: { amcCrApplicable: true, amcCrMaxPerMonth: true } },
     },
   });
   if (!company) return null;
-  if (company.contractScope === 'CUSTOMER') {
+  // An Implementation client has no contract, but keeps its contract services at
+  // client level — the same columns a shared contract uses.
+  if (company.contractScope === 'CUSTOMER' || company.clientType === 'IMPLEMENTATION') {
     return { name: company.name, applicable: company.contractCrApplicable, maxPerMonth: company.contractCrMaxPerMonth };
   }
   const covered = company.products.filter((p) => p.amcCrApplicable);

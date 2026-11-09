@@ -32,7 +32,9 @@ function ticketRow(overrides: TicketRow = {}): TicketRow {
     requestorEmail: 'contact@acme.test',
     requestorName: 'Ada',
     resolution: 'Replaced the driver',
-    resolvedAt: new Date('2026-08-20T09:00:00Z'),
+    // Relative, not a fixed date: the reopen window is measured from now, and a
+    // fixed stamp quietly slid outside it a month after it was written.
+    resolvedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
     resolvedById: 'agent-1',
     acknowledgedAt: null,
     closedDate: null,
@@ -84,8 +86,14 @@ function build(
     },
     user: {
       findMany: jest.fn().mockResolvedValue([{ id: 'company-admin-1' }]),
+      findUnique: jest
+        .fn()
+        .mockImplementation(({ where }: { where: { id: string } }) => ({ id: where.id, username: where.id, name: null, email: null })),
       count: jest.fn().mockResolvedValue(0),
     },
+    customerCompany: { findUnique: jest.fn().mockResolvedValue({ name: 'Acme' }) },
+    // The client product's project manager — who decides a reopen request.
+    customerCompanyProduct: { findFirst: jest.fn().mockResolvedValue(null) },
     product: { findUnique: jest.fn() },
     productModule: { findUnique: jest.fn() },
   };
@@ -112,6 +120,20 @@ function build(
 const contact: TicketViewer = { id: 'contact-1', roles: ['CustomerAdmin'], customerCompanyId: COMPANY_ID };
 // Every reopen carries a reason; the agents are notified with it.
 const REASON = 'The printer went offline again the next morning';
+const admin: TicketViewer = { id: 'admin-1', roles: ['Admin'] };
+// The client product's project manager: a member of staff, not on the ticket.
+const pm: TicketViewer = { id: 'pm-1', roles: ['Viewer'] };
+const consultant: TicketViewer = { id: 'agent-1', roles: ['Viewer'] };
+/** A closed ticket whose client asked to reopen it, put to pm-1. */
+const pendingRequest = (overrides: TicketRow = {}) =>
+  ticketRow({
+    ticketStatus: 'Closed',
+    reopenRequestStatus: 'PENDING',
+    reopenRequestReason: REASON,
+    reopenRequestedById: 'contact-1',
+    reopenApproverUserId: 'pm-1',
+    ...overrides,
+  });
 
 describe('TicketsService — client acknowledgement', () => {
   it('closes a resolved ticket and stamps who acknowledged it', async () => {
@@ -204,10 +226,10 @@ describe('TicketsService — client acknowledgement', () => {
     expect(prisma.ticket.update).not.toHaveBeenCalled();
   });
 
-  it('clears the sign-off on reopen so the next resolution can be acknowledged', async () => {
-    const { service, prisma } = build(ticketRow());
+  it('clears the sign-off on an approved reopen so the next resolution can be acknowledged', async () => {
+    const { service, prisma } = build(pendingRequest());
 
-    await service.reopen('ticket-1', CLIENT_ID, { reason: REASON }, 'contact-1', contact);
+    await service.approveReopenRequest('ticket-1', CLIENT_ID, admin.id, admin);
 
     const data = prisma.ticket.update.mock.calls[0][0].data as Record<string, unknown>;
     expect(data.acknowledgedAt).toBeNull();
@@ -218,18 +240,18 @@ describe('TicketsService — client acknowledgement', () => {
 describe('TicketsService — reopen window', () => {
   const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
 
-  it('reopens a ticket resolved inside the tenant window', async () => {
+  it('accepts a request on a ticket resolved inside the tenant window', async () => {
     const { service, prisma } = build(ticketRow({ resolvedAt: daysAgo(29) }));
 
-    await service.reopen('ticket-1', CLIENT_ID, { reason: REASON }, 'contact-1', contact);
+    await service.requestReopen('ticket-1', CLIENT_ID, { reason: REASON }, 'contact-1', contact);
 
     expect(prisma.ticket.update).toHaveBeenCalled();
   });
 
-  it('refuses a reopen once the window has closed, pointing at a new ticket', async () => {
+  it('refuses a request once the window has closed, pointing at a new ticket', async () => {
     const { service, prisma } = build(ticketRow({ resolvedAt: daysAgo(31) }));
 
-    await expect(service.reopen('ticket-1', CLIENT_ID, { reason: REASON }, 'contact-1', contact)).rejects.toThrow(
+    await expect(service.requestReopen('ticket-1', CLIENT_ID, { reason: REASON }, 'contact-1', contact)).rejects.toThrow(
       /30 days ago and can no longer be reopened/,
     );
     expect(prisma.ticket.update).not.toHaveBeenCalled();
@@ -238,7 +260,7 @@ describe('TicketsService — reopen window', () => {
   it('honours a tenant that widened the window', async () => {
     const { service, prisma } = build(ticketRow({ resolvedAt: daysAgo(31) }), STATUS_OPTIONS, 2.5, 90);
 
-    await service.reopen('ticket-1', CLIENT_ID, { reason: REASON }, 'contact-1', contact);
+    await service.requestReopen('ticket-1', CLIENT_ID, { reason: REASON }, 'contact-1', contact);
 
     expect(prisma.ticket.update).toHaveBeenCalled();
   });
@@ -257,84 +279,215 @@ describe('TicketsService — reopen window', () => {
   });
 });
 
-describe('TicketsService — reopen reason', () => {
-  it('refuses a reopen with no reason', async () => {
+describe('TicketsService — a reopen request', () => {
+  it('refuses a request with no reason', async () => {
     const { service, prisma } = build(ticketRow());
 
     await expect(
-      service.reopen('ticket-1', CLIENT_ID, { reason: '   ' }, 'contact-1', contact),
+      service.requestReopen('ticket-1', CLIENT_ID, { reason: '   ' }, 'contact-1', contact),
     ).rejects.toThrow(/why this ticket needs to be reopened/);
     expect(prisma.ticket.update).not.toHaveBeenCalled();
   });
 
-  it('stores the reason and pushes it to the agents and admins', async () => {
-    const { service, prisma, activity, notifications } = build(ticketRow());
+  it('records the request and leaves the ticket closed', async () => {
+    const { service, prisma, activity } = build(ticketRow({ ticketStatus: 'Closed' }));
 
-    await service.reopen('ticket-1', CLIENT_ID, { reason: `  ${REASON}  ` }, 'contact-1', contact);
+    await service.requestReopen('ticket-1', CLIENT_ID, { reason: `  ${REASON}  ` }, 'contact-1', contact);
 
     const data = prisma.ticket.update.mock.calls[0][0].data as Record<string, unknown>;
-    expect(data.reopenReason).toBe(REASON); // trimmed
-    expect(data.reopenedById).toBe('contact-1');
-    expect(data.reopenedAt).toBeInstanceOf(Date);
-    // The history carries it too, so it survives the next reopen overwriting the column.
-    expect(activity.log).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'REOPENED', summary: `Ticket reopened: ${REASON}` }),
-    );
-    // agent-1 is both the assigned technician and the resolver; company-admin-1 is a tenant Admin.
-    expect(notifications.notifyMany).toHaveBeenCalledWith(
-      expect.arrayContaining(['agent-1', 'company-admin-1']),
-      expect.objectContaining({ type: 'TICKET_REOPENED', ticketId: 'ticket-1' }),
-    );
-    const body = notifications.notifyMany.mock.calls.at(-1)![1] as { body: string };
-    expect(body.body).toContain(REASON);
+    expect(data.reopenRequestStatus).toBe('PENDING');
+    expect(data.reopenRequestReason).toBe(REASON); // trimmed
+    expect(data.reopenRequestedById).toBe('contact-1');
+    // Nothing about the ticket itself moves until someone approves.
+    expect(data).not.toHaveProperty('ticketStatus');
+    expect(data).not.toHaveProperty('resolvedAt');
+    expect(activity.log).toHaveBeenCalledWith(expect.objectContaining({ type: 'REOPEN_REQUESTED' }));
   });
 
-  it('does not notify the client who reopened it', async () => {
-    const { service, notifications } = build(ticketRow());
+  it('puts it to the client product project manager, and to nobody else', async () => {
+    const { service, prisma, notifications } = build(ticketRow({ productId: 'product-1' }));
+    prisma.customerCompanyProduct.findFirst.mockResolvedValue({
+      productManager: { id: 'pm-1', isActive: true, clientId: CLIENT_ID, customerCompanyId: null },
+    });
 
-    await service.reopen('ticket-1', CLIENT_ID, { reason: REASON }, 'contact-1', contact);
+    await service.requestReopen('ticket-1', CLIENT_ID, { reason: REASON }, 'contact-1', contact);
 
-    const [recipients] = notifications.notifyMany.mock.calls.at(-1)!;
-    expect(recipients).not.toContain('contact-1');
+    const data = prisma.ticket.update.mock.calls[0][0].data as Record<string, unknown>;
+    expect(data.reopenApproverUserId).toBe('pm-1');
+    expect(notifications.notifyMany).toHaveBeenCalledWith(
+      ['pm-1'],
+      expect.objectContaining({ type: 'TICKET_REOPEN_REQUESTED', ticketId: 'ticket-1' }),
+    );
+  });
+
+  it('falls back to the tenant Admins when no project manager is set', async () => {
+    const { service, prisma, notifications } = build(ticketRow({ productId: 'product-1' }));
+
+    await service.requestReopen('ticket-1', CLIENT_ID, { reason: REASON }, 'contact-1', contact);
+
+    const data = prisma.ticket.update.mock.calls[0][0].data as Record<string, unknown>;
+    expect(data.reopenApproverUserId).toBeNull();
+    expect(notifications.notifyMany).toHaveBeenCalledWith(
+      ['company-admin-1'],
+      expect.objectContaining({ type: 'TICKET_REOPEN_REQUESTED' }),
+    );
+  });
+
+  it('skips a project manager who has been deactivated', async () => {
+    const { service, prisma } = build(ticketRow({ productId: 'product-1' }));
+    prisma.customerCompanyProduct.findFirst.mockResolvedValue({
+      productManager: { id: 'pm-1', isActive: false, clientId: CLIENT_ID, customerCompanyId: null },
+    });
+
+    await service.requestReopen('ticket-1', CLIENT_ID, { reason: REASON }, 'contact-1', contact);
+
+    const data = prisma.ticket.update.mock.calls[0][0].data as Record<string, unknown>;
+    expect(data.reopenApproverUserId).toBeNull();
+  });
+
+  it('refuses a second request while one is waiting', async () => {
+    const { service, prisma } = build(pendingRequest());
+
+    await expect(service.requestReopen('ticket-1', CLIENT_ID, { reason: REASON }, 'contact-1', contact)).rejects.toThrow(
+      /already waiting/,
+    );
+    expect(prisma.ticket.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses a ticket that was never resolved', async () => {
+    const { service, prisma } = build(ticketRow({ ticketStatus: 'Open', resolvedAt: null }));
+
+    await expect(service.requestReopen('ticket-1', CLIENT_ID, { reason: REASON }, 'contact-1', contact)).rejects.toThrow(
+      /Only a resolved or closed ticket/,
+    );
+    expect(prisma.ticket.update).not.toHaveBeenCalled();
+  });
+
+  it('lets the client withdraw it, leaving the ticket closed', async () => {
+    const { service, prisma } = build(pendingRequest());
+
+    await service.withdrawReopenRequest('ticket-1', CLIENT_ID, 'contact-1', contact);
+
+    const data = prisma.ticket.update.mock.calls[0][0].data as Record<string, unknown>;
+    expect(data.reopenRequestStatus).toBe('WITHDRAWN');
+    expect(data).not.toHaveProperty('ticketStatus');
   });
 });
 
-describe('TicketsService — only the client may reopen', () => {
-  it('lets a customer employee reopen their own ticket', async () => {
-    const { service, prisma } = build(ticketRow());
-    const employee: TicketViewer = { id: 'contact-1', roles: ['Customer'], customerCompanyId: COMPANY_ID };
+describe('TicketsService — deciding a reopen request', () => {
+  it('reopens the ticket when its project manager approves, in the name of the client who asked', async () => {
+    const { service, prisma, activity } = build(pendingRequest());
 
-    await service.reopen('ticket-1', CLIENT_ID, { reason: REASON }, employee.id, employee);
+    await service.approveReopenRequest('ticket-1', CLIENT_ID, pm.id, pm);
+
+    const data = prisma.ticket.update.mock.calls[0][0].data as Record<string, unknown>;
+    expect(data.reopenRequestStatus).toBe('APPROVED');
+    expect(data.reopenDecidedById).toBe('pm-1');
+    expect(data.ticketStatus).toBe('Open');
+    expect(data.resolvedAt).toBeNull();
+    expect(data.reopenReason).toBe(REASON);
+    expect(data.reopenedById).toBe('contact-1');
+    const types = activity.log.mock.calls.map((c) => (c[0] as { type: string }).type);
+    expect(types).toEqual(['REOPEN_APPROVED', 'REOPENED']);
+  });
+
+  it('lets any tenant Admin decide it too', async () => {
+    const { service, prisma } = build(pendingRequest());
+
+    await service.approveReopenRequest('ticket-1', CLIENT_ID, admin.id, admin);
 
     expect(prisma.ticket.update).toHaveBeenCalled();
   });
 
-  it('refuses a provider admin reopening on the client behalf', async () => {
-    const { service, prisma } = build(ticketRow());
-    const admin: TicketViewer = { id: 'agent-1', roles: ['Admin'] };
+  it('refuses another agent, even one assigned to the ticket', async () => {
+    const { service, prisma } = build(pendingRequest({ technicians: [{ user: { id: 'agent-1' } }] }));
 
-    await expect(service.reopen('ticket-1', CLIENT_ID, { reason: REASON }, admin.id, admin)).rejects.toThrow(
+    await expect(service.approveReopenRequest('ticket-1', CLIENT_ID, consultant.id, consultant)).rejects.toThrow(
       ForbiddenException,
     );
     expect(prisma.ticket.update).not.toHaveBeenCalled();
   });
 
-  it('still lets staff reopen an internal ticket, which has no client to ask', async () => {
-    const { service, prisma } = build(ticketRow({ customerCompanyId: null }));
-    const admin: TicketViewer = { id: 'agent-1', roles: ['Admin'] };
+  it('keeps the ticket closed on a rejection, which needs a reason', async () => {
+    const { service, prisma, notifications } = build(pendingRequest());
+
+    await expect(
+      service.rejectReopenRequest('ticket-1', CLIENT_ID, { reason: ' ' }, pm.id, pm),
+    ).rejects.toThrow(/Say why/);
+
+    await service.rejectReopenRequest('ticket-1', CLIENT_ID, { reason: 'A different fault' }, pm.id, pm);
+
+    const data = prisma.ticket.update.mock.calls[0][0].data as Record<string, unknown>;
+    expect(data.reopenRequestStatus).toBe('REJECTED');
+    expect(data.reopenDecisionNote).toBe('A different fault');
+    expect(data).not.toHaveProperty('ticketStatus');
+    // The client who asked hears why.
+    expect(notifications.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'contact-1', type: 'TICKET_REOPEN_REJECTED' }),
+    );
+  });
+
+  it('refuses to decide a request that is no longer waiting', async () => {
+    const { service, prisma } = build(pendingRequest({ reopenRequestStatus: 'WITHDRAWN' }));
+
+    await expect(service.approveReopenRequest('ticket-1', CLIENT_ID, admin.id, admin)).rejects.toThrow(
+      /no reopen request waiting/,
+    );
+    expect(prisma.ticket.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('TicketsService — only the client may ask to reopen', () => {
+  it('lets a customer employee ask to reopen their own ticket', async () => {
+    const { service, prisma } = build(ticketRow());
+    const employee: TicketViewer = { id: 'contact-1', roles: ['Customer'], customerCompanyId: COMPANY_ID };
+
+    await service.requestReopen('ticket-1', CLIENT_ID, { reason: REASON }, employee.id, employee);
+
+    expect(prisma.ticket.update).toHaveBeenCalled();
+  });
+
+  it('never reopens a client ticket directly, even for the client', async () => {
+    const { service, prisma } = build(ticketRow());
+
+    await expect(service.reopen('ticket-1', CLIENT_ID, { reason: REASON }, contact.id, contact)).rejects.toThrow(
+      /Send a reopen request instead/,
+    );
+    expect(prisma.ticket.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses a provider admin reopening on the client behalf', async () => {
+    const { service, prisma } = build(ticketRow());
+
+    await expect(service.reopen('ticket-1', CLIENT_ID, { reason: REASON }, admin.id, admin)).rejects.toThrow(
+      ForbiddenException,
+    );
+    await expect(service.requestReopen('ticket-1', CLIENT_ID, { reason: REASON }, admin.id, admin)).rejects.toThrow(
+      ForbiddenException,
+    );
+    expect(prisma.ticket.update).not.toHaveBeenCalled();
+  });
+
+  it('still lets staff reopen an internal ticket directly, which has no client to ask', async () => {
+    const { service, prisma, notifications } = build(ticketRow({ customerCompanyId: null }));
 
     await service.reopen('ticket-1', CLIENT_ID, { reason: REASON }, admin.id, admin);
 
-    expect(prisma.ticket.update).toHaveBeenCalled();
+    const data = prisma.ticket.update.mock.calls[0][0].data as Record<string, unknown>;
+    expect(data.reopenReason).toBe(REASON);
+    expect(data.reopenedById).toBe(admin.id);
+    // The agents are told it is back, with the reason — but never the one who did it.
+    const [recipients, payload] = notifications.notifyMany.mock.calls.at(-1)!;
+    expect(recipients).not.toContain(admin.id);
+    expect((payload as { body: string }).body).toContain(REASON);
   });
 
   it('refuses a consultant reopening a ticket they worked', async () => {
     // Assigned to them, so findOne lets them through — the reopen rule is what stops them.
     const { service, prisma } = build(ticketRow({ technicians: [{ user: { id: 'agent-1' } }] }));
-    const consultant: TicketViewer = { id: 'agent-1', roles: ['Viewer'] };
 
     await expect(service.reopen('ticket-1', CLIENT_ID, { reason: REASON }, consultant.id, consultant)).rejects.toThrow(
-      /Only the client can reopen their own ticket/,
+      /Only the client can ask to reopen their own ticket/,
     );
     expect(prisma.ticket.update).not.toHaveBeenCalled();
   });

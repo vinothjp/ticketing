@@ -18,6 +18,7 @@ import {
   PROJECT_STATUSES, PRIORITIES, labelOf,
   type UserOption, type CustomerCompanyOption,
 } from './projectMeta';
+import { staffLabel } from '@/lib/staffLabel';
 
 const NONE = '__none__';
 
@@ -154,7 +155,7 @@ export default function ProjectCreatePage() {
                   placeholder="Unassigned" emptyText="No matching user"
                   value={field.value || ''}
                   onChange={field.onChange}
-                  options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.username }))]}
+                  options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: staffLabel(u) }))]}
                 />
               </FormItem>
             )} />

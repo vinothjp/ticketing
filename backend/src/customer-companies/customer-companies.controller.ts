@@ -315,6 +315,13 @@ export class CustomerCompaniesController {
     return this.service.importSheet(req.user.clientId, req.user.id, file);
   }
 
+  /** The ITSM dashboards' AMC-expiry card. Staff only; dates, no money. Before ':id'. */
+  @Get('amc-expiring')
+  @Roles('Admin', 'Viewer')
+  amcExpiring(@Request() req: AuthedRequest) {
+    return this.service.amcExpiring(req.user.clientId);
+  }
+
   /** Customer admins no client holds yet — the New/Edit Client "link existing" picker. */
   @Get('available-admins')
   @Roles('Admin')

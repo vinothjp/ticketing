@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Link, NavLink, useNavigate } from 'react-router-dom';
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import NotificationBell from './NotificationBell';
 import {
@@ -32,6 +32,9 @@ import {
   Megaphone,
   Images,
   Plus,
+  ChevronRight,
+  Gauge,
+  ChartPie,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { usePrefs } from '../context/PreferencesContext';
@@ -69,6 +72,8 @@ interface NavItem {
   to: string;
   label: string;
   icon: typeof LayoutDashboard;
+  // A folder: `to` is its first child, and the children are the real links.
+  children?: NavItem[];
 }
 interface NavGroup {
   label: string;
@@ -82,7 +87,18 @@ const tenantNavGroups: NavGroup[] = [
     label: 'Workspace',
     color: 'text-sky-400',
     items: [
-      { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+      // The client asked for a Dashboard folder holding the original dashboard
+      // and the two ITSM ones, so they can keep whichever they want.
+      {
+        to: '/dashboard',
+        label: 'Dashboard',
+        icon: LayoutDashboard,
+        children: [
+          { to: '/dashboard', label: 'Overview', icon: LayoutDashboard },
+          { to: '/dashboard/itsm-1', label: 'ITSM Dashboard 1', icon: Gauge },
+          { to: '/dashboard/itsm-2', label: 'ITSM Dashboard 2', icon: ChartPie },
+        ],
+      },
       { to: '/tickets', label: 'Tickets', icon: Ticket },
       { to: '/knowledge-base', label: 'Knowledge Base', icon: BookOpen },
       { to: '/projects', label: 'Projects', icon: FolderKanban },
@@ -136,16 +152,20 @@ const superAdminNavGroups: NavGroup[] = [
 
 // One nav item, shared by the sidebar and the top bar so both layouts stay in
 // step with navGroups (and both pick up the accent via --sidebar-primary).
-function NavItemLink({ item, collapsed, horizontal }: { item: NavItem; collapsed?: boolean; horizontal?: boolean }) {
+function NavItemLink({ item, collapsed, horizontal, nested }: { item: NavItem; collapsed?: boolean; horizontal?: boolean; nested?: boolean }) {
   return (
     <NavLink
       to={item.to}
+      // Folder children share a prefix (/dashboard vs /dashboard/itsm-1), so
+      // they match exactly; top-level items keep matching their sub-pages.
+      end={nested}
       title={collapsed && !horizontal ? item.label : undefined}
       className={({ isActive }) =>
         cn(
           'flex items-center gap-2.5 rounded-lg text-sm text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
           horizontal ? 'shrink-0 whitespace-nowrap px-3 py-1.5' : 'px-3 py-2',
           !horizontal && collapsed && 'justify-center px-0',
+          nested && !collapsed && 'py-1.5 pl-9 text-[13px]',
           isActive && 'bg-sidebar-primary text-sidebar-primary-foreground hover:bg-sidebar-primary',
         )
       }
@@ -154,6 +174,72 @@ function NavItemLink({ item, collapsed, horizontal }: { item: NavItem; collapsed
       {(horizontal || !collapsed) && item.label}
     </NavLink>
   );
+}
+
+// A nav folder. Sidebar: a collapsible group, open while one of its pages is
+// showing. Icon rail: the children as plain icon links (a rail has no room for
+// a disclosure). Top bar: a dropdown.
+function NavFolder({ item, collapsed, horizontal }: { item: NavItem; collapsed?: boolean; horizontal?: boolean }) {
+  const { pathname } = useLocation();
+  const children = item.children ?? [];
+  const inside = children.some((c) => c.to === pathname);
+  const [open, setOpen] = useState(inside);
+  // Navigating into the folder opens it (adjusted during render, not in an
+  // effect); the admin can still fold it shut while inside.
+  const [wasInside, setWasInside] = useState(inside);
+  if (inside !== wasInside) {
+    setWasInside(inside);
+    if (inside) setOpen(true);
+  }
+
+  if (horizontal) {
+    return (
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger
+          className={cn(
+            'flex shrink-0 items-center gap-2.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-sm text-sidebar-foreground/80 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+            inside && 'bg-sidebar-primary text-sidebar-primary-foreground hover:bg-sidebar-primary',
+          )}
+        >
+          <item.icon className="size-4 shrink-0" />
+          {item.label}
+          <ChevronDown className="size-3.5 shrink-0 opacity-70" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-52">
+          {children.map((c) => (
+            <DropdownMenuItem key={c.to} asChild className={cn(c.to === pathname && 'font-semibold')}>
+              <Link to={c.to}><c.icon className="size-4" />{c.label}</Link>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  }
+  if (collapsed) {
+    return <>{children.map((c) => <NavItemLink key={c.to} item={c} collapsed nested />)}</>;
+  }
+  return (
+    <div className="flex flex-col gap-0.5">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className={cn(
+          'flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+          inside && !open && 'text-sidebar-foreground',
+        )}
+      >
+        <item.icon className="size-4 shrink-0" />
+        <span className="flex-1 text-left">{item.label}</span>
+        <ChevronRight className={cn('size-3.5 shrink-0 opacity-70 transition-transform', open && 'rotate-90')} />
+      </button>
+      {open && children.map((c) => <NavItemLink key={c.to} item={c} nested />)}
+    </div>
+  );
+}
+
+function NavEntry(props: { item: NavItem; collapsed?: boolean; horizontal?: boolean }) {
+  return props.item.children?.length ? <NavFolder {...props} /> : <NavItemLink {...props} />;
 }
 
 export default function Layout({ children }: { children: ReactNode }) {
@@ -199,7 +285,8 @@ export default function Layout({ children }: { children: ReactNode }) {
             // A customer company admin also gets a Team screen to manage their own people.
             if (group.label === 'Workspace' && isCustomer) {
               const allowed = ['/dashboard', '/tickets', '/knowledge-base'];
-              const items = group.items.filter((i) => allowed.includes(i.to));
+              // The ITSM dashboards are staff-only, so a customer's Dashboard stays a plain link.
+              const items = group.items.filter((i) => allowed.includes(i.to)).map((i): NavItem => ({ ...i, children: undefined }));
               if (isCustomerAdmin) {
                 items.push({ to: '/my-products', label: 'Products', icon: Boxes });
                 items.push({ to: '/my-change-requests', label: 'Change Management', icon: GitPullRequestArrow });
@@ -262,7 +349,7 @@ export default function Layout({ children }: { children: ReactNode }) {
                 )}
                 <div className="flex flex-col gap-1">
                   {group.items.map((item) => (
-                    <NavItemLink key={item.to} item={item} collapsed={collapsed} />
+                    <NavEntry key={item.to} item={item} collapsed={collapsed} />
                   ))}
                 </div>
               </div>
@@ -366,7 +453,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         {sidebarHidden && (
           <nav className="sticky top-14 z-10 flex shrink-0 items-center gap-1 overflow-x-auto bg-sidebar px-4 py-2 text-sidebar-foreground">
             {navGroups.flatMap((group) =>
-              group.items.map((item) => <NavItemLink key={`${group.label}-${item.to}`} item={item} horizontal />),
+              group.items.map((item) => <NavEntry key={`${group.label}-${item.to}`} item={item} horizontal />),
             )}
           </nav>
         )}

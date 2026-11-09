@@ -50,6 +50,57 @@ export class CustomerCompaniesService {
     return created.id;
   }
 
+  /**
+   * The ITSM dashboards' "AMC contracts near expiry": coverage still running that
+   * ends within `days`, soonest first. Reads the same two shapes the expiry sweep
+   * does — a PRODUCT-scope client's per-product `amcEnd`, a CUSTOMER-scope
+   * client's shared `contractEnd` — so the list matches the reminders that go
+   * out. Dates only, never what the client pays, so staff may read it.
+   */
+  async amcExpiring(clientId: string, days = 90) {
+    const now = new Date();
+    const until = new Date(now.getTime() + days * 86_400_000);
+    const [products, contracts] = await Promise.all([
+      this.prisma.customerCompanyProduct.findMany({
+        where: {
+          status: 'ACTIVE',
+          amcEnd: { gt: now, lte: until },
+          customerCompany: { clientId, contractScope: 'PRODUCT', clientType: 'AMC' },
+        },
+        select: {
+          id: true, amcEnd: true,
+          product: { select: { name: true } },
+          customerCompany: { select: { id: true, name: true, code: true } },
+        },
+      }),
+      this.prisma.customerCompany.findMany({
+        where: { clientId, contractScope: 'CUSTOMER', clientType: 'AMC', contractEnd: { gt: now, lte: until } },
+        select: { id: true, name: true, code: true, contractEnd: true },
+      }),
+    ]);
+    const daysLeft = (d: Date) => Math.ceil((d.getTime() - now.getTime()) / 86_400_000);
+    return [
+      ...products.map((p) => ({
+        id: p.id,
+        customerCompanyId: p.customerCompany.id,
+        contractNo: p.customerCompany.code,
+        customer: p.customerCompany.name,
+        product: p.product.name,
+        expiryDate: p.amcEnd!,
+        daysLeft: daysLeft(p.amcEnd!),
+      })),
+      ...contracts.map((c) => ({
+        id: c.id,
+        customerCompanyId: c.id,
+        contractNo: c.code,
+        customer: c.name,
+        product: null as string | null,
+        expiryDate: c.contractEnd!,
+        daysLeft: daysLeft(c.contractEnd!),
+      })),
+    ].sort((a, b) => a.daysLeft - b.daysLeft);
+  }
+
   async list(clientId: string) {
     const companies = await this.prisma.customerCompany.findMany({
       where: { clientId },

@@ -10,6 +10,8 @@ import LoginPage from './pages/LoginPage';
 import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
 import DashboardPage from './pages/DashboardPage';
+import ItsmDashboardOne from './pages/dashboards/ItsmDashboardOne';
+import ItsmDashboardTwo from './pages/dashboards/ItsmDashboardTwo';
 import UsersPage from './pages/UsersPage';
 import RolesPage from './pages/RolesPage';
 import OrganizationPage from './pages/OrganizationPage';
@@ -112,6 +114,8 @@ export default function App() {
                       <Layout>
                         <Routes>
                           <Route path="/dashboard" element={<DashboardPage />} />
+                          <Route path="/dashboard/itsm-1" element={<RoleGate allow={isStaff} redirectTo="/dashboard"><ItsmDashboardOne /></RoleGate>} />
+                          <Route path="/dashboard/itsm-2" element={<RoleGate allow={isStaff} redirectTo="/dashboard"><ItsmDashboardTwo /></RoleGate>} />
                           <Route path="/tickets/new" element={<CreateTicketPage />} />
                           <Route path="/tickets/:id" element={<TicketDetailPage />} />
                           <Route path="/tickets" element={<TicketListPage />} />

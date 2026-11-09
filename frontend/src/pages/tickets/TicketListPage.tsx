@@ -15,7 +15,7 @@ import {
   DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
-import { getPriorityMeta, getSlaMeta, isOverdueTicket, isCreatedTodayTicket, getApprovalMeta, getReopenMeta, monthKey, monthLabel, dayKey, monthRange, type TicketSummary } from './ticketHelpers';
+import { getPriorityMeta, getSlaMeta, isOverdueTicket, isTerminalStatus, isCreatedTodayTicket, getApprovalMeta, getReopenMeta, monthKey, monthLabel, dayKey, monthRange, type TicketSummary } from './ticketHelpers';
 import { useDateFormat } from '@/lib/dateFormat';
 
 interface TemplateSummary { id: string; name: string; }
@@ -34,6 +34,8 @@ interface MyTask {
 type ViewKey = 'all' | 'mine' | 'today' | 'overdue' | 'unassigned' | 'tasks' | 'pending';
 type SortKey = 'newest' | 'oldest' | 'priority' | 'due';
 
+const OPEN_STATUSES = '__open__';
+const SETTLED_STATUSES = '__settled__';
 const PRIORITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
 export default function TicketListPage() {
@@ -75,13 +77,16 @@ export default function TicketListPage() {
   });
   const typeFilter = searchParams.get('type') ?? '';
 
-  // Initial view/status can be deep-linked from the dashboard (?view=, ?status=).
+  // Initial view/status/priority/category/created range can be deep-linked from the
+  // dashboards (?view=, ?status=, ?priority=, ?category=, ?from=&to=), so a tile
+  // opens on exactly the tickets it counted. `status` also takes the two groups
+  // OPEN_STATUSES / SETTLED_STATUSES, since a tile counts every open status at once.
   const initialView = (searchParams.get('view') ?? 'all') as ViewKey;
   const [view, setView] = useState<ViewKey>(
     (['all', 'mine', 'today', 'overdue', 'unassigned', 'tasks', 'pending'] as string[]).includes(initialView) ? initialView : 'all',
   );
-  const [priorityFilter, setPriorityFilter] = useState<string>('all');
-  const [categoryFilter, setCategoryFilter] = useState<string>('all');
+  const [priorityFilter, setPriorityFilter] = useState<string>(searchParams.get('priority') ?? 'all');
+  const [categoryFilter, setCategoryFilter] = useState<string>(searchParams.get('category') ?? 'all');
   const [statusFilter, setStatusFilter] = useState<string>(searchParams.get('status') ?? 'all');
   const [companyFilter, setCompanyFilter] = useState<string>('all');
   // Queue default: incoming order — newest first, so the latest arrivals lead.
@@ -93,9 +98,11 @@ export default function TicketListPage() {
   // The month and the date range are one filter, not two: the range is what
   // applies, and picking a month just fills it in. Typing a date by hand turns
   // the dropdown to 'custom', so the two can never disagree about what is shown.
-  const [month, setMonth] = useState('all');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const linkedFrom = /^\d{4}-\d{2}-\d{2}$/.test(searchParams.get('from') ?? '') ? searchParams.get('from')! : '';
+  const linkedTo = /^\d{4}-\d{2}-\d{2}$/.test(searchParams.get('to') ?? '') ? searchParams.get('to')! : '';
+  const [month, setMonth] = useState(linkedFrom || linkedTo ? 'custom' : 'all');
+  const [dateFrom, setDateFrom] = useState(linkedFrom);
+  const [dateTo, setDateTo] = useState(linkedTo);
   const badRange = !!dateFrom && !!dateTo && dateFrom > dateTo;
 
   const pickMonth = (v: string) => {
@@ -204,7 +211,9 @@ export default function TicketListPage() {
     if (view === 'pending') list = list.filter(awaitsMe);
     if (priorityFilter !== 'all') list = list.filter((t) => (t.priority ?? '').toLowerCase() === priorityFilter);
     if (categoryFilter !== 'all') list = list.filter((t) => t.ticketCategory === categoryFilter);
-    if (statusFilter !== 'all') list = list.filter((t) => t.ticketStatus === statusFilter);
+    if (statusFilter === OPEN_STATUSES) list = list.filter((t) => !isTerminalStatus(t.ticketStatus));
+    else if (statusFilter === SETTLED_STATUSES) list = list.filter((t) => isTerminalStatus(t.ticketStatus));
+    else if (statusFilter !== 'all') list = list.filter((t) => t.ticketStatus === statusFilter);
     if (companyFilter !== 'all') list = list.filter((t) => t.customerCompany?.id === companyFilter);
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- awaitsMe reads only the role flags and user id
@@ -383,6 +392,8 @@ export default function TicketListPage() {
           <SelectTrigger className="min-w-36 flex-1"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All statuses</SelectItem>
+            <SelectItem value={OPEN_STATUSES}>All open</SelectItem>
+            <SelectItem value={SETTLED_STATUSES}>All resolved / closed</SelectItem>
             {statuses.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
           </SelectContent>
         </Select>

@@ -293,6 +293,24 @@ export class TicketsService {
       summary: 'Ticket created',
     });
 
+    // Whoever raised it — a client's employee or their company admin — gets a
+    // receipt by email straight away, whatever happens next (approval,
+    // auto-assignment, or waiting for an Admin to assign it).
+    if (isCustomerTicket && viewer) {
+      const me = await this.prisma.user.findUnique({ where: { id: viewer.id }, select: { username: true, name: true, email: true } });
+      await this.mailEach(
+        clientId,
+        [{ email: me?.email || ticket.requestorEmail, username: me?.username, name: me?.name }],
+        `[${ticket.ticketNumber}] Ticket created: ${ticket.subject}`,
+        'Ticket created',
+        `We've received your ticket <strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong>.<br/><br/>` +
+          (needsApproval
+            ? `It needs approval before work starts. You'll get an email at each step.`
+            : `You'll get another email as soon as an agent is assigned to it.`),
+        `the receipt for ${ticket.ticketNumber}`,
+      );
+    }
+
     // A held ticket is routed when it is approved, not now.
     const assignedConsultantId =
       isCustomerTicket && !needsApproval ? await this.autoRoute(clientId, ticket, actorId) : null;
@@ -370,8 +388,64 @@ export class TicketsService {
         summary: `Auto-assigned to ${c?.username ?? 'consultant'}`,
         meta: { userId: assignedConsultantId, auto: true },
       });
+      await this.notifyAutoAssigned(clientId, ticket.id, assignedConsultantId);
     }
     return assignedConsultantId;
+  }
+
+  /**
+   * The client who raised the ticket and the agent it was routed to each get an
+   * email — the same pair a manual assignment emails, so auto-assignment on or
+   * off reads the same to both sides. Separate sends; never throws.
+   */
+  private async notifyAutoAssigned(clientId: string, ticketId: string, agentId: string) {
+    try {
+      const [t, agent] = await Promise.all([
+        this.prisma.ticket.findUnique({
+          where: { id: ticketId },
+          select: {
+            ticketNumber: true, subject: true, requestorUserId: true, requestorEmail: true, requestorName: true,
+            customerCompany: { select: { name: true } },
+          },
+        }),
+        this.prisma.user.findUnique({ where: { id: agentId }, select: { username: true, name: true, email: true } }),
+      ]);
+      if (!t || !agent) return;
+      const label = `<strong>${esc(t.ticketNumber)} · ${esc(t.subject)}</strong>`;
+      await this.mailEach(
+        clientId,
+        [await this.raiserContact(t)],
+        `[${t.ticketNumber}] An agent is looking into your ticket`,
+        'An agent has been assigned',
+        `${esc(displayName(agent))} has been assigned to your ticket ${label} and is looking into it. You can follow it and reply from the ticket.`,
+        `the assignment notice for ${t.ticketNumber}`,
+      );
+      await this.mailEach(
+        clientId,
+        [agent],
+        `[${t.ticketNumber}] Ticket assigned to you`,
+        'Ticket assigned to you',
+        `${label}${t.customerCompany ? ` from ${esc(t.customerCompany.name)}` : ''} has been assigned to you.`,
+        `the assignment notice for ${t.ticketNumber}`,
+      );
+    } catch (err) {
+      this.logger.error('Failed to email the auto-assignment', err instanceof Error ? err.stack : String(err));
+    }
+  }
+
+  /** Who raised a ticket, as an email recipient: their live address, else the one on the ticket. */
+  private async raiserContact(t: { requestorUserId: string | null; requestorEmail: string | null; requestorName: string | null }) {
+    const u = t.requestorUserId
+      ? await this.prisma.user.findUnique({ where: { id: t.requestorUserId }, select: { username: true, name: true, email: true } })
+      : null;
+    return { email: u?.email || t.requestorEmail, username: u?.username ?? null, name: u?.name ?? t.requestorName };
+  }
+
+  /** Active staff among `ids`, with what an email needs. */
+  private agentContacts(ids: string[]) {
+    return ids.length
+      ? this.prisma.user.findMany({ where: { id: { in: ids }, isActive: true }, select: { username: true, name: true, email: true } })
+      : Promise.resolve([] as { username: string; name: string | null; email: string | null }[]);
   }
 
   /**
@@ -1305,6 +1379,16 @@ export class TicketsService {
         title: 'Ticket closed automatically',
         body: `${label} was resolved more than ${days} day(s) ago and had no acknowledgement, so it has been closed.`,
       });
+      const agentIds = new Set(technicians.map((t) => t.userId));
+      if (ticket.resolvedById) agentIds.add(ticket.resolvedById);
+      await this.mailEach(
+        clientId,
+        await this.agentContacts([...agentIds]),
+        `[${ticket.ticketNumber}] Ticket closed automatically`,
+        'Ticket closed automatically',
+        `<strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong> was resolved more than ${days} day(s) ago and the client never acknowledged it, so it has been closed.`,
+        `the auto-close notice to agents for ${ticket.ticketNumber}`,
+      );
     } catch (err) {
       this.logger.error(
         `Failed to emit auto-close notification for ${ticket.ticketNumber}`,
@@ -2408,17 +2492,27 @@ Please acknowledge the resolution to close the ticket, or reopen it if the issue
       // who is handling it now, not the mechanics of the handover.
       const customerTo = joinEmails([ticket.requestorEmail, ...companyAdmins.map((a) => a.email)]);
       if (customerTo) {
-        const line = incoming.length
-          ? `Your ticket <strong>${ticket.ticketNumber}</strong> — “${ticket.subject}” — is now being handled by <strong>${to}</strong>.`
-          : `Your ticket <strong>${ticket.ticketNumber}</strong> — “${ticket.subject}” — is being reassigned, and a new agent will pick it up shortly.`;
+        // A ticket that had no agent yet is being *assigned*, not handed over —
+        // worded like the auto-assignment email, so the customer reads the same
+        // message whoever picked the agent. "New agent" is kept for a real change.
+        const firstAgent = previous.length === 0 && incoming.length > 0;
+        const line = firstAgent
+          ? `<strong>${to}</strong> has been assigned to your ticket <strong>${ticket.ticketNumber}</strong> — “${ticket.subject}” — and is looking into it.`
+          : incoming.length
+            ? `Your ticket <strong>${ticket.ticketNumber}</strong> — “${ticket.subject}” — is now being handled by <strong>${to}</strong>.`
+            : `Your ticket <strong>${ticket.ticketNumber}</strong> — “${ticket.subject}” — is being reassigned, and a new agent will pick it up shortly.`;
         await this.mailer.sendMail(
           {
             to: customerTo,
-            subject: `Your ticket ${ticket.ticketNumber} has a new agent`,
-            html: reassignmentHtml('Your ticket has a new agent', ticket.requestorName, line),
-            text: incoming.length
-              ? `Your ticket ${ticket.ticketNumber} ("${ticket.subject}") is now being handled by ${to}.`
-              : `Your ticket ${ticket.ticketNumber} ("${ticket.subject}") is being reassigned, and a new agent will pick it up shortly.`,
+            subject: firstAgent
+              ? `[${ticket.ticketNumber}] An agent is looking into your ticket`
+              : `Your ticket ${ticket.ticketNumber} has a new agent`,
+            html: reassignmentHtml(firstAgent ? 'An agent has been assigned' : 'Your ticket has a new agent', ticket.requestorName, line),
+            text: firstAgent
+              ? `${to} has been assigned to your ticket ${ticket.ticketNumber} ("${ticket.subject}") and is looking into it.`
+              : incoming.length
+                ? `Your ticket ${ticket.ticketNumber} ("${ticket.subject}") is now being handled by ${to}.`
+                : `Your ticket ${ticket.ticketNumber} ("${ticket.subject}") is being reassigned, and a new agent will pick it up shortly.`,
           },
           clientId,
         );
@@ -2447,9 +2541,15 @@ Please acknowledge the resolution to close the ticket, or reopen it if the issue
     }
   }
 
-  /** Tell the agents who worked the ticket that the client signed it off. Never throws. */
+  /**
+   * Tell the agents who worked the ticket that the client signed it off (bell and
+   * email), and confirm the close to the client who raised it. Never throws.
+   */
   private async notifyAcknowledged(
-    ticket: { id: string; ticketNumber: string; subject: string; resolvedById: string | null },
+    ticket: {
+      id: string; ticketNumber: string; subject: string; resolvedById: string | null;
+      requestorUserId: string | null; requestorEmail: string | null; requestorName: string | null;
+    },
     clientId: string,
   ) {
     try {
@@ -2466,6 +2566,23 @@ Please acknowledge the resolution to close the ticket, or reopen it if the issue
         title: 'Resolution acknowledged',
         body: `The client acknowledged ${ticket.ticketNumber} — ${ticket.subject}. The ticket is now closed.`,
       });
+      const label = `<strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong>`;
+      await this.mailEach(
+        clientId,
+        await this.agentContacts([...recipients]),
+        `[${ticket.ticketNumber}] Resolution acknowledged — ticket closed`,
+        'Ticket closed',
+        `The client acknowledged the resolution of ${label}. The ticket is now closed.`,
+        `the acknowledgement notice for ${ticket.ticketNumber}`,
+      );
+      await this.mailEach(
+        clientId,
+        [await this.raiserContact(ticket)],
+        `[${ticket.ticketNumber}] Your ticket has been closed`,
+        'Ticket closed',
+        `The resolution of your ticket ${label} has been acknowledged, so the ticket is now closed.<br/><br/>If the issue comes back, you can ask to reopen it from the ticket.`,
+        `the close confirmation for ${ticket.ticketNumber}`,
+      );
     } catch (err) {
       this.logger.error(
         `Failed to emit acknowledgement notification for ${ticket.ticketNumber}`,

@@ -256,7 +256,8 @@ export class ChannelService {
     }
 
     if (!internal) {
-      const senderIsCustomer = viewer.roles.includes('Customer') && !viewer.roles.includes('Admin');
+      // Either customer role — a company admin too, not only an employee.
+      const senderIsCustomer = viewerIsCustomerSide;
       const org = await this.prisma.client.findUnique({ where: { id: ticket.clientId }, select: { name: true } });
 
       let recipients: string[];

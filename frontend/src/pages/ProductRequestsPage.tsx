@@ -129,7 +129,7 @@ export default function ProductRequestsPage() {
             <Field label="Start date" type="date" value={terms.startDate} onChange={(v) => setTerms({ ...terms, startDate: v as string })} />
             <Field label="End date" type="date" min={terms.startDate || undefined} value={terms.endDate} onChange={(v) => setTerms({ ...terms, endDate: v as string })} />
             <Field label="Support hours" value={terms.supportHours} onChange={(v) => setTerms({ ...terms, supportHours: v as number })} />
-            <Field label="No. of visits" value={terms.visits} onChange={(v) => setTerms({ ...terms, visits: v as number })} />
+            <Field label="No. of visits / month" value={terms.visits} onChange={(v) => setTerms({ ...terms, visits: v as number })} />
             {terms.coverageType === 'AMC' && (
               <Field label="Contract amount" value={terms.contractAmount} onChange={(v) => setTerms({ ...terms, contractAmount: v as number })} />
             )}

@@ -20,6 +20,9 @@ export class CreateCompanyDto extends SupportHoursFields {
   // What the client bought — the New Client form requires it; the import leaves it
   // to the column default (AMC). Changed afterwards only through PUT :id/client-type.
   @IsOptional() @IsIn(CLIENT_TYPES) clientType?: ClientType;
+  // Department values (option list 'department') this client's New Ticket form
+  // offers; empty = every department.
+  @IsOptional() @IsArray() @IsString({ each: true }) departments?: string[];
   // Products this company uses (limits what they can raise tickets for).
   @IsOptional() @IsArray() @IsString({ each: true }) productIds?: string[];
   // The client's one CustomerAdmin: either a new login (the three fields) or an
@@ -55,6 +58,9 @@ export class UpdateCompanyDto extends SupportHoursFields {
   @IsOptional() @IsBoolean() autoAssignTickets?: boolean;
   // The client's one account manager (internal staff); null clears it.
   @IsOptional() @IsString() accountManagerId?: string | null;
+  // Department values (option list 'department') this client's New Ticket form
+  // offers; empty = every department.
+  @IsOptional() @IsArray() @IsString({ each: true }) departments?: string[];
 }
 
 export class CreateContactDto {

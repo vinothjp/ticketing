@@ -27,7 +27,7 @@ interface TemplateData {
 }
 
 interface PicklistOption { value: string; label: string; parentValue?: string | null; }
-interface UserOption { id: string; username: string; }
+interface UserOption { id: string; username: string; name?: string | null; }
 interface CompanyOption { id: string; name: string; }
 type Track = 'TECHNICAL' | 'FUNCTIONAL';
 interface SapProduct { id: string; name: string; code: string; autoAssign: boolean; modules: { id: string; name: string; tracks: Track[] }[]; }
@@ -115,6 +115,22 @@ export default function CreateTicketPage() {
   // auto-assignment. The product list is scoped to one client — a customer's own
   // company, or the client staff tagged above. Staff who tag no client are raising
   // an internal ticket, and the API answers with the tenant's own catalogue.
+  // Departments this client is limited to (set on the client screen); null = all.
+  // Same scoping as the product list: staff name the client, a customer gets their own.
+  const { data: deptScope } = useQuery<{ departments: string[] | null }>({
+    queryKey: ['ticket-departments', isCustomerSide ? 'own' : selectedCompanyId],
+    queryFn: async () => (await api.get('/api/my-company/departments', {
+      params: isCustomerSide ? undefined : { customerCompanyId: selectedCompanyId || undefined },
+    })).data,
+  });
+  const allowedDepartments = deptScope?.departments ?? null;
+  // Switching to a client that doesn't offer the picked department clears it,
+  // rather than submitting a value their dropdown no longer shows.
+  useEffect(() => {
+    if (allowedDepartments && values.department && !allowedDepartments.includes(values.department)) {
+      setValues((prev) => ({ ...prev, department: '' }));
+    }
+  }, [JSON.stringify(allowedDepartments), values.department]); // eslint-disable-line react-hooks/exhaustive-deps
   const { data: sapProducts = [], isFetching: productsFetching } = useQuery<SapProduct[]>({
     queryKey: ['ticket-products', isCustomerSide ? 'mine' : selectedCompanyId || 'internal'],
     queryFn: async () =>
@@ -136,6 +152,11 @@ export default function CreateTicketPage() {
     enabled: !!routing.productId && (isCustomerSide || !!selectedCompanyId),
   });
   const [productError, setProductError] = useState<string | null>(null);
+  // Module and Issue type are mandatory whenever they are shown (a product split
+  // into modules / a module routed on more than one track); when hidden they are
+  // filled in automatically, so there is nothing to ask.
+  const [moduleError, setModuleError] = useState<string | null>(null);
+  const [typeError, setTypeError] = useState<string | null>(null);
   const selProduct = sapProducts.find((p) => p.id === routing.productId);
   const selModule = selProduct?.modules.find((m) => m.id === routing.moduleId);
   // A module with a single track needs no issue-type choice — auto-select it.
@@ -147,17 +168,19 @@ export default function CreateTicketPage() {
     const p = sapProducts.find((x) => x.id === pid);
     const mod = p && p.modules.length === 1 ? p.modules[0] : undefined;
     setRouting({ productId: pid, moduleId: mod?.id ?? '', consultantType: trackFor(mod) });
-    setProductError(null);
+    setProductError(null); setModuleError(null); setTypeError(null);
   };
   // The product list belongs to the client, so switching client invalidates the pick.
   const chooseCompany = (companyId: string) => {
     setSelectedCompanyId(companyId);
     setRouting({ productId: '', moduleId: '', consultantType: '' });
-    setProductError(null);
+    setProductError(null); setModuleError(null); setTypeError(null);
   };
   const chooseModule = (mid: string) => {
     const m = selProduct?.modules.find((x) => x.id === mid);
+    if (!mid) return; // Radix's empty re-emit, never a real pick
     setRouting((r) => ({ ...r, moduleId: mid, consultantType: trackFor(m) }));
+    setModuleError(null); setTypeError(null);
   };
   // Staff who leave the client empty are raising an INTERNAL ticket — the
   // tenant's own, with no customer contract behind it.
@@ -340,7 +363,11 @@ export default function CreateTicketPage() {
     // Product is mandatory but lives outside the template-driven schema.
     const productMissing = !routing.productId;
     setProductError(productMissing ? 'Product is required' : null);
-    if (productMissing || !result.success) {
+    const moduleMissing = !!selProduct && selProduct.modules.length > 1 && !routing.moduleId;
+    setModuleError(moduleMissing ? 'Module is required' : null);
+    const typeMissing = !!selModule && selModule.tracks.length > 1 && !routing.consultantType;
+    setTypeError(typeMissing ? 'Issue type is required' : null);
+    if (productMissing || moduleMissing || typeMissing || !result.success) {
       toast.error('Please fix the highlighted fields');
       return;
     }
@@ -427,26 +454,28 @@ export default function CreateTicketPage() {
               {/* Module: needed for products with more than one module (S/4HANA). */}
               {selProduct && selProduct.modules.length > 1 && (
                 <div>
-                  <div className="mb-1 text-sm text-muted-foreground">Module</div>
+                  <div className="mb-1 text-sm text-muted-foreground">Module <span className="text-destructive">*</span></div>
                   <Select value={routing.moduleId || undefined} onValueChange={chooseModule}>
-                    <SelectTrigger className="w-full"><SelectValue placeholder="Select module" /></SelectTrigger>
+                    <SelectTrigger className="w-full" aria-invalid={!!moduleError}><SelectValue placeholder="Select module" /></SelectTrigger>
                     <SelectContent>
                       {selProduct.modules.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
+                  {moduleError && <p className="mt-1 text-xs text-destructive">{moduleError}</p>}
                 </div>
               )}
               {/* Type: only when the chosen module routes on more than one track. */}
               {selModule && selModule.tracks.length > 1 && (
                 <div>
-                  <div className="mb-1 text-sm text-muted-foreground">Issue type</div>
-                  <Select value={routing.consultantType || undefined} onValueChange={(v) => setRouting((r) => ({ ...r, consultantType: v }))}>
-                    <SelectTrigger className="w-full"><SelectValue placeholder="Technical / Functional" /></SelectTrigger>
+                  <div className="mb-1 text-sm text-muted-foreground">Issue type <span className="text-destructive">*</span></div>
+                  <Select value={routing.consultantType || undefined} onValueChange={(v) => { if (!v) return; setRouting((r) => ({ ...r, consultantType: v })); setTypeError(null); }}>
+                    <SelectTrigger className="w-full" aria-invalid={!!typeError}><SelectValue placeholder="Technical / Functional" /></SelectTrigger>
                     <SelectContent>
                       {selModule.tracks.includes('FUNCTIONAL') && <SelectItem value="FUNCTIONAL">Functional</SelectItem>}
                       {selModule.tracks.includes('TECHNICAL') && <SelectItem value="TECHNICAL">Technical</SelectItem>}
                     </SelectContent>
                   </Select>
+                  {typeError && <p className="mt-1 text-xs text-destructive">{typeError}</p>}
                 </div>
               )}
               {/* Support hours: appears with the product, but always LAST in the row.
@@ -486,7 +515,10 @@ export default function CreateTicketPage() {
                         error={errors[f.fieldKey]}
                         options={f.picklistKey === 'subCategory'
                           ? (picklistData.subCategory ?? []).filter((o) => o.parentValue === values.ticketCategory)
-                          : (f.picklistKey ? picklistData[f.picklistKey] : undefined)}
+                          // A client may be limited to some departments (set on the client).
+                          : f.picklistKey === 'department' && allowedDepartments
+                            ? (picklistData.department ?? []).filter((o) => allowedDepartments.includes(o.value))
+                            : (f.picklistKey ? picklistData[f.picklistKey] : undefined)}
                         users={f.dataType === 'MULTI_SELECT_USER' ? users : undefined}
                         systemDisplayValue={f.dataType === 'SYSTEM' ? systemDisplayValue(f) : undefined}
                         files={f.fieldKey === 'attachments' ? attachmentFiles : undefined}

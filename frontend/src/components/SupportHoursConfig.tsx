@@ -9,6 +9,8 @@ export interface SupportHoursConfigValue {
   carryForward: boolean;
   /** Whether the client may still raise tickets once the allowance is spent. */
   allowTicketsAfterHours: boolean;
+  /** Hours still loggable past the allowance before the excess rule applies; '' = none. */
+  toleranceHours: number | '';
   allowExcess: boolean;
   /** What an hour beyond the allowance is charged at; '' = not set. */
   excessRate: number | '';
@@ -71,9 +73,13 @@ export default function SupportHoursConfig({ value, onChange, live, readOnly, sh
         </RadioGroup>
       </Row>
 
-      <Row label="Carry forward un-utilized hours" hint={monthly ? undefined : 'monthly only'}>
-        <YesNo value={value.carryForward} disabled={readOnly || !monthly} onChange={(v) => onChange({ carryForward: v })} />
-      </Row>
+      {/* Carry-forward only means anything for a monthly allowance, so it is
+          shown for Per month alone (saves already send it as false otherwise). */}
+      {monthly && (
+        <Row label="Carry forward un-utilized hours">
+          <YesNo value={value.carryForward} disabled={readOnly} onChange={(v) => onChange({ carryForward: v })} />
+        </Row>
+      )}
 
       {monthly && value.carryForward && live && (
         <div className="grid grid-cols-3 gap-2 py-2 text-center text-xs">
@@ -85,6 +91,20 @@ export default function SupportHoursConfig({ value, onChange, live, readOnly, sh
 
       <Row label="Allow the client to raise tickets after support hours are over">
         <YesNo value={value.allowTicketsAfterHours} disabled={readOnly} onChange={(v) => onChange({ allowTicketsAfterHours: v })} />
+      </Row>
+
+      {/* Sits above the excess switch it softens: logging is refused only once
+          the allowance *plus* this many hours is used up (when excess is off). */}
+      <Row label="Tolerance hours">
+        {readOnly ? (
+          <span className="text-sm text-foreground">{value.toleranceHours === '' ? 'None' : `${value.toleranceHours} h`}</span>
+        ) : (
+          <input
+            type="number" min={0} step="0.25" inputMode="decimal" placeholder="Hours"
+            className="h-8 w-36 rounded-md border border-input bg-background px-2 text-sm"
+            value={value.toleranceHours}
+            onChange={(e) => onChange({ toleranceHours: e.target.value === '' ? '' : Number(e.target.value) })} />
+        )}
       </Row>
 
       <Row label="Allow logging excess hours (beyond the allowance)">

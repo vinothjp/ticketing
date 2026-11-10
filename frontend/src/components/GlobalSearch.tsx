@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Search, Ticket, Building2, Boxes, ListTree, Loader2 } from 'lucide-react';
+import { Search, Ticket, Building2, Boxes, ListTree, Loader2, IdCard, FolderKanban, BookOpen, Menu } from 'lucide-react';
 import api from '../lib/api';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 
-type HitType = 'ticket' | 'client' | 'product' | 'module';
+type HitType = 'ticket' | 'client' | 'product' | 'module' | 'employee' | 'project' | 'kb' | 'menu';
 interface SearchHit {
   type: HitType;
   id: string;
@@ -15,13 +15,35 @@ interface SearchHit {
   to: string;
 }
 
-// Group order + labels. The backend already filters the types a viewer may see,
-// so an empty group simply never renders.
 const GROUPS: { type: HitType; label: string; icon: typeof Ticket }[] = [
+  { type: 'menu', label: 'Pages', icon: Menu },
   { type: 'ticket', label: 'Tickets', icon: Ticket },
   { type: 'client', label: 'Clients', icon: Building2 },
+  { type: 'employee', label: 'Employees', icon: IdCard },
+  { type: 'project', label: 'Projects', icon: FolderKanban },
+  { type: 'kb', label: 'Knowledge Base', icon: BookOpen },
   { type: 'product', label: 'Products', icon: Boxes },
   { type: 'module', label: 'Modules', icon: ListTree },
+];
+
+const NAV_ITEMS: { label: string; to: string }[] = [
+  { label: 'Dashboard', to: '/dashboard' },
+  { label: 'Tickets', to: '/tickets' },
+  { label: 'Knowledge Base', to: '/knowledge-base' },
+  { label: 'Projects', to: '/projects' },
+  { label: 'Change Management', to: '/change-requests' },
+  { label: 'Timesheet', to: '/timesheet' },
+  { label: 'Client Visits', to: '/client-visits' },
+  { label: 'Users', to: '/users' },
+  { label: 'Roles', to: '/roles' },
+  { label: 'Clients', to: '/admin/customer-companies' },
+  { label: 'Products', to: '/admin/products' },
+  { label: 'Templates', to: '/admin/templates' },
+  { label: 'Option List', to: '/admin/options' },
+  { label: 'SLA Policies', to: '/admin/sla' },
+  { label: 'Employee Master', to: '/admin/employees' },
+  { label: 'Asset Master', to: '/admin/assets' },
+  { label: 'Organization', to: '/organization' },
 ];
 
 /**
@@ -43,12 +65,22 @@ export default function GlobalSearch() {
   }, [term]);
 
   const enabled = debounced.length >= 2;
-  const { data: hits = [], isFetching } = useQuery<SearchHit[]>({
+  const { data: apiHits = [], isFetching } = useQuery<SearchHit[]>({
     queryKey: ['global-search', debounced],
     queryFn: async () => (await api.get('/api/search', { params: { q: debounced } })).data,
     enabled,
     staleTime: 30_000,
   });
+
+  const hits = useMemo(() => {
+    if (!enabled) return [];
+    const lc = debounced.toLowerCase();
+    const menuHits: SearchHit[] = NAV_ITEMS
+      .filter((n) => n.label.toLowerCase().includes(lc))
+      .slice(0, 5)
+      .map((n) => ({ type: 'menu' as const, id: n.to, title: n.label, subtitle: null, to: n.to }));
+    return [...menuHits, ...apiHits];
+  }, [apiHits, debounced, enabled]);
 
   // Flat, group-ordered list — what the arrow keys walk and Enter picks.
   const ordered = useMemo(
@@ -109,7 +141,7 @@ export default function GlobalSearch() {
         }}
         onFocus={() => setOpen(true)}
         onKeyDown={onKeyDown}
-        placeholder="Search tickets, clients, modules..."
+        placeholder="Search..."
         className="pl-8"
       />
       {isFetching && (

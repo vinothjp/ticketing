@@ -10,9 +10,10 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { FILE_TYPE_OPTIONS } from '../templates/templateMeta';
 import type { KbArticle, KbAttachment } from '../KnowledgeBasePage';
+import { staffLabel } from '@/lib/staffLabel';
 
 interface PicklistOpt { value: string; label: string; parentValue?: string | null; isActive?: boolean }
-interface UserOption { id: string; username: string; }
+interface UserOption { id: string; username: string; name?: string | null; }
 const MAX_MB = 5;
 const ACCEPT = FILE_TYPE_OPTIONS.map((o) => o.value).join(',');
 const SUPPORTED = FILE_TYPE_OPTIONS.map((o) => o.label).join(', ');
@@ -312,7 +313,7 @@ export default function KbArticleEditorPage() {
           <Field label="Knowledge owner">
             <Select value={form.knowledgeOwnerId || undefined} onValueChange={(v) => set({ knowledgeOwnerId: v })}>
               <SelectTrigger><SelectValue placeholder="Select a user…" /></SelectTrigger>
-              <SelectContent>{users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}</SelectContent>
+              <SelectContent>{users.map((u) => <SelectItem key={u.id} value={u.id}>{staffLabel(u)}</SelectItem>)}</SelectContent>
             </Select>
           </Field>
           <Field label="Author"><Input value={existing?.createdByName ?? 'You'} readOnly disabled /></Field>

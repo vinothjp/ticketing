@@ -19,6 +19,7 @@ import {
   type TaskDetail, type ProjectTask, type ProjectResource, type UserOption,
 } from '../projectMeta';
 import AssigneeSelect from './AssigneeSelect';
+import { staffLabel } from '@/lib/staffLabel';
 
 const NONE = '__none__';
 const toDateInput = (v?: string | null) => (v ? new Date(v).toISOString().slice(0, 10) : '');
@@ -337,7 +338,7 @@ export default function TaskDetailDialog({
                 size="sm" className="w-40" placeholder="Add watcher" emptyText="No matching user"
                 value=""
                 onChange={(v) => { if (v && !watcherIds.has(v)) set('watcherIds', [...draft.watcherIds, v]); }}
-                options={users.filter((u) => !watcherIds.has(u.id)).map((u) => ({ value: u.id, label: u.username }))}
+                options={users.filter((u) => !watcherIds.has(u.id)).map((u) => ({ value: u.id, label: staffLabel(u) }))}
               />
             )}
           </div>

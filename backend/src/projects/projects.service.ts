@@ -365,7 +365,7 @@ export class ProjectsService {
       include: {
         milestones: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
         sprints: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
-        resources: { include: { user: { select: { id: true, username: true } }, category: true }, orderBy: { createdAt: 'asc' } },
+        resources: { include: { user: { select: { id: true, username: true, name: true } }, category: true }, orderBy: { createdAt: 'asc' } },
         timesheets: { include: { user: { select: { id: true, username: true } } }, orderBy: { date: 'desc' } },
         tasks: {
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],

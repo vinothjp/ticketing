@@ -6,10 +6,10 @@ import {
 } from './dto/product.dto';
 
 const PRODUCT_INCLUDE = {
-  consultants: { include: { user: { select: { id: true, username: true } } } },
+  consultants: { include: { user: { select: { id: true, username: true, name: true } } } },
   modules: {
     orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-    include: { consultants: { include: { user: { select: { id: true, username: true } } } } },
+    include: { consultants: { include: { user: { select: { id: true, username: true, name: true } } } } },
   },
 } satisfies Prisma.ProductInclude;
 

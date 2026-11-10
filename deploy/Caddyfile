@@ -1,0 +1,35 @@
+# If SITE_ADDRESS is a domain (e.g. tickets.example.com) → auto HTTPS
+# If SITE_ADDRESS is :80 or an IP:80 → plain HTTP (no certs)
+{$SITE_ADDRESS:localhost} {
+	# API routes → backend container
+	handle /api/* {
+		reverse_proxy backend:3000
+	}
+
+	# Uploaded files → backend container
+	handle /uploads/* {
+		reverse_proxy backend:3000
+	}
+
+	# Frontend SPA
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+
+		# Cache built assets aggressively (hashed filenames)
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+	}
+
+	# Security headers
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	# Gzip
+	encode gzip
+}

@@ -11,7 +11,7 @@ export type SearchViewer = {
 
 /** One hit, already carrying the route the header dropdown navigates to. */
 export type SearchHit = {
-  type: 'ticket' | 'client' | 'product' | 'module';
+  type: 'ticket' | 'client' | 'product' | 'module' | 'employee' | 'project' | 'kb';
   id: string;
   title: string;
   subtitle: string | null;
@@ -44,13 +44,16 @@ export class SearchService {
     const like: Prisma.StringFilter = { contains: term, mode: 'insensitive' };
 
     const staff = !isCustomerSide(viewer);
-    const [tickets, companies, products, modules] = await Promise.all([
+    const [tickets, companies, products, modules, employees, projects, kbArticles] = await Promise.all([
       this.tickets(term, like, clientId, viewer),
       staff ? this.companies(like, clientId) : [],
       isAdmin(viewer) ? this.products(like, clientId) : [],
       isAdmin(viewer) ? this.modules(like, clientId) : [],
+      isAdmin(viewer) ? this.employees(like, clientId) : [],
+      staff ? this.projects(like, clientId) : [],
+      this.kbArticles(like, clientId, viewer),
     ]);
-    return [...tickets, ...companies, ...products, ...modules];
+    return [...tickets, ...companies, ...products, ...modules, ...employees, ...projects, ...kbArticles];
   }
 
   private async tickets(
@@ -150,6 +153,66 @@ export class SearchService {
       title: m.name,
       subtitle: m.product.name,
       to: `/admin/products/${m.product.id}/edit`,
+    }));
+  }
+
+  private async employees(like: Prisma.StringFilter, clientId: string): Promise<SearchHit[]> {
+    const rows = await this.prisma.user.findMany({
+      where: {
+        clientId,
+        customerCompanyId: null,
+        OR: [{ username: like }, { name: like }, { employeeId: like }, { email: like }],
+      },
+      orderBy: { username: 'asc' },
+      take: PER_TYPE,
+      select: { id: true, username: true, name: true, employeeId: true, department: true },
+    });
+    return rows.map((u) => ({
+      type: 'employee' as const,
+      id: u.id,
+      title: u.name || u.username,
+      subtitle: [u.employeeId, u.department].filter(Boolean).join(' · ') || null,
+      to: `/admin/employees/${u.id}`,
+    }));
+  }
+
+  private async projects(like: Prisma.StringFilter, clientId: string): Promise<SearchHit[]> {
+    const rows = await this.prisma.project.findMany({
+      where: {
+        clientId,
+        OR: [{ name: like }, { projectNumber: like }, { projectCode: like }, { key: like }],
+      },
+      orderBy: { createdAt: 'desc' },
+      take: PER_TYPE,
+      select: { id: true, name: true, projectNumber: true, status: true },
+    });
+    return rows.map((p) => ({
+      type: 'project' as const,
+      id: p.id,
+      title: `${p.projectNumber} — ${p.name}`,
+      subtitle: p.status,
+      to: `/projects/${p.id}`,
+    }));
+  }
+
+  private async kbArticles(like: Prisma.StringFilter, clientId: string, viewer: SearchViewer): Promise<SearchHit[]> {
+    const rows = await this.prisma.kbArticle.findMany({
+      where: {
+        clientId,
+        status: 'PUBLISHED',
+        ...(isCustomerSide(viewer) ? { audience: 'CUSTOMER' } : {}),
+        OR: [{ title: like }, { subject: like }, { documentNumber: like }],
+      },
+      orderBy: { publishedDate: 'desc' },
+      take: PER_TYPE,
+      select: { id: true, title: true, documentNumber: true, category: true },
+    });
+    return rows.map((a) => ({
+      type: 'kb' as const,
+      id: a.id,
+      title: a.title,
+      subtitle: [a.documentNumber, a.category].filter(Boolean).join(' · ') || null,
+      to: `/knowledge-base/${a.id}`,
     }));
   }
 }

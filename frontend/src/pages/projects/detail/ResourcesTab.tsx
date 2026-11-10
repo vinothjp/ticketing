@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { useConfirm } from '@/hooks/useConfirm';
 import ImportExportBar from '@/components/ImportExportBar';
 import { invalidateProject, type ProjectDetail, type ResourceCategory, type UserOption } from '../projectMeta';
+import { staffLabel } from '@/lib/staffLabel';
 
 /**
  * A column heading: its icon, then its label. Muted and small, so the headings
@@ -174,7 +175,7 @@ export default function ResourcesTab({ project, users, prefillUserId, onPrefillU
                 placeholder="Select member" emptyText="No matching user"
                 value={form.userId}
                 onChange={(v) => { if (v) setForm((f) => ({ ...f, userId: v })); }}
-                options={users.map((u) => ({ value: u.id, label: u.username }))}
+                options={users.map((u) => ({ value: u.id, label: staffLabel(u) }))}
               />
             </div>
             <div className="grid grid-cols-2 gap-3">

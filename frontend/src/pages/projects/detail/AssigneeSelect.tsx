@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import { useConfirm } from '@/hooks/useConfirm';
 import { Combobox } from '@/components/ui/combobox';
 import type { ProjectResource, UserOption } from '../projectMeta';
+import { staffLabel } from '@/lib/staffLabel';
 
 /**
  * The assignee dropdown for a project's work items. Every staff user is offered,
@@ -53,7 +54,7 @@ export default function AssigneeSelect({
           value={value}
           onChange={pick}
           disabled={disabled}
-          options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.username }))]}
+          options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: staffLabel(u) }))]}
         />
       </div>
     </>

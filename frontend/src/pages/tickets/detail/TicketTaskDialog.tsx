@@ -13,6 +13,7 @@ import { COMPLETED_TASK_STATUS, TASK_STATUSES, hrs, taskCode } from './taskMeta'
 import type { Task, UserOption } from './TasksTab';
 import TaskComments from './TaskComments';
 import { useWorklogInvalidate, useWorklogs } from './ticketQueries';
+import { staffLabel } from '@/lib/staffLabel';
 
 const UNASSIGNED = '__none__';
 
@@ -122,7 +123,7 @@ export default function TicketTaskDialog({
   // on it, so clearing the field has to be as reachable as picking someone.
   const assigneeOptions = [
     { value: UNASSIGNED, label: 'Unassigned' },
-    ...users.map((u) => ({ value: u.id, label: u.username })),
+    ...users.map((u) => ({ value: u.id, label: staffLabel(u) })),
   ];
 
   /**

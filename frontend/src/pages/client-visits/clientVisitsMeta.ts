@@ -55,6 +55,7 @@ export interface CustomerCompanyOption {
 export interface UserOption {
   id: string;
   username: string;
+  name?: string | null;
   isActive?: boolean;
 }
 
@@ -70,6 +71,7 @@ export interface CustomerConsultantOption {
   id: string;
   userId: string;
   username: string | null;
+  name?: string | null;
   productId: string | null;
   isPrimary: boolean;
 }

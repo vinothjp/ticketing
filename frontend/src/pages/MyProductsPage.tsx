@@ -186,7 +186,7 @@ export default function MyProductsPage() {
             {/* Stat tiles — live pool */}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Stat label={contract?.hours != null ? `Hours left of ${contract.hours}` : 'Support hours'} value={hoursLeft != null ? String(hoursLeft) : '—'} />
-              <Stat label={contract?.visits != null ? `Visits left of ${contract.visits}` : 'Site visits'} value={visitsLeft != null ? String(visitsLeft) : '—'} />
+              <Stat label={contract?.visits != null ? `Visits left this month (of ${contract.visits})` : 'Site visits'} value={visitsLeft != null ? String(visitsLeft) : '—'} />
               <Stat label="Days remaining" value={cDaysLeft != null ? String(cDaysLeft) : '—'} />
               <Stat label="Products covered" value={String(products.length)} />
             </div>
@@ -268,8 +268,8 @@ export default function MyProductsPage() {
                     ].filter(Boolean).join(' — ')}
                     pct={p.hours.allocated ? Math.round((p.hours.used / p.hours.allocated) * 100) : 0}
                     active={(p.hours.left ?? 0) > 0} daysLeft={null} hideRight />
-                  <Meter icon={<MapPin className="size-3.5" />} title="Site visits"
-                    subtitle={p.visits.allocated == null ? 'Not included' : `${p.visits.left} of ${p.visits.allocated} visits left`}
+                  <Meter icon={<MapPin className="size-3.5" />} title="Site visits (this month)"
+                    subtitle={p.visits.allocated == null ? 'Not included' : `${p.visits.left} of ${p.visits.allocated} visits left this month`}
                     pct={p.visits.allocated ? Math.round((p.visits.used / p.visits.allocated) * 100) : 0}
                     active={(p.visits.left ?? 0) > 0} daysLeft={null} hideRight />
 

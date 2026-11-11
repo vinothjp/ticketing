@@ -69,8 +69,10 @@ import AlbumPage from './pages/gallery/AlbumPage';
 const queryClient = new QueryClient();
 const isSuperAdmin = (roles: string[]) => roles.includes('SuperAdmin');
 const isTenantAdmin = (roles: string[]) => roles.includes('Admin');
-// SMTP settings: admins + agents (Viewer), never customers.
-const isStaff = (roles: string[]) => roles.includes('Admin') || roles.includes('Viewer');
+// SMTP settings: admins + agents (Viewer), never customers. A Manager holds every
+// right of an agent, so it counts as staff on its own.
+const isStaff = (roles: string[]) =>
+  roles.includes('Admin') || roles.includes('Viewer') || roles.includes('Manager');
 // A customer company's own admin — self-service team management.
 const isCustomerAdmin = (roles: string[]) => roles.includes('CustomerAdmin');
 
@@ -162,7 +164,8 @@ export default function App() {
                           <Route path="/admin/products" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductsPage /></RoleGate>} />
                           <Route path="/admin/products/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductEditorPage /></RoleGate>} />
                           <Route path="/admin/products/:id/edit" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductEditorPage /></RoleGate>} />
-                          <Route path="/admin/product-requests" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProductRequestsPage /></RoleGate>} />
+                          {/* Staff: Admins see every request, an account manager their own clients' (scoped server-side). */}
+                          <Route path="/admin/product-requests" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ProductRequestsPage /></RoleGate>} />
                           <Route path="/admin/project-templates" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProjectTemplatesListPage /></RoleGate>} />
                           <Route path="/admin/project-templates/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProjectTemplateDesignerPage /></RoleGate>} />
                           <Route path="/admin/project-templates/:id" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ProjectTemplateDesignerPage /></RoleGate>} />

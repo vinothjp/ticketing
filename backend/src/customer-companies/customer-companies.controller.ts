@@ -63,10 +63,19 @@ export class CustomerCompaniesController {
   ) {}
 
   // ---- Provider: product requests queue (declared before :id routes) ----
+  // Admins see and decide every request; a client's account manager sees and
+  // decides that client's requests only - the service scopes it (requestScope).
   @Get('product-requests')
-  @Roles('Admin')
+  @Roles('Admin', 'Viewer')
   listProductRequests(@Request() req: AuthedRequest) {
-    return this.customerProducts.listRequests(req.user.clientId);
+    return this.customerProducts.listRequests(req.user.clientId, req.user);
+  }
+
+  /** Whether the viewer has a Product Requests screen at all (Admin, or account manager of any client). */
+  @Get('product-requests/access')
+  @Roles('Admin', 'Viewer')
+  productRequestsAccess(@Request() req: AuthedRequest) {
+    return this.customerProducts.requestsAccess(req.user.clientId, req.user);
   }
 
   // Manual "check coverage now" — the timer also runs this on a schedule.
@@ -77,15 +86,15 @@ export class CustomerCompaniesController {
   }
 
   @Post('product-requests/:reqId/grant')
-  @Roles('Admin')
+  @Roles('Admin', 'Viewer')
   grantProductRequest(@Param('reqId') reqId: string, @Body() dto: GrantRequestDto, @Request() req: AuthedRequest) {
-    return this.customerProducts.grantRequest(reqId, dto, req.user.clientId, req.user.id);
+    return this.customerProducts.grantRequest(reqId, dto, req.user.clientId, req.user);
   }
 
   @Post('product-requests/:reqId/decline')
-  @Roles('Admin')
+  @Roles('Admin', 'Viewer')
   declineProductRequest(@Param('reqId') reqId: string, @Body() dto: DeclineRequestDto, @Request() req: AuthedRequest) {
-    return this.customerProducts.declineRequest(reqId, dto.note, req.user.clientId, req.user.id);
+    return this.customerProducts.declineRequest(reqId, dto.note, req.user.clientId, req.user);
   }
 
   // ---- Provider: a company's purchased products + AMC/warranty terms ----

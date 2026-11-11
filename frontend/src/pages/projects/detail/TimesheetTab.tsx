@@ -15,6 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { invalidateProject, wbsOrder, type ProjectDetail, type UserOption } from '../projectMeta';
 import { useAuth } from '../../../context/AuthContext';
+import { staffLabel } from '@/lib/staffLabel';
 
 const tsVariant = (s: string): 'success' | 'destructive' | 'secondary' =>
   s === 'APPROVED' ? 'success' : s === 'REJECTED' ? 'destructive' : 'secondary';
@@ -34,7 +35,7 @@ export default function TimesheetTab({ project }: { project: ProjectDetail; user
   // Only a Resources member with a cost category may log time — their hours are costed at that rate.
   const members = project.resources
     .filter((r) => r.userId && r.categoryId)
-    .map((r) => ({ id: r.userId as string, username: r.user?.username ?? r.consultantName ?? '—' }));
+    .map((r) => ({ id: r.userId as string, username: r.user?.username ?? r.consultantName ?? '—', name: r.user?.name ?? null }));
   // What time is logged against: the project's leaf tasks and subtasks, in WBS order —
   // never a phase, milestone or item with children (the server applies the same rule).
   const parents = new Set(project.tasks.map((t) => t.parentTaskId).filter(Boolean));
@@ -100,7 +101,7 @@ export default function TimesheetTab({ project }: { project: ProjectDetail; user
                   emptyText={members.length ? 'No matching member' : 'No member on Resources'}
                   value={userId}
                   onChange={(v) => { if (v) setUserId(v); }}
-                  options={members.map((m) => ({ value: m.id, label: m.username }))}
+                  options={members.map((m) => ({ value: m.id, label: staffLabel(m) }))}
                 />
                 {members.length === 0 && (
                   <p className="mt-1 text-xs text-muted-foreground">Add people on the Resources tab first.</p>

@@ -6,6 +6,7 @@ import { CreateProductRequestDto } from './dto/customer-product.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
 import { StaffGuard } from '../auth/staff.guard';
+import { withImpliedRoles } from '../auth/implied-roles';
 
 type AuthedRequest = { user: { id: string; clientId: string; roles: string[]; customerCompanyId?: string | null } };
 
@@ -25,13 +26,23 @@ export class MyCompanyController {
   @Get('products')
   products(@Request() req: AuthedRequest, @Query('customerCompanyId') customerCompanyId?: string) {
     const roles = req.user.roles ?? [];
-    const isStaff = roles.includes('Admin') || roles.includes('Viewer');
+    const isStaff = roles.includes('Admin') || withImpliedRoles(roles).includes('Viewer');
     const companyId = isStaff ? customerCompanyId || null : (req.user.customerCompanyId ?? null);
     // Staff who picked no client are raising an INTERNAL ticket — there is no
     // customer contract to scope the list, so they get the tenant's catalogue.
     // A customer with no company still gets nothing.
     if (isStaff && !companyId) return this.service.internalTicketProducts(req.user.clientId);
     return this.service.ticketProducts(req.user.clientId, companyId);
+  }
+
+  // Departments the New Ticket form offers for a client — same scoping as
+  // `products`: staff pass the client they picked, a customer gets their own.
+  @Get('departments')
+  departments(@Request() req: AuthedRequest, @Query('customerCompanyId') customerCompanyId?: string) {
+    const roles = req.user.roles ?? [];
+    const isStaff = roles.includes('Admin') || withImpliedRoles(roles).includes('Viewer');
+    const companyId = isStaff ? customerCompanyId || null : (req.user.customerCompanyId ?? null);
+    return this.service.ticketDepartments(req.user.clientId, companyId);
   }
 
   // Clients an agent may raise a ticket for. Admins already have the full list at
@@ -53,7 +64,7 @@ export class MyCompanyController {
     @Query('customerCompanyId') customerCompanyId?: string,
   ) {
     const roles = req.user.roles ?? [];
-    const isStaff = roles.includes('Admin') || roles.includes('Viewer');
+    const isStaff = roles.includes('Admin') || withImpliedRoles(roles).includes('Viewer');
     const companyId = isStaff ? customerCompanyId || null : (req.user.customerCompanyId ?? null);
     const empty = { hasPool: false as const, allocated: null, used: 0, left: null };
     if (!companyId || !productId) return empty;

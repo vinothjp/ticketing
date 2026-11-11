@@ -24,6 +24,7 @@ import ApprovalsTab from './detail/ApprovalsTab';
 import ConversationTab from './detail/ConversationTab';
 import { ClientVisitsPanel } from '../client-visits/ClientVisitsPanel';
 import { useDateFormat } from '@/lib/dateFormat';
+import { staffLabel } from '@/lib/staffLabel';
 
 interface TicketDetail {
   id: string;
@@ -117,7 +118,7 @@ interface SupportHours {
   left: number | null;
 }
 interface PicklistOption { value: string; label: string; }
-interface UserOption { id: string; username: string; }
+interface UserOption { id: string; username: string; name?: string | null; }
 
 const OMIT_FROM_TEMPLATE_FIELDS = new Set([
   'subject', 'description', 'attachments', 'templateName', 'createdDate', 'closedDate', 'ticketStatus', 'sla',
@@ -175,7 +176,7 @@ export default function TicketDetailPage() {
   // so its columns are not squeezed into a horizontal scroll.
   const showOverview = tab !== 'tasks';
   const { user } = useAuth();
-  const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer');
+  const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer' || r === 'Manager');
   const isTenantAdmin = !!user?.roles.includes('Admin');
   const isCustomerAdmin = !!user?.roles.includes('CustomerAdmin');
   // Both external roles may sign off a resolution; findOne() still limits an
@@ -830,7 +831,7 @@ export default function TicketDetailPage() {
                               <SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="none">Unassigned</SelectItem>
-                                {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
+                                {users.map((u) => <SelectItem key={u.id} value={u.id}>{staffLabel(u)}</SelectItem>)}
                               </SelectContent>
                             </Select>
                           );
@@ -894,7 +895,6 @@ export default function TicketDetailPage() {
                 readOnly={!isStaff}
                 loggedHours={loggedHours}
                 openTasks={openTasks}
-                onLogTime={() => setTab('tasks')}
                 onViewTasks={sendToOpenTasks}
               />
             </TabsContent>
@@ -1000,8 +1000,8 @@ export default function TicketDetailPage() {
                           return;
                         }
                         if (signingOff && loggedHours <= 0) {
-                          toast.error(`Log the time spent on this ticket before marking it ${meaning} — add a task on the Tasks tab and log against it`);
-                          setTab('tasks');
+                          toast.error(`Log the time spent on this ticket before marking it ${meaning} — use Log time on the Resolution tab`);
+                          setTab('resolution');
                           return;
                         }
                         // Nothing is signed off with nothing said about how. Only

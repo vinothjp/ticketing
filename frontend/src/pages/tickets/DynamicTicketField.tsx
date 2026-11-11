@@ -5,6 +5,7 @@ import { Switch } from '@/components/ui/switch';
 import { Checkbox } from '@/components/ui/checkbox';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { staffLabel } from '@/lib/staffLabel';
 
 export type FieldDataType =
   | 'TEXT' | 'TEXTAREA' | 'NUMBER' | 'SELECT' | 'MULTI_SELECT' | 'RADIO'
@@ -33,7 +34,7 @@ export interface MergedTemplateField {
 }
 
 interface Option { value: string; label: string; }
-interface UserOption { id: string; username: string; }
+interface UserOption { id: string; username: string; name?: string | null; }
 
 export default function DynamicTicketField({
   field,
@@ -196,7 +197,7 @@ export default function DynamicTicketField({
                     onChange(checked ? [...selected, u.id] : selected.filter((id) => id !== u.id))
                   }
                 />
-                <span className="text-sm text-foreground">{u.username}</span>
+                <span className="text-sm text-foreground">{staffLabel(u)}</span>
               </div>
             );
           })}

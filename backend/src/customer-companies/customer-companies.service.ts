@@ -23,6 +23,9 @@ import {
 } from '../lib/spreadsheet';
 import type { ImportResult } from '../lib/spreadsheet';
 
+/** Trimmed, blank-free, de-duplicated copy of a string list (order kept). */
+const dedupe = (xs?: string[]) => [...new Set((xs ?? []).map((x) => x.trim()).filter(Boolean))];
+
 export const CUSTOMER_ROLE = 'Customer';
 export { CUSTOMER_ADMIN_ROLE };
 
@@ -111,6 +114,8 @@ export class CustomerCompaniesService {
       id: c.id,
       name: c.name,
       code: c.code,
+      companyCode: c.companyCode,
+      departments: c.departments,
       contactEmail: c.contactEmail,
       contactPerson: c.contactPerson,
       contactNumber: c.contactNumber,
@@ -144,6 +149,19 @@ export class CustomerCompaniesService {
     });
   }
 
+  /**
+   * The departments a client's New Ticket form offers: the values ticked on the
+   * client, or null when none are (= every department). Internal tickets and
+   * unknown clients get null too.
+   */
+  async ticketDepartments(clientId: string, customerCompanyId: string | null) {
+    if (!customerCompanyId) return { departments: null };
+    const c = await this.prisma.customerCompany.findFirst({
+      where: { id: customerCompanyId, clientId }, select: { departments: true },
+    });
+    return { departments: c?.departments.length ? c.departments : null };
+  }
+
   private async getOwned(id: string, clientId: string) {
     const company = await this.prisma.customerCompany.findFirst({ where: { id, clientId } });
     if (!company) throw new NotFoundException('Customer company not found');
@@ -155,7 +173,7 @@ export class CustomerCompaniesService {
     const c = await this.prisma.customerCompany.findFirst({ where: { id, clientId }, include: { accountManager: MANAGER_SELECT } });
     if (!c) throw new NotFoundException('Customer company not found');
     return {
-      id: c.id, name: c.name, code: c.code, status: c.status, contactEmail: c.contactEmail,
+      id: c.id, name: c.name, code: c.code, companyCode: c.companyCode, departments: c.departments, status: c.status, contactEmail: c.contactEmail,
       contactPerson: c.contactPerson, contactNumber: c.contactNumber, logoUrl: c.logoUrl,
       clientType: c.clientType, contractScope: c.contractScope, contractStart: c.contractStart, contractEnd: c.contractEnd, contractHours: c.contractHours,
       autoAssignTickets: c.autoAssignTickets,
@@ -459,24 +477,36 @@ export class CustomerCompaniesService {
       throw new BadRequestException('A client needs a customer admin — create a new one or link an existing one');
     }
 
-    const company = await this.prisma.customerCompany.create({
-      data: {
-        clientId,
-        name: dto.name,
-        code: dto.code,
-        contactEmail: dto.contactEmail,
-        contactPerson: dto.contactPerson,
-        contactNumber: dto.contactNumber,
-        maxContacts: dto.maxContacts ?? 5,
-        status: dto.status ?? 'ACTIVE',
-        ...(dto.clientType ? { clientType: dto.clientType } : {}),
-        agreedSupportHours: dto.agreedSupportHours ?? null,
-        supportPeriodStart: dto.supportPeriodStart ? new Date(dto.supportPeriodStart) : null,
-        supportPeriodEnd: dto.supportPeriodEnd ? new Date(dto.supportPeriodEnd) : null,
-        supportAlertThresholdPct: dto.supportAlertThresholdPct ?? 70,
-        createdBy: actorId,
-        updatedBy: actorId,
-      },
+    // The company code (CC-000001) is generated, never typed: the tenant's counter
+    // is bumped in the same transaction as the insert, so two clients created at
+    // once can't be handed the same number.
+    const company = await this.prisma.$transaction(async (tx) => {
+      const { companySequence } = await tx.client.update({
+        where: { id: clientId },
+        data: { companySequence: { increment: 1 } },
+        select: { companySequence: true },
+      });
+      return tx.customerCompany.create({
+        data: {
+          clientId,
+          name: dto.name,
+          code: dto.code,
+          companyCode: `CC-${String(companySequence).padStart(6, '0')}`,
+          departments: dedupe(dto.departments),
+          contactEmail: dto.contactEmail,
+          contactPerson: dto.contactPerson,
+          contactNumber: dto.contactNumber,
+          maxContacts: dto.maxContacts ?? 5,
+          status: dto.status ?? 'ACTIVE',
+          ...(dto.clientType ? { clientType: dto.clientType } : {}),
+          agreedSupportHours: dto.agreedSupportHours ?? null,
+          supportPeriodStart: dto.supportPeriodStart ? new Date(dto.supportPeriodStart) : null,
+          supportPeriodEnd: dto.supportPeriodEnd ? new Date(dto.supportPeriodEnd) : null,
+          supportAlertThresholdPct: dto.supportAlertThresholdPct ?? 70,
+          createdBy: actorId,
+          updatedBy: actorId,
+        },
+      });
     });
 
     if (admin) await this.attachAdmin(company.id, admin, clientId, actorId);
@@ -629,6 +659,7 @@ export class CustomerCompaniesService {
       where: { id },
       data: {
         ...rest,
+        ...(rest.departments !== undefined ? { departments: dedupe(rest.departments) } : {}),
         ...(supportPeriodStart !== undefined ? { supportPeriodStart: supportPeriodStart ? new Date(supportPeriodStart) : null } : {}),
         ...(supportPeriodEnd !== undefined ? { supportPeriodEnd: supportPeriodEnd ? new Date(supportPeriodEnd) : null } : {}),
         ...(poolChanged ? { supportAlertSentAt: null } : {}),

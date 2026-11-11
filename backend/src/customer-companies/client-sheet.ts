@@ -144,7 +144,7 @@ export const CONTRACT_COLUMNS: SheetColumn<ContractSheetRow>[] = [
     value: (r) => (noTerms(r) ? '' : r.coverage === 'WARRANTY' ? 'Warranty (free)' : 'AMC (paid)'),
   },
   { header: 'Support hours', width: 20, value: supportHoursText },
-  { header: 'Visits', width: 9, value: (r) => r.visits ?? '' },
+  { header: 'Visits / month', width: 13, value: (r) => r.visits ?? '' },
   { header: 'Contract start', width: 14, value: (r) => dateCell(r.start) },
   { header: 'Contract end', width: 14, value: (r) => dateCell(r.end) },
   { header: 'Contract amount', width: 16, value: (r) => r.amount ?? '' },

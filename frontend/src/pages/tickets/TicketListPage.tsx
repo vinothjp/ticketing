@@ -17,10 +17,11 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { getPriorityMeta, getSlaMeta, isOverdueTicket, isTerminalStatus, isCreatedTodayTicket, getApprovalMeta, getReopenMeta, monthKey, monthLabel, dayKey, monthRange, type TicketSummary } from './ticketHelpers';
 import { useDateFormat } from '@/lib/dateFormat';
+import { staffLabel } from '@/lib/staffLabel';
 
 interface TemplateSummary { id: string; name: string; }
 interface CompanyOption { id: string; name: string; }
-interface UserOption { id: string; username: string; }
+interface UserOption { id: string; username: string; name?: string | null; }
 interface PicklistOpt { value: string; label: string; isActive?: boolean }
 interface MyTask {
   id: string;
@@ -673,7 +674,7 @@ function AssignedTo({
             <DropdownMenuRadioItem value={UNASSIGNED}>Unassigned</DropdownMenuRadioItem>
             {users.map((u) => (
               <DropdownMenuRadioItem key={u.id} value={u.id}>
-                {u.username}
+                {staffLabel(u)}
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>

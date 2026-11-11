@@ -1,6 +1,7 @@
 import { Injectable, CanActivate, ExecutionContext, ForbiddenException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { ROLES_KEY } from './roles.decorator';
+import { withImpliedRoles } from './implied-roles';
 
 @Injectable()
 export class RolesGuard implements CanActivate {
@@ -14,7 +15,8 @@ export class RolesGuard implements CanActivate {
     if (!requiredRoles || requiredRoles.length === 0) return true;
 
     const { user } = context.switchToHttp().getRequest<{ user: { roles: string[] } }>();
-    const allowed = user?.roles?.some((role) => requiredRoles.includes(role));
+    // A Manager holds every right of an agent (Viewer) — see implied-roles.ts.
+    const allowed = withImpliedRoles(user?.roles).some((role) => requiredRoles.includes(role));
     if (!allowed) throw new ForbiddenException('Insufficient role');
     return true;
   }

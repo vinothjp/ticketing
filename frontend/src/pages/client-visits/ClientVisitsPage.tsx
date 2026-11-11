@@ -26,6 +26,7 @@ import {
   needsNewDate,
   wasRescheduled
 } from './clientVisitsMeta';
+import { staffLabel } from '@/lib/staffLabel';
 
 /**
  * A column heading: its icon, then its label. Muted and small, so the headings
@@ -174,7 +175,7 @@ export function ClientVisitsPage() {
           <SelectContent>
             <SelectItem value="all">All Consultants</SelectItem>
             {users.map(u => (
-              <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>
+              <SelectItem key={u.id} value={u.id}>{staffLabel(u)}</SelectItem>
             ))}
           </SelectContent>
         </Select>

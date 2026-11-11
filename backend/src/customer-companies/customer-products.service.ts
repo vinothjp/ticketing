@@ -72,6 +72,7 @@ const BLANK_CONTRACT = {
   contractCarryForward: false,
   contractAllowExcess: false,
   contractExcessRate: null,
+  contractToleranceHours: null,
   contractAllowTicketsAfterHours: true,
   contractThirdPartyIntegration: false,
   contractPlanRollout: false,
@@ -105,6 +106,7 @@ const BLANK_PRODUCT_TERMS = {
   amcCarryForward: false,
   amcAllowExcess: false,
   amcExcessRate: null,
+  amcToleranceHours: null,
   amcAllowTicketsAfterHours: true,
   amcThirdPartyIntegration: false,
   amcPlanRollout: false,
@@ -199,6 +201,30 @@ export class CustomerProductsService {
   }
 
   /**
+   * Site visits used **this calendar month** from one pool. The visit allowance
+   * (`freeAmcVisits` / `paidAmcVisits` / `contractVisits`) is per month, so this
+   * is counted on read from the visits themselves — every VISITED row whose
+   * draw-down landed on this pool (`contractDeducted` + `deductedCpId`, the same
+   * markers `client-visits` writes), bucketed by its `visitDate`. It resets on
+   * the 1st with no sweep, and a visit back-dated into last month counts there.
+   * The stored `visitsUsed` / `contractVisitsUsed` counters are lifetime totals
+   * and are deliberately not what any screen quotes.
+   */
+  private visitsThisMonth(pool: { cpId: string } | { companyId: string }) {
+    const from = this.monthStart();
+    const to = new Date(from.getFullYear(), from.getMonth() + 1, 1);
+    return this.prisma.clientVisit.count({
+      where: {
+        contractDeducted: true,
+        visitDate: { gte: from, lt: to },
+        ...('cpId' in pool
+          ? { deductedCpId: pool.cpId }
+          : { customerCompanyId: pool.companyId, deductedCpId: null }),
+      },
+    });
+  }
+
+  /**
    * The support-hours pool that actually governs a (company, product): the shared
    * customer contract when the customer is on CUSTOMER scope, otherwise the named
    * product's active (paid/free) pool. `hours` is read per the pool's period —
@@ -216,6 +242,7 @@ export class CustomerProductsService {
         scope: 'CONTRACT' as const, ownerId: company.id, clientId,
         period: company.contractHoursPeriod, unlimited: company.contractHoursUnlimited, hours: company.contractHours,
         carryForward: company.contractCarryForward, allowExcess: company.contractAllowExcess,
+        toleranceHours: Number(company.contractToleranceHours ?? 0),
         allowTicketsAfterHours: company.contractAllowTicketsAfterHours,
       };
     }
@@ -228,6 +255,7 @@ export class CustomerProductsService {
       period: cp.amcHoursPeriod, unlimited: paid ? cp.paidAmcHoursUnlimited : cp.freeAmcHoursUnlimited,
       hours: paid ? cp.paidAmcHours : cp.freeAmcHours,
       carryForward: cp.amcCarryForward, allowExcess: cp.amcAllowExcess,
+      toleranceHours: Number(cp.amcToleranceHours ?? 0),
       allowTicketsAfterHours: cp.amcAllowTicketsAfterHours,
     };
   }
@@ -295,6 +323,7 @@ export class CustomerProductsService {
     scope: 'CONTRACT' | 'PRODUCT'; ownerId: string; clientId: string;
     period: string; unlimited: boolean; hours: number | null;
     carryForward: boolean; allowExcess: boolean; excessRate: Prisma.Decimal | null;
+    toleranceHours: Prisma.Decimal | null;
     allowTicketsAfterHours: boolean;
   }, hideMoney = false) {
     const base = {
@@ -302,6 +331,8 @@ export class CustomerProductsService {
       allowExcess: cfg.allowExcess,
       // What an excess hour is charged at — money, so withheld from non-Admins.
       excessRate: hideMoney || cfg.excessRate == null ? null : Number(cfg.excessRate),
+      // Hours loggable past the allowance before the excess rule applies.
+      toleranceHours: cfg.toleranceHours == null ? null : Number(cfg.toleranceHours),
       allowTicketsAfterHours: cfg.allowTicketsAfterHours,
     };
     if (cfg.period !== 'MONTHLY' || cfg.unlimited || cfg.hours == null) {
@@ -325,7 +356,8 @@ export class CustomerProductsService {
     if (!cfg) return;
     const pool = await this.productSupportHours(clientId, companyId, productId ?? '');
     if (!pool.hasPool || pool.allocated == null) return; // unlimited / unmapped — no cap
-    if (pool.used + addHours <= pool.allocated) return;  // within allowance
+    // Within the allowance plus its tolerance: the excess rule doesn't apply yet.
+    if (pool.used + addHours <= pool.allocated + cfg.toleranceHours) return;
     if (!cfg.allowExcess) {
       throw new BadRequestException('Support-hours allowance exhausted — enable excess hours to log more time.');
     }
@@ -396,6 +428,7 @@ export class CustomerProductsService {
     // deliberately draw down only the visit count, never these hours.
     const loggedHours = Number(cp.hoursUsed);
     const hoursUsed = loggedHours + ticketHours;
+    const visitsUsedNow = allocVisits == null ? 0 : await this.visitsThisMonth({ cpId: cp.id });
     const warranty = this.timeLeft(cp.warrantyEnd);
     const amc = this.timeLeft(cp.amcEnd);
     return {
@@ -433,10 +466,11 @@ export class CustomerProductsService {
         fromLogged: loggedHours,
         fromTickets: ticketHours,
       },
+      // Per month: `used` is this month's visits (see visitsThisMonth).
       visits: {
         allocated: allocVisits,
-        used: cp.visitsUsed,
-        left: allocVisits == null ? null : Math.max(0, allocVisits - cp.visitsUsed),
+        used: visitsUsedNow,
+        left: allocVisits == null ? null : Math.max(0, allocVisits - visitsUsedNow),
       },
       // This product's own purchase order, used when the client is on PRODUCT
       // scope. On CUSTOMER scope one PO covers everything and the screens read
@@ -463,6 +497,7 @@ export class CustomerProductsService {
         scope: 'PRODUCT', ownerId: cp.id, clientId,
         period: cp.amcHoursPeriod, unlimited: hoursUnlimited, hours: allocHours,
         carryForward: cp.amcCarryForward, allowExcess: cp.amcAllowExcess, excessRate: cp.amcExcessRate,
+        toleranceHours: cp.amcToleranceHours,
         allowTicketsAfterHours: cp.amcAllowTicketsAfterHours,
       }, hideMoney),
       services: servicesView({
@@ -652,6 +687,7 @@ export class CustomerProductsService {
       amcCarryForward: dto.carryForward ?? false,
       amcAllowExcess: dto.allowExcess ?? false,
       amcExcessRate: dto.excessRate ?? null,
+      amcToleranceHours: dto.toleranceHours ?? null,
       amcAllowTicketsAfterHours: dto.allowTicketsAfterHours ?? true,
       amcThirdPartyIntegration: dto.thirdPartyIntegration ?? false,
       amcPlanRollout: dto.planRollout ?? false,
@@ -731,6 +767,7 @@ export class CustomerProductsService {
         ...(dto.carryForward !== undefined ? { amcCarryForward: dto.carryForward } : {}),
         ...(dto.allowExcess !== undefined ? { amcAllowExcess: dto.allowExcess } : {}),
         ...(dto.excessRate !== undefined ? { amcExcessRate: dto.excessRate } : {}),
+        ...(dto.toleranceHours !== undefined ? { amcToleranceHours: dto.toleranceHours } : {}),
         ...(dto.allowTicketsAfterHours !== undefined ? { amcAllowTicketsAfterHours: dto.allowTicketsAfterHours } : {}),
         ...(dto.thirdPartyIntegration !== undefined ? { amcThirdPartyIntegration: dto.thirdPartyIntegration } : {}),
         ...(dto.planRollout !== undefined ? { amcPlanRollout: dto.planRollout } : {}),
@@ -932,6 +969,7 @@ export class CustomerProductsService {
     const hoursUsed = loggedHours + ticketHours;
     // Unlimited coverage has no allocation at all — nothing to spend down.
     const allocHours = c.contractHoursUnlimited ? null : c.contractHours;
+    const contractVisitsNow = c.contractVisits == null ? 0 : await this.visitsThisMonth({ companyId: c.id });
     return {
       // IMPLEMENTATION = no contract at all; the screens and the customer's My
       // Products read this before anything below.
@@ -963,15 +1001,17 @@ export class CustomerProductsService {
         fromLogged: loggedHours,
         fromTickets: ticketHours,
       },
+      // Per month, like the per-product pool (see visitsThisMonth).
       visitsPool: {
-        allocated: c.contractVisits, used: c.contractVisitsUsed,
-        left: c.contractVisits == null ? null : Math.max(0, c.contractVisits - c.contractVisitsUsed),
+        allocated: c.contractVisits, used: contractVisitsNow,
+        left: c.contractVisits == null ? null : Math.max(0, c.contractVisits - contractVisitsNow),
       },
       // Period / carry-forward / excess config + (MONTHLY) this month's availability.
       support: await this.buildSupportView({
         scope: 'CONTRACT', ownerId: c.id, clientId: c.clientId,
         period: c.contractHoursPeriod, unlimited: c.contractHoursUnlimited, hours: allocHours,
         carryForward: c.contractCarryForward, allowExcess: c.contractAllowExcess, excessRate: c.contractExcessRate,
+        toleranceHours: c.contractToleranceHours,
         allowTicketsAfterHours: c.contractAllowTicketsAfterHours,
       }, hideMoney),
       services: servicesView({
@@ -1142,6 +1182,7 @@ export class CustomerProductsService {
       if (dto.carryForward !== undefined) data.contractCarryForward = dto.carryForward;
       if (dto.allowExcess !== undefined) data.contractAllowExcess = dto.allowExcess;
       if (dto.excessRate !== undefined) data.contractExcessRate = dto.excessRate;
+      if (dto.toleranceHours !== undefined) data.contractToleranceHours = dto.toleranceHours;
       if (dto.allowTicketsAfterHours !== undefined) data.contractAllowTicketsAfterHours = dto.allowTicketsAfterHours;
       if (dto.thirdPartyIntegration !== undefined) data.contractThirdPartyIntegration = dto.thirdPartyIntegration;
       if (dto.planRollout !== undefined) data.contractPlanRollout = dto.planRollout;
@@ -1449,17 +1490,54 @@ export class CustomerProductsService {
     const req = await this.prisma.productRequest.create({
       data: { clientId, customerCompanyId: companyId, productId: dto.productId, note: dto.note?.trim() || null, requestedById: userId },
     });
-    const company = await this.prisma.customerCompany.findUnique({ where: { id: companyId }, select: { name: true } });
-    // Notify all provider admins of the tenant.
-    const admins = await this.prisma.user.findMany({
-      where: { clientId, isActive: true, userRoles: { some: { role: { name: 'Admin' } } } },
-      select: { id: true },
-    });
-    await this.notifications.notifyMany(admins.map((a) => a.id), {
-      clientId, type: 'PRODUCT_REQUEST', title: 'New product request',
-      body: `${company?.name ?? 'A customer'} requested ${product.name}.`,
+    const company = await this.prisma.customerCompany.findUnique({ where: { id: companyId }, select: { name: true, accountManagerId: true } });
+    await this.alertRequestDeciders(clientId, company?.accountManagerId ?? null, {
+      type: 'PRODUCT_REQUEST', title: 'New product request',
+      body: `${company?.name ?? 'A customer'} requested ${product.name}.${req.note ? ` Note: ${req.note}` : ''}`,
+      link: '/admin/product-requests',
     });
     return req;
+  }
+
+  /**
+   * Who decides a client's product request: every tenant Admin, plus that
+   * client's account manager (any active internal staff user). Each gets a bell
+   * and an email - one send per person, so no address is exposed to another.
+   * Best-effort: a mail failure never fails the request.
+   */
+  private async alertRequestDeciders(
+    clientId: string, accountManagerId: string | null,
+    n: { type: string; title: string; body: string; link: string },
+  ) {
+    const people = await this.prisma.user.findMany({
+      where: {
+        clientId, isActive: true, customerCompanyId: null,
+        OR: [
+          { userRoles: { some: { role: { name: 'Admin' } } } },
+          ...(accountManagerId ? [{ id: accountManagerId }] : []),
+        ],
+      },
+      select: { id: true, email: true },
+    });
+    if (!people.length) return;
+    await this.notifications.notifyMany(people.map((p) => p.id), { clientId, ...n });
+    if (!(await this.mailer.isConfigured(clientId))) return;
+    const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+    const html = `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;max-width:520px;margin:0 auto;">
+        <div style="background:#4f46e5;padding:24px;border-radius:12px 12px 0 0;text-align:center;">
+          <h1 style="color:#fff;margin:0;font-size:18px;">${esc(n.title)}</h1>
+        </div>
+        <div style="background:#fff;padding:28px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
+          <p style="color:#374151;font-size:14px;">${esc(n.body)}</p>
+          <p style="color:#6b7280;font-size:12px;">Open Product Requests in the app to grant or decline it.</p>
+        </div>
+      </div>`;
+    for (const email of new Set(people.map((p) => p.email).filter(Boolean))) {
+      try {
+        await this.mailer.sendMail({ to: email, subject: n.title, html, text: n.body }, clientId);
+      } catch { /* best-effort */ }
+    }
   }
 
   async listMyRequests(companyId: string, clientId: string) {
@@ -1491,16 +1569,33 @@ export class CustomerProductsService {
 
   // ---- provider: request queue -----------------------------------------------
 
-  async listRequests(clientId: string) {
+  /**
+   * Which requests a viewer may see and decide: all of the tenant's for an
+   * Admin; otherwise only those of clients they are the account manager of.
+   */
+  private requestScope(clientId: string, actor: { id: string; roles: string[] }): Prisma.ProductRequestWhereInput {
+    if (actor.roles.includes('Admin')) return { clientId };
+    return { clientId, customerCompany: { accountManagerId: actor.id } };
+  }
+
+  async requestsAccess(clientId: string, actor: { id: string; roles: string[] }) {
+    if (actor.roles.includes('Admin')) return { allowed: true };
+    const managed = await this.prisma.customerCompany.count({ where: { clientId, accountManagerId: actor.id } });
+    return { allowed: managed > 0 };
+  }
+
+  async listRequests(clientId: string, actor: { id: string; roles: string[] }) {
     return this.prisma.productRequest.findMany({
-      where: { clientId },
+      where: this.requestScope(clientId, actor),
       include: { product: { select: { name: true, code: true } }, customerCompany: { select: { name: true } } },
       orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
     });
   }
 
-  async grantRequest(requestId: string, dto: GrantRequestDto, clientId: string, actorId: string) {
-    const req = await this.prisma.productRequest.findFirst({ where: { id: requestId, clientId }, include: { product: true } });
+  async grantRequest(requestId: string, dto: GrantRequestDto, clientId: string, actor: { id: string; roles: string[] }) {
+    const actorId = actor.id;
+    // Out of scope reads as not found, the same as another tenant's request.
+    const req = await this.prisma.productRequest.findFirst({ where: { id: requestId, ...this.requestScope(clientId, actor) }, include: { product: true } });
     if (!req) throw new NotFoundException('Request not found');
     if (req.status !== 'PENDING') throw new BadRequestException('This request has already been decided');
 
@@ -1513,8 +1608,9 @@ export class CustomerProductsService {
     return { message: 'Request granted' };
   }
 
-  async declineRequest(requestId: string, note: string | undefined, clientId: string, actorId: string) {
-    const req = await this.prisma.productRequest.findFirst({ where: { id: requestId, clientId }, include: { product: true } });
+  async declineRequest(requestId: string, note: string | undefined, clientId: string, actor: { id: string; roles: string[] }) {
+    const actorId = actor.id;
+    const req = await this.prisma.productRequest.findFirst({ where: { id: requestId, ...this.requestScope(clientId, actor) }, include: { product: true } });
     if (!req) throw new NotFoundException('Request not found');
     if (req.status !== 'PENDING') throw new BadRequestException('This request has already been decided');
     await this.prisma.productRequest.update({ where: { id: requestId }, data: { status: 'DECLINED', decisionNote: note?.trim() || null, decidedById: actorId, decidedAt: new Date() } });
@@ -1530,9 +1626,10 @@ export class CustomerProductsService {
   async listCustomerConsultants(companyId: string, clientId: string) {
     await this.ownedCompany(companyId, clientId);
     const rows = await this.prisma.customerConsultant.findMany({ where: { customerCompanyId: companyId, clientId }, orderBy: { createdAt: 'asc' } });
-    const users = await this.prisma.user.findMany({ where: { id: { in: rows.map((r) => r.userId) } }, select: { id: true, username: true } });
-    const nameById = new Map(users.map((u) => [u.id, u.username]));
-    return rows.map((r) => ({ id: r.id, userId: r.userId, username: nameById.get(r.userId) ?? null, productId: r.productId, moduleId: r.moduleId, track: r.track, isPrimary: r.isPrimary }));
+    const users = await this.prisma.user.findMany({ where: { id: { in: rows.map((r) => r.userId) } }, select: { id: true, username: true, name: true } });
+    const byId = new Map(users.map((u) => [u.id, u]));
+    // `name` rides beside `username` so the consultant grids can show "Full name · username".
+    return rows.map((r) => ({ id: r.id, userId: r.userId, username: byId.get(r.userId)?.username ?? null, name: byId.get(r.userId)?.name ?? null, productId: r.productId, moduleId: r.moduleId, track: r.track, isPrimary: r.isPrimary }));
   }
 
   async addCustomerConsultant(companyId: string, dto: AddCustomerConsultantDto, clientId: string) {

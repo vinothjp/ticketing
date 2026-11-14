@@ -4,6 +4,8 @@ import api from '../lib/api';
 interface User {
   id: string;
   username: string;
+  /** Full name (`User.name`) — absent in a session stored before it was sent. */
+  name?: string | null;
   email: string;
   roles: string[];
   clientId: string | null;

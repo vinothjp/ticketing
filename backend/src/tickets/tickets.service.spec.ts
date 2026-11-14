@@ -482,6 +482,38 @@ describe('TicketsService — only the client may ask to reopen', () => {
     expect((payload as { body: string }).body).toContain(REASON);
   });
 
+  it('refuses an agent reopening an internal ticket directly — an Admin must approve', async () => {
+    const { service, prisma } = build(ticketRow({ customerCompanyId: null, technicians: [{ user: { id: 'agent-1' } }] }));
+
+    await expect(service.reopen('ticket-1', CLIENT_ID, { reason: REASON }, consultant.id, consultant)).rejects.toThrow(
+      /an Admin approves it/,
+    );
+    expect(prisma.ticket.update).not.toHaveBeenCalled();
+  });
+
+  it('lets an agent ask to reopen an internal ticket, for the Admins to decide', async () => {
+    const { service, prisma } = build(ticketRow({ customerCompanyId: null, technicians: [{ user: { id: 'agent-1' } }] }));
+
+    await service.requestReopen('ticket-1', CLIENT_ID, { reason: REASON }, consultant.id, consultant);
+
+    const data = prisma.ticket.update.mock.calls[0][0].data as Record<string, unknown>;
+    expect(data.reopenRequestStatus).toBe('PENDING');
+    expect(data.reopenRequestedById).toBe(consultant.id);
+    // No client product, so no project manager: the Admins decide.
+    expect(data.reopenApproverUserId).toBeNull();
+    // The ticket itself is not reopened by asking.
+    expect(data.resolvedAt).toBeUndefined();
+  });
+
+  it('tells an Admin to reopen an internal ticket directly rather than ask', async () => {
+    const { service, prisma } = build(ticketRow({ customerCompanyId: null }));
+
+    await expect(service.requestReopen('ticket-1', CLIENT_ID, { reason: REASON }, admin.id, admin)).rejects.toThrow(
+      /reopen this ticket directly/,
+    );
+    expect(prisma.ticket.update).not.toHaveBeenCalled();
+  });
+
   it('refuses a consultant reopening a ticket they worked', async () => {
     // Assigned to them, so findOne lets them through — the reopen rule is what stops them.
     const { service, prisma } = build(ticketRow({ technicians: [{ user: { id: 'agent-1' } }] }));
@@ -930,5 +962,55 @@ describe('TicketsService — reassignment tells everyone waiting on the ticket',
     // The customer's addresses and the provider's are never in one To: header.
     expect(recipients[0]).toBe('contact@acme.test, ada@acme.test');
     expect(recipients[1]).toBe('pm@provider.test, a2@provider.test');
+  });
+});
+
+describe('TicketsService — a Closed ticket\'s status is frozen until a reopen', () => {
+  const agent: TicketViewer = { id: 'agent-1', roles: ['Admin'] };
+  const closed = (o: TicketRow = {}) =>
+    ticketRow({ ticketStatus: 'Closed', closedDate: new Date('2026-11-10T10:00:00Z'), acknowledgedAt: new Date('2026-11-10T10:00:00Z'), ...o });
+
+  it('refuses moving a closed client ticket back to an open status', async () => {
+    const { service, prisma } = build(closed());
+
+    await expect(
+      service.update('ticket-1', CLIENT_ID, { ticketStatus: 'In Progress' }, agent.id, agent),
+    ).rejects.toThrow(/reopen request from the client/);
+    expect(prisma.ticket.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses it on an internal ticket too, pointing at Reopen', async () => {
+    const { service, prisma } = build(closed({ customerCompanyId: null }));
+
+    await expect(
+      service.update('ticket-1', CLIENT_ID, { ticketStatus: 'Open' }, agent.id, agent),
+    ).rejects.toThrow(/use Reopen/);
+    expect(prisma.ticket.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses the resolution endpoint, which would pull it back to Resolved', async () => {
+    const { service, prisma } = build(closed());
+
+    await expect(
+      service.setResolution('ticket-1', CLIENT_ID, { resolution: 'Edited' }, agent.id, agent),
+    ).rejects.toThrow(/ticket is closed/);
+    expect(prisma.ticket.update).not.toHaveBeenCalled();
+  });
+
+  it('still saves other fields on a closed ticket when the status is not changing', async () => {
+    const { service, prisma } = build(closed());
+
+    await service.update('ticket-1', CLIENT_ID, { ticketStatus: 'Closed', ticketCategory: 'Hardware' }, agent.id, agent);
+
+    expect(prisma.ticket.update).toHaveBeenCalled();
+  });
+
+  it('holds again after a reopen → resolve → close round (read off the live status)', async () => {
+    const { service, prisma } = build(closed({ reopenedCount: 2, reopenedAt: new Date('2026-11-09T10:00:00Z') }));
+
+    await expect(
+      service.update('ticket-1', CLIENT_ID, { ticketStatus: 'In Progress' }, agent.id, agent),
+    ).rejects.toThrow(/ticket is closed/);
+    expect(prisma.ticket.update).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Put,
+  Patch,
   Delete,
   Body,
   Param,
@@ -24,7 +25,7 @@ import { AssignTechniciansDto } from './dto/assign-technicians.dto';
 import { SetResolutionDto } from './dto/set-resolution.dto';
 import { RejectTicketDto } from './dto/reject-ticket.dto';
 import { ReopenTicketDto } from './dto/reopen-ticket.dto';
-import { CreateWorklogDto } from './dto/worklog.dto';
+import { CreateWorklogDto, UpdateWorklogDto } from './dto/worklog.dto';
 import { ExportTicketsDto } from './dto/export-tickets.dto';
 import { sendWorkbook, rangeStamp } from '../lib/spreadsheet';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -99,6 +100,17 @@ export class TicketsController {
     return this.ticketsService.addWorklog(id, dto, req.user.clientId, req.user.id, req.user);
   }
 
+  @Patch(':id/worklogs/:worklogId')
+  @UseGuards(StaffGuard)
+  updateWorklog(
+    @Param('id') id: string,
+    @Param('worklogId') worklogId: string,
+    @Body() dto: UpdateWorklogDto,
+    @Request() req: AuthedRequest,
+  ) {
+    return this.ticketsService.updateWorklog(id, worklogId, dto, req.user.clientId, req.user.id, req.user);
+  }
+
   @Delete(':id/worklogs/:worklogId')
   @UseGuards(StaffGuard)
   deleteWorklog(@Param('id') id: string, @Param('worklogId') worklogId: string, @Request() req: AuthedRequest) {
@@ -128,14 +140,14 @@ export class TicketsController {
   // raised it, or their company admin) asks, and the client product's project
   // manager or a tenant Admin decides. Who may decide is checked in the service
   // — the project manager is a per-ticket fact, not a role a guard can read.
+  // The client on their ticket, or non-Admin staff on an internal one — the
+  // service decides, since it depends on the ticket.
   @Post(':id/reopen-request')
-  @UseGuards(CustomerContactGuard)
   requestReopen(@Param('id') id: string, @Body() dto: ReopenTicketDto, @Request() req: AuthedRequest) {
     return this.ticketsService.requestReopen(id, req.user.clientId, dto, req.user.id, req.user);
   }
 
   @Post(':id/reopen-request/withdraw')
-  @UseGuards(CustomerContactGuard)
   withdrawReopenRequest(@Param('id') id: string, @Request() req: AuthedRequest) {
     return this.ticketsService.withdrawReopenRequest(id, req.user.clientId, req.user.id, req.user);
   }

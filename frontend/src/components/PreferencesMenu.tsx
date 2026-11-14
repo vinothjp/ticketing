@@ -42,17 +42,10 @@ export default function PreferencesMenu() {
 
   return (
     <div className="px-1 py-1.5">
-      <div className="mb-3 flex items-center gap-2.5 px-1.5">
-        <div className="relative shrink-0">
-          <div className="flex size-9 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
-            {user?.username?.slice(0, 2).toUpperCase()}
-          </div>
-          <span className="absolute right-0 bottom-0 size-2.5 rounded-full border-2 border-popover bg-emerald-500" title="Online" />
-        </div>
-        <div className="min-w-0">
-          <div className="truncate text-sm font-medium text-foreground">{user?.username}</div>
-          <div className="truncate text-xs text-muted-foreground">{user?.roles.join(' · ')}</div>
-        </div>
+      {/* One line, no avatar: username • roles. */}
+      <div className="mb-3 truncate px-1.5 text-center text-[0.9375rem]" title={`${user?.username ?? ''} • ${user?.roles.join(', ') ?? ''}`}>
+        <span className="font-medium text-foreground">{user?.username}</span>
+        <span className="text-muted-foreground"> • {user?.roles.join(', ')}</span>
       </div>
 
       <div className="mb-3">

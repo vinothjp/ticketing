@@ -69,6 +69,9 @@ function build(task: TaskRow, events: EventRow[] = [], worklogHours: number | nu
     findOne: jest.fn().mockResolvedValue({ id: TICKET_ID, clientId: CLIENT_ID }),
     // The hours typed on the edit screen's status prompt are booked through here.
     addWorklog: jest.fn().mockResolvedValue({ id: 'wl-1' }),
+    assertNotHeld: jest.fn(),
+    // Resolves for an open ticket; a test overrides it to model a settled one.
+    assertTicketOpen: jest.fn().mockResolvedValue(undefined),
   };
   const activity = { log: jest.fn().mockResolvedValue(undefined) };
   const notifications = { notify: jest.fn().mockResolvedValue(undefined) };
@@ -373,5 +376,15 @@ describe('TasksService — creating a task', () => {
     const { data } = prisma.ticketTask.create.mock.calls[0][0];
     expect(data.taskNumber).toBe(3);
     expect(data.estimatedHours).toBe(1.5);
+  });
+
+  it('refuses a task on a resolved or closed ticket, writing nothing', async () => {
+    const { service, prisma, tickets } = build(taskRow());
+    tickets.assertTicketOpen.mockRejectedValue(new Error('This ticket is resolved — reopen it before adding tasks'));
+
+    await expect(
+      service.create(TICKET_ID, CLIENT_ID, { title: 'Late extra' }, assignee.id, assignee),
+    ).rejects.toThrow('reopen it before adding tasks');
+    expect(prisma.ticketTask.create).not.toHaveBeenCalled();
   });
 });

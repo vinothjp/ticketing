@@ -209,6 +209,8 @@ export default function UsersPage() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['users'] });
+      // Renaming yourself updates the header's profile chip at once.
+      qc.invalidateQueries({ queryKey: ['my-profile'] });
       setEditingUser(null);
       toast.success('User updated');
     },

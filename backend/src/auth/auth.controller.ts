@@ -45,6 +45,13 @@ export class AuthController {
     return this.authService.getMyPermissions(req.user.id);
   }
 
+  /** The signed-in user's display details, read live — the header's profile chip. */
+  @UseGuards(JwtAuthGuard)
+  @Get('me/profile')
+  getMyProfile(@Request() req: { user: { id: string } }) {
+    return this.authService.getMyProfile(req.user.id);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Get('me/client')
   getMyClient(@Request() req: { user: { clientId: string | null } }) {

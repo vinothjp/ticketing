@@ -15,7 +15,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { CustomerProductsService } from '../customer-companies/customer-products.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
-import { CreateWorklogDto } from './dto/worklog.dto';
+import { CreateWorklogDto, UpdateWorklogDto } from './dto/worklog.dto';
 import { SETTLED_TASK_STATUSES } from '../tasks/task-status';
 import { productOffForClient } from '../customer-companies/module-switch';
 import { exportSheet as buildSheet } from '../lib/spreadsheet';
@@ -929,6 +929,39 @@ export class TicketsService {
     }
   }
 
+  /**
+   * No new work on a settled ticket: once its status reads Resolved or Closed,
+   * tasks can't be added until it is reopened. Read off the live status (like
+   * the SLA card), not the `resolvedAt` stamp — a reopen moves the status back
+   * to the first open one, which is what unlocks it.
+   */
+  async assertTicketOpen(ticket: { ticketStatus: string }, clientId: string, action = 'adding tasks') {
+    const label = await this.statusLabel(clientId, ticket.ticketStatus);
+    if (label === 'resolved' || label === 'closed') {
+      throw new BadRequestException(`This ticket is ${label} — reopen it before ${action}`);
+    }
+  }
+
+  /**
+   * A Closed ticket's status is frozen. The only way back is a reopen — the
+   * client's request approved by the project manager / an Admin, or a staff
+   * reopen of an internal ticket — which clears the stamps and moves the status
+   * itself. Read off the live status on every call, so it holds again after each
+   * reopen → resolve → close round.
+   */
+  private async assertNotClosed(
+    ticket: { ticketStatus: string; customerCompanyId: string | null }, clientId: string, viewer: TicketViewer,
+  ) {
+    if ((await this.statusLabel(clientId, ticket.ticketStatus)) !== 'closed') return;
+    throw new BadRequestException(
+      ticket.customerCompanyId
+        ? 'This ticket is closed — its status can only change through a reopen request from the client, approved by the project manager or an Admin'
+        : isAdmin(viewer)
+          ? 'This ticket is closed — use Reopen to bring it back'
+          : 'This ticket is closed — send a reopen request; an Admin approves it before the ticket reopens',
+    );
+  }
+
   async update(
     id: string,
     clientId: string,
@@ -953,6 +986,7 @@ export class TicketsService {
     let fromLabel = ticket.ticketStatus;
     let toLabel = dto.ticketStatus ?? ticket.ticketStatus;
     if (dto.ticketStatus && dto.ticketStatus !== ticket.ticketStatus) {
+      await this.assertNotClosed(ticket, clientId, viewer);
       const label = await this.statusLabel(clientId, dto.ticketStatus);
       statusChangedAt = new Date();
       [fromLabel, toLabel] = await Promise.all([
@@ -1167,6 +1201,9 @@ export class TicketsService {
     viewer: TicketViewer,
   ) {
     const ticket = await this.findOne(id, clientId, viewer);
+    // It writes the status too, so on a Closed ticket it would pull it back to
+    // Resolved — the same freeze as the status dropdown.
+    await this.assertNotClosed(ticket, clientId, viewer);
     // Editing the notes on an already-resolved ticket is not a new resolution —
     // it must not re-notify the client.
     const wasResolved = !!ticket.resolvedAt;
@@ -1674,6 +1711,12 @@ export class TicketsService {
     if (!reason) {
       throw new BadRequestException('Tell us why this ticket needs to be reopened');
     }
+    // An internal ticket is reopened directly by an Admin only; anyone else on
+    // staff asks (`requestReopen`) and an Admin approves — the same gate a
+    // client's ticket has, with the Admins as the deciders.
+    if (!isAdmin(viewer)) {
+      throw new ForbiddenException('Send a reopen request instead — an Admin approves it before the ticket reopens.');
+    }
     return this.applyReopen(ticket, clientId, reason, actorId, actorId);
   }
 
@@ -1804,8 +1847,13 @@ export class TicketsService {
    */
   async requestReopen(id: string, clientId: string, dto: { reason?: string }, actorId: string, viewer: TicketViewer) {
     const ticket = await this.findOne(id, clientId, viewer);
-    if (!isCustomerSide(viewer) || !ticket.customerCompanyId) {
-      throw new ForbiddenException('Only the client can ask to reopen their own ticket');
+    // Who asks: the client on their own ticket, or a non-Admin member of staff
+    // on an internal one (an Admin reopens an internal ticket directly).
+    if (ticket.customerCompanyId) {
+      if (!isCustomerSide(viewer)) throw new ForbiddenException('Only the client can ask to reopen their own ticket');
+    } else {
+      if (isCustomerSide(viewer)) throw new ForbiddenException('Only the client can ask to reopen their own ticket');
+      if (isAdmin(viewer)) throw new BadRequestException('As an Admin you can reopen this ticket directly');
     }
     if (!ticket.resolvedAt) {
       throw new BadRequestException('Only a resolved or closed ticket can be reopened');
@@ -1854,10 +1902,13 @@ export class TicketsService {
     try {
       const [requester, company] = await Promise.all([
         this.prisma.user.findUnique({ where: { id: actorId }, select: { username: true, name: true } }),
-        this.prisma.customerCompany.findUnique({ where: { id: ticket.customerCompanyId }, select: { name: true } }),
+        ticket.customerCompanyId
+          ? this.prisma.customerCompany.findUnique({ where: { id: ticket.customerCompanyId }, select: { name: true } })
+          : null,
       ]);
       const deciders = approver ? [approver] : await this.tenantAdmins(clientId);
-      const who = `${requester ? displayName(requester) : 'The client'}${company ? ` (${company.name})` : ''}`;
+      const fallback = ticket.customerCompanyId ? 'The client' : 'A member of staff';
+      const who = `${requester ? displayName(requester) : fallback}${company ? ` (${company.name})` : ''}`;
       await this.notifications.notifyMany(deciders.map((d) => d.id), {
         clientId, type: 'TICKET_REOPEN_REQUESTED', ticketId: id,
         title: `Reopen approval needed · ${ticket.ticketNumber}`,
@@ -1882,7 +1933,10 @@ export class TicketsService {
   /** The client takes back a reopen request nobody has decided yet. */
   async withdrawReopenRequest(id: string, clientId: string, actorId: string, viewer: TicketViewer) {
     const ticket = await this.findOne(id, clientId, viewer);
-    if (!isCustomerSide(viewer)) throw new ForbiddenException('Only the client can withdraw their reopen request');
+    const ownInternalRequest = !ticket.customerCompanyId && ticket.reopenRequestedById === actorId;
+    if (!isCustomerSide(viewer) && !ownInternalRequest) {
+      throw new ForbiddenException('Only whoever asked can withdraw this reopen request');
+    }
     if (ticket.reopenRequestStatus !== 'PENDING') {
       throw new BadRequestException('There is no reopen request waiting on this ticket');
     }
@@ -1897,7 +1951,7 @@ export class TicketsService {
       .notifyMany(deciders.map((d) => d.id), {
         clientId, type: 'TICKET_REOPEN_WITHDRAWN', ticketId: id,
         title: `Reopen request withdrawn · ${ticket.ticketNumber}`,
-        body: `The client no longer needs ${ticket.subject} reopened.`,
+        body: `${ticket.customerCompanyId ? 'The client' : 'The requester'} no longer needs ${ticket.subject} reopened.`,
       })
       .catch((err) => this.logger.error('Failed to notify a withdrawn reopen request', err instanceof Error ? err.stack : String(err)));
     return updated;
@@ -1932,7 +1986,7 @@ export class TicketsService {
     const ticket = await this.findOne(id, clientId, viewer);
     this.assertMayDecideReopen(ticket, viewer);
     const note = dto?.reason?.trim();
-    if (!note) throw new BadRequestException('Say why the reopen request is rejected — the client sees this');
+    if (!note) throw new BadRequestException('Say why the reopen request is rejected — whoever asked sees this');
     const updated = await this.prisma.ticket.update({
       where: { id },
       data: {
@@ -1958,6 +2012,7 @@ export class TicketsService {
     ticket: {
       id: string; ticketNumber: string; subject: string; reopenRequestedById: string | null;
       reopenRequestReason: string | null; technicians: { user: { id: string } }[];
+      customerCompanyId: string | null;
     },
     decision: 'APPROVED' | 'REJECTED',
     actorId: string,
@@ -2006,8 +2061,8 @@ export class TicketsService {
           agents,
           `[${ticket.ticketNumber}] Ticket reopened`,
           'Ticket reopened',
-          `${label} has been reopened at the client's request, approved by ${esc(by)}.` +
-            `<br/><br/><strong>Client's reason:</strong> ${esc(ticket.reopenRequestReason)}`,
+          `${label} has been reopened at ${ticket.customerCompanyId ? "the client's" : `${esc(requester ? displayName(requester) : 'a colleague')}'s`} request, approved by ${esc(by)}.` +
+            `<br/><br/><strong>Reason:</strong> ${esc(ticket.reopenRequestReason)}`,
           `the reopen notice for ${ticket.ticketNumber}`,
         );
       }
@@ -2783,6 +2838,19 @@ Please acknowledge the resolution to close the ticket, or reopen it if the issue
       : null;
     if (dto.taskId && !task) throw new NotFoundException('Task not found on this ticket');
 
+    // The Resolution tab holds one entry (notes + hours) per resolution round:
+    // a reopen starts a new round, the earlier entries stay as history. Task
+    // hours are booked against their tasks and are not limited.
+    if (!task) {
+      await this.assertTicketOpen(ticket, clientId, 'logging time');
+      const existing = await this.prisma.ticketWorklog.count({
+        where: { ticketId: id, taskId: null, ...this.currentRound(ticket) },
+      });
+      if (existing > 0) {
+        throw new BadRequestException('This ticket already has a resolution entry — delete it to log again');
+      }
+    }
+
     // Refuse hours that would break the customer's support-hours allowance before
     // anything is written (unless the pool allows excess). Throws on a violation.
     await this.customerProducts.assertHoursWithinAllowance(
@@ -2827,8 +2895,90 @@ Please acknowledge the resolution to close the ticket, or reopen it if the issue
     return { count: logs.length, hours };
   }
 
+  /**
+   * Correct a Resolution-tab entry (notes and/or hours) — allowed in every state
+   * but Closed, Resolved included, so a typo can still be fixed before the client
+   * signs off. Hours move the customer's pool by the difference alone: an
+   * increase passes the allowance gate first, and a MONTHLY ledger is adjusted
+   * by the delta. Editing the current round's entry on a resolved ticket keeps
+   * `Ticket.resolution` — the text the client acknowledges — in step with it.
+   */
+  async updateWorklog(
+    id: string, worklogId: string, dto: UpdateWorklogDto, clientId: string, actorId: string, viewer: TicketViewer,
+  ) {
+    const ticket = await this.findOne(id, clientId, viewer);
+    if ((await this.statusLabel(clientId, ticket.ticketStatus)) === 'closed') {
+      throw new BadRequestException('This ticket is closed — its entries can no longer be edited');
+    }
+    const wl = await this.prisma.ticketWorklog.findFirst({ where: { id: worklogId, ticketId: id } });
+    if (!wl) throw new NotFoundException('Worklog not found');
+    // Task hours are corrected on their task, not here.
+    if (wl.taskId) throw new BadRequestException('Time booked on a task is edited on that task');
+
+    const note = dto.note !== undefined ? dto.note.trim() : (wl.note ?? '');
+    if (!note) throw new BadRequestException('Resolution notes cannot be empty');
+    const hours = dto.hours !== undefined ? Number(dto.hours) : Number(wl.hours);
+    if (!(hours > 0)) throw new BadRequestException('Hours must be greater than zero');
+    const delta = hours - Number(wl.hours);
+
+    if (delta > 0) {
+      await this.customerProducts.assertHoursWithinAllowance(
+        clientId, ticket.customerCompanyId, ticket.productId ?? null, delta,
+      );
+    }
+    const updated = await this.prisma.ticketWorklog.update({
+      where: { id: worklogId },
+      data: { note, hours },
+    });
+    if (delta !== 0) {
+      await this.customerProducts.adjustLoggedHours(
+        clientId, ticket.customerCompanyId, ticket.productId ?? null, delta, wl.workDate,
+      );
+      if (delta > 0) {
+        await this.customerProducts.alertOnLoggedHours(clientId, ticket.customerCompanyId, ticket.productId ?? null);
+      }
+    }
+    const currentRound = !ticket.reopenedAt || wl.createdAt > ticket.reopenedAt;
+    if (ticket.resolvedAt && currentRound && note !== (ticket.resolution ?? '')) {
+      await this.prisma.ticket.update({ where: { id }, data: { resolution: note, updatedBy: actorId } });
+    }
+    const changes = [
+      ...(delta !== 0 ? [`hours ${Number(wl.hours)} → ${hours}`] : []),
+      ...(note !== (wl.note ?? '') ? ['notes'] : []),
+    ];
+    if (changes.length) {
+      await this.activity.log({
+        ticketId: id,
+        actorUserId: actorId,
+        type: 'WORKLOG_UPDATED',
+        summary: `Resolution entry edited: ${changes.join(', ')}`,
+      });
+    }
+    return updated;
+  }
+
+  /** Worklogs written since the last reopen — the round now being resolved. */
+  private currentRound(ticket: { reopenedAt: Date | null }): Prisma.TicketWorklogWhereInput {
+    return ticket.reopenedAt ? { createdAt: { gt: ticket.reopenedAt } } : {};
+  }
+
   async deleteWorklog(id: string, worklogId: string, clientId: string, viewer: TicketViewer) {
     const ticket = await this.findOne(id, clientId, viewer);
+    // A resolution entry is a record once its round is resolved: locked while the
+    // ticket is resolved, and an earlier round's entry stays locked after a reopen
+    // — deleting it would hand worked hours back to the client's pool.
+    const wl = await this.prisma.ticketWorklog.findFirst({
+      where: { id: worklogId, ticketId: id },
+      select: { taskId: true, createdAt: true },
+    });
+    if (wl && !wl.taskId) {
+      if (ticket.resolvedAt) {
+        throw new BadRequestException('This ticket is resolved — its resolution entry can no longer be deleted');
+      }
+      if (ticket.reopenedAt && wl.createdAt <= ticket.reopenedAt) {
+        throw new BadRequestException('This entry belongs to an earlier resolution and can no longer be deleted');
+      }
+    }
     if (!(await this.dropWorklog(clientId, ticket, worklogId))) {
       throw new NotFoundException('Worklog not found');
     }

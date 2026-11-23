@@ -47,8 +47,11 @@ export default function TasksTab({
   ticketId,
   ticketAssigneeId,
   hintNonce = 0,
+  settled = false,
 }: {
   ticketId: string;
+  /** The ticket reads Resolved or Closed — no new tasks until it is reopened (the server refuses too). */
+  settled?: boolean;
   /** The agent the *ticket* is assigned to — who, with an admin, may reopen a completed task. */
   ticketAssigneeId?: string | null;
   /**
@@ -555,6 +558,11 @@ export default function TasksTab({
                 the control lives — not in a band of its own above the table. */}
             <TableRow className="hover:bg-transparent">
               <TableCell colSpan={8} className="p-0">
+                {settled ? (
+                  <p className="px-3 py-2.5 text-sm text-muted-foreground">
+                    This ticket is resolved — reopen it to add tasks.
+                  </p>
+                ) : (
                 <button
                   type="button"
                   onClick={() => setAddOpen(true)}
@@ -562,6 +570,7 @@ export default function TasksTab({
                 >
                   <Plus className="size-4" /> Add task
                 </button>
+                )}
               </TableCell>
             </TableRow>
           </TableBody>

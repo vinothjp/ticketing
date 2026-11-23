@@ -324,6 +324,23 @@ export default function Layout({ children }: { children: ReactNode }) {
         return groups;
       })();
 
+  // The profile chip shows the full name, falling back to the username when none
+  // was entered. Read live (refetched on focus), not from the session stored at
+  // login — an older session has no name, and a renamed user would never update.
+  const { data: profile } = useQuery<{ username: string; name: string | null } | null>({
+    queryKey: ['my-profile'],
+    queryFn: async () => (await api.get('/api/auth/me/profile')).data,
+    enabled: !!user,
+  });
+  const fullName = profile ? profile.name : user?.name;
+  const displayName = fullName?.trim() || user?.username || '';
+  const profileInitials = (() => {
+    const words = (fullName ?? '').trim().split(/\s+/).filter(Boolean);
+    if (words.length >= 2) return (words[0][0] + words[words.length - 1][0]).toUpperCase();
+    if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+    return (user?.username ?? '').slice(0, 2).toUpperCase();
+  })();
+
   const { data: myClient } = useQuery<MyClient | null>({
     queryKey: ['my-client'],
     queryFn: async () => (await api.get('/api/auth/me/client')).data,
@@ -435,13 +452,17 @@ export default function Layout({ children }: { children: ReactNode }) {
           <NotificationBell />
 
           <DropdownMenu modal={false}>
-            <DropdownMenuTrigger className="flex shrink-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none hover:bg-accent">
-              <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
-                {user?.username?.slice(0, 2).toUpperCase()}
+            <DropdownMenuTrigger className="flex shrink-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none hover:bg-accent"
+              title={user?.username}>
+              <div className="relative shrink-0">
+                <div className="flex size-8 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
+                  {profileInitials}
+                </div>
+                <span className="absolute right-0 bottom-0 size-2.5 rounded-full border-2 border-background bg-emerald-500" title="Online" />
               </div>
               <div className="hidden min-w-0 text-left sm:block">
-                <div className="truncate text-sm font-medium text-foreground">{user?.username}</div>
-                <div className="truncate text-xs text-muted-foreground">{user?.roles.join(', ')}</div>
+                {/* Full name only — the username and roles are shown inside the menu. */}
+                <div className="truncate text-sm font-medium text-foreground">{displayName}</div>
               </div>
               <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
             </DropdownMenuTrigger>

@@ -2,14 +2,14 @@ import { useState, type ReactNode } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import api from '../../../lib/api';
-import { Clock, FileText, Trash2, type LucideIcon } from 'lucide-react';
+import { Check, Clock, FileText, Pencil, X, type LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { type ReopenWindow } from './ReopenControl';
 import { useDateFormat } from '@/lib/dateFormat';
-import { useAddWorklog, useDeleteWorklog, useWorklogs } from './ticketQueries';
+import { useAddWorklog, useUpdateWorklog, useWorklogs } from './ticketQueries';
 import { hrs } from './taskMeta';
 
 /** Column heading: icon + small muted label (copied per page, like the other list tables). */
@@ -48,8 +48,11 @@ export default function ResolutionTab({
   loggedHours = 0,
   openTasks = 0,
   onViewTasks,
+  closed = false,
 }: {
   ticket: ResolutionTicket;
+  /** The live status reads Closed — entries are read-only then. */
+  closed?: boolean;
   readOnly?: boolean;
   /** Total worklog hours on the ticket — a resolution needs more than zero. */
   loggedHours?: number;
@@ -137,7 +140,8 @@ export default function ResolutionTab({
       ticketId={ticket.id}
       resolved={resolved}
       notice={!resolved && wasReopened ? reopenNotice : null}
-      currentResolution={ticket.resolution ?? ''}
+      reopenedAt={ticket.reopenedAt ?? null}
+      closed={closed}
       loggedHours={loggedHours}
       openTasks={openTasks}
       onViewTasks={onViewTasks}
@@ -150,24 +154,25 @@ export default function ResolutionTab({
 /**
  * The staff resolution editor: one box, and the record of what went into it.
  *
- * **The resolution notes live inside the Log time box.** Each entry is notes +
- * hours, booked as one worklog with no `taskId` (the note carries the notes), so
- * an agent who resolves a ticket themselves records the work and its time in one
- * place without raising a task for themselves. **Log time** adds an entry;
- * **Mark resolved** opens the same box as **Log & resolve**, where the notes are
- * required — they become the ticket's resolution, the text the client
- * acknowledges — and the hours too unless the ticket already has time. One click
- * books the entry and resolves. The server keeps every gate: notes, time > 0, no
- * open tasks.
+ * **The resolution notes live inside the time box**, and a ticket holds **one**
+ * such entry: notes + hours, booked as a worklog with no `taskId` (the server
+ * refuses a second). The box's own **Mark resolved** button books the entry and
+ * resolves in one click — the notes become the ticket's resolution, the text the
+ * client acknowledges. Once the entry exists the box is gone; an unresolved
+ * ticket that already has one (a reopen) resolves on it with a bare Mark
+ * resolved, and deleting the entry brings the box back. The server keeps every
+ * gate: notes, time > 0, no open tasks.
  */
 function ResolutionEditor({
-  ticketId, resolved, notice, currentResolution, loggedHours, openTasks, onViewTasks, onResolve, saving,
+  ticketId, resolved, closed, notice, reopenedAt, loggedHours, openTasks, onViewTasks, onResolve, saving,
 }: {
   ticketId: string;
   resolved: boolean;
+  /** Entries are editable in every state but Closed; the Actions column goes with it. */
+  closed: boolean;
   notice: ReactNode;
-  /** The resolution saved on the ticket — prefilled when resolving or updating it. */
-  currentResolution: string;
+  /** Start of the current resolution round — entries before it are history. */
+  reopenedAt: string | null;
   loggedHours: number;
   openTasks: number;
   onViewTasks?: () => void;
@@ -177,50 +182,68 @@ function ResolutionEditor({
   const { fmtDate } = useDateFormat();
   const { data: worklogs = [] } = useWorklogs(ticketId);
   const add = useAddWorklog(ticketId);
-  const remove = useDeleteWorklog(ticketId);
+  const update = useUpdateWorklog(ticketId);
+  // The one row being corrected, inline: its id and the draft values.
+  const [editing, setEditing] = useState<{ id: string; note: string; hours: string } | null>(null);
+  const saveEdit = async () => {
+    if (!editing) return;
+    const note = editing.note.trim();
+    const h = Number(editing.hours);
+    if (!note) { toast.error('Resolution notes cannot be empty'); return; }
+    if (!(h > 0)) { toast.error('Enter hours greater than 0'); return; }
+    try {
+      await update.mutateAsync({ id: editing.id, note, hours: h });
+      setEditing(null);
+      toast.success('Entry updated');
+    } catch { /* toast already shown */ }
+  };
   // Entries booked against the ticket itself; task hours stay with their task.
+  // ONE entry per resolution round (the server refuses a second): once this
+  // round's exists the box is gone. A reopen starts a new round — earlier
+  // entries stay in Audit history, locked, and the box comes back.
   const entries = worklogs.filter((l) => !l.taskId);
+  const roundStart = reopenedAt ? new Date(reopenedAt).getTime() : null;
+  const inRound = (l: { createdAt?: string }) =>
+    roundStart === null || (!!l.createdAt && new Date(l.createdAt).getTime() > roundStart);
+  const entry = entries.find(inRound);
 
-  // The box is always on screen. 'log' = add an entry; 'resolve' = the same box
-  // after Mark resolved / Update resolution, whose button resolves as well.
-  const [prompt, setPrompt] = useState<'log' | 'resolve'>('log');
   const [hours, setHours] = useState('');
+  // A reopened round starts blank — the last resolution sits in Audit history below.
   const [notes, setNotes] = useState('');
-  const close = () => { setPrompt('log'); setHours(''); setNotes(''); };
   const busy = add.isPending || saving;
 
+  // Outstanding tasks are checked first, in the status dropdown's order.
+  const tasksBlock = () => {
+    if (openTasks === 0) return false;
+    toast.error(`${openTasks} task${openTasks === 1 ? ' is' : 's are'} still open — complete or cancel ${openTasks === 1 ? 'it' : 'them'} before resolving`);
+    onViewTasks?.();
+    return true;
+  };
+
+  /** The box's button: books notes + hours and, on an unresolved ticket, resolves in the same click. */
   const submit = async () => {
-    const typed = hours.trim() !== '';
-    const h = Number(hours);
+    if (!resolved && tasksBlock()) return;
     const text = notes.trim();
+    const h = Number(hours);
     if (!text) { toast.error('Write the resolution notes'); return; }
-    // Every entry is notes + hours — both are always required.
-    if (!typed) { toast.error(prompt === 'resolve' ? 'Enter the hours spent before resolving' : 'Enter the hours spent'); return; }
+    if (hours.trim() === '') { toast.error(resolved ? 'Enter the hours spent' : 'Enter the hours spent before resolving'); return; }
     if (!(h > 0)) { toast.error('Enter hours greater than 0'); return; }
     try {
       // Booked first, so the hours just typed are what satisfy the resolve gate.
       await add.mutateAsync({ hours: h, note: text });
-      // Resolving saves the notes as the resolution; on an already-resolved
-      // ticket every Add does the same, so the resolution the client reads is
-      // always the latest — there is no separate Update resolution step.
-      if (prompt === 'resolve' || resolved) await onResolve(text);
-      else toast.success('Time logged');
-      close();
+      // The notes become the resolution the client reads — on resolving, and on
+      // an already-resolved ticket alike.
+      await onResolve(text);
+      setHours('');
     } catch { /* the failing mutation has already shown the server's reason */ }
   };
 
-  // Outstanding tasks are checked on the click, in the status dropdown's order;
-  // everything else is asked for in the box.
-  const clickResolve = () => {
-    if (openTasks > 0) {
-      toast.error(`${openTasks} task${openTasks === 1 ? ' is' : 's are'} still open — complete or cancel ${openTasks === 1 ? 'it' : 'them'} before resolving`);
-      onViewTasks?.();
-      return;
-    }
-    // Keep whatever is already typed; otherwise start from any saved resolution
-    // (a reopened ticket keeps its last one).
-    if (!notes.trim()) setNotes(currentResolution);
-    setPrompt('resolve');
+  /** An entry already exists (e.g. a reopened ticket): resolve on it, no second log. */
+  const resolveWithEntry = async () => {
+    if (tasksBlock()) return;
+    const text = (entry?.note ?? '').trim();
+    if (!text) { toast.error('The entry has no resolution notes'); return; }
+    try { await onResolve(text); } catch { /* toast already shown */ }
   };
 
 
@@ -230,14 +253,15 @@ function ResolutionEditor({
           why here. A ticket that was never resolved says nothing. */}
       {notice}
 
-      {/* The first thing on the tab: notes + hours, always open. */}
-      <div className="space-y-3 rounded-lg border bg-muted/40 p-3">
+      {/* The first thing on the tab: notes + hours, until the one entry is logged. */}
+      {resolved ? null : !entry ? (
+        <div className="space-y-3 rounded-lg border bg-muted/40 p-3">
           <div className="space-y-1">
             <label className="text-sm font-medium text-foreground">
               Resolution notes
             </label>
             <Textarea rows={4} value={notes} onChange={(e) => setNotes(e.target.value)}
-              placeholder={prompt === 'resolve' || resolved ? 'Describe how the issue was resolved — the client sees this' : 'Describe the work done'} />
+              placeholder="Describe how the issue was resolved — the client sees this" />
           </div>
           <div className="flex flex-wrap items-end gap-2">
             <div className="space-y-1">
@@ -248,19 +272,23 @@ function ResolutionEditor({
                 onChange={(e) => setHours(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
             </div>
-            <div className="ml-auto flex gap-2">
-              {/* Cancel backs out of resolving; in plain logging it just clears. */}
-              {(prompt === 'resolve' || notes || hours) && (
-                <Button size="sm" variant="ghost" disabled={busy} onClick={close}>{prompt === 'resolve' ? 'Cancel' : 'Clear'}</Button>
-              )}
-              <Button size="sm" disabled={busy} onClick={submit}>
-                {prompt === 'log'
-                  ? (busy ? 'Saving…' : 'Add')
-                  : busy ? 'Saving…' : 'Log & resolve'}
-              </Button>
-            </div>
+            <Button className="ml-auto" disabled={busy} onClick={submit}>
+              {busy ? 'Saving…' : 'Mark resolved'}
+            </Button>
           </div>
-      </div>
+        </div>
+      ) : (
+        // Logged but not resolved — a reopened ticket, or a resolve that was
+        // refused after booking. Resolve on the entry rather than logging again.
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 p-3">
+          <span className="text-sm text-muted-foreground">
+            Time for this round is logged below.
+          </span>
+          <Button className="ml-auto" disabled={busy} onClick={resolveWithEntry}>
+            {busy ? 'Saving…' : 'Mark resolved'}
+          </Button>
+        </div>
+      )}
 
       {/* Audit history: every entry — its notes and its time — as the standard
           list table. Task hours stay with their task; the total covers both. */}
@@ -276,16 +304,42 @@ function ResolutionEditor({
             <TableHeader>
               <TableRow className="bg-muted/50 hover:bg-muted/50">
                 <TableHead className="border-r"><HeadLabel icon={FileText}>Resolution notes</HeadLabel></TableHead>
-                <TableHead className="w-px border-r"><HeadLabel icon={Clock}>Time spent</HeadLabel></TableHead>
-                <TableHead className="w-px text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
+                <TableHead className={`w-px ${closed ? '' : 'border-r'}`}><HeadLabel icon={Clock}>Time spent</HeadLabel></TableHead>
+                {/* No column at all once Closed — it comes back on a reopen. */}
+                {!closed && (
+                  <TableHead className="w-px text-right text-xs font-semibold text-muted-foreground">Actions</TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
               {entries.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={3} className="py-4 text-center text-sm text-muted-foreground">No time logged here yet.</TableCell>
+                  <TableCell colSpan={closed ? 2 : 3} className="py-4 text-center text-sm text-muted-foreground">No time logged here yet.</TableCell>
                 </TableRow>
-              ) : entries.map((l) => (
+              ) : entries.map((l) => editing?.id === l.id && !closed ? (
+                <TableRow key={l.id} className="hover:bg-transparent">
+                  <TableCell className="border-r">
+                    <Textarea rows={2} value={editing.note} autoFocus
+                      onChange={(e) => setEditing({ ...editing, note: e.target.value })} />
+                  </TableCell>
+                  <TableCell className="border-r">
+                    <Input type="number" min={0} step="0.25" inputMode="decimal" className="h-8 w-20"
+                      value={editing.hours}
+                      onChange={(e) => setEditing({ ...editing, hours: e.target.value })}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveEdit(); if (e.key === 'Escape') setEditing(null); }} />
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-right">
+                    <Button size="icon" variant="ghost" className="size-8" title="Save"
+                      disabled={update.isPending} onClick={saveEdit}>
+                      <Check className="size-4" />
+                    </Button>
+                    <Button size="icon" variant="ghost" className="size-8" title="Cancel"
+                      disabled={update.isPending} onClick={() => setEditing(null)}>
+                      <X className="size-4" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ) : (
                 <TableRow key={l.id}>
                   <TableCell className="border-r">
                     <span className="block max-w-[28rem] truncate text-sm text-foreground" title={l.note ?? undefined}>
@@ -295,25 +349,21 @@ function ResolutionEditor({
                       {fmtDate(l.workDate)}{l.consultantName ? ` · ${l.consultantName}` : ''}
                     </span>
                   </TableCell>
-                  <TableCell className="whitespace-nowrap border-r text-sm font-semibold tabular-nums">{hrs(Number(l.hours))}</TableCell>
-                  <TableCell className="text-right">
-                    <Button size="icon" variant="ghost" className="size-8 text-destructive hover:text-destructive"
-                      title="Delete entry" disabled={remove.isPending} onClick={() => remove.mutate(l.id)}>
-                      <Trash2 className="size-4" />
-                    </Button>
-                  </TableCell>
+                  <TableCell className={`whitespace-nowrap text-sm font-semibold tabular-nums ${closed ? '' : 'border-r'}`}>{hrs(Number(l.hours))}</TableCell>
+                  {!closed && (
+                    <TableCell className="text-right">
+                      <Button size="icon" variant="ghost" className="size-8" title="Edit entry"
+                        onClick={() => setEditing({ id: l.id, note: l.note ?? '', hours: String(Number(l.hours)) })}>
+                        <Pencil className="size-4" />
+                      </Button>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         </div>
       </div>
-
-      {/* Only an unresolved ticket has a resolve step; a resolved one updates its
-          resolution through Add. Hidden while resolving: the box's button acts then. */}
-      {!resolved && prompt === 'log' && (
-        <Button onClick={clickResolve} disabled={busy}>Mark resolved</Button>
-      )}
     </div>
   );
 }

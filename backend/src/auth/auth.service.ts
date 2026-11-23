@@ -165,6 +165,8 @@ export class AuthService {
       user: {
         id: user.id,
         username: user.username,
+        // Full name for the header's profile chip; null when none was entered.
+        name: user.name ?? null,
         email: user.email,
         roles,
         clientId: user.clientId,
@@ -283,6 +285,18 @@ export class AuthService {
     });
 
     return { message: 'Password changed successfully' };
+  }
+
+  /**
+   * Name and username, read live rather than from the session saved at login,
+   * so a session from before the name was sent — or a name edited since —
+   * shows the current full name without signing in again.
+   */
+  async getMyProfile(userId: string) {
+    return this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { username: true, name: true },
+    });
   }
 
   async getMyClient(clientId: string | null) {

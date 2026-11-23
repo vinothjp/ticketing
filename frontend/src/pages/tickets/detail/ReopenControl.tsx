@@ -43,6 +43,7 @@ export default function ReopenControl({
   reopening,
   requestMode = false,
   approverName = null,
+  deciderLabel,
 }: {
   ticket: ReopenWindow;
   /** True only for whoever owns the call — the client, or staff on an internal ticket. */
@@ -55,6 +56,8 @@ export default function ReopenControl({
    * and hint say so. Off for an internal ticket, which staff reopen directly.
    */
   requestMode?: boolean;
+  /** Overrides who the request goes to, in the hint and dialog (e.g. "an Admin"). */
+  deciderLabel?: string;
   /** Who decides the request, when a project manager is set — named in the dialog. */
   approverName?: string | null;
 }) {
@@ -67,7 +70,7 @@ export default function ReopenControl({
   // Absent from an older payload = treat as open, and let the API be the judge.
   const windowOpen = ticket.reopenWindowOpen !== false;
   const until = deadline ? ` (until ${fmtDate(deadline)})` : '';
-  const decider = approverName ? `${approverName} (project manager)` : 'your provider';
+  const decider = deciderLabel ?? (approverName ? `${approverName} (project manager)` : 'your provider');
   const hint = !canReopen
     ? `Only the client can ask to reopen their own ticket, for ${days} days after it is resolved${until}. The project manager approves the request before it reopens.`
     : !windowOpen

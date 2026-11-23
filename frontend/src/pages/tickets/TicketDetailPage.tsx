@@ -82,6 +82,7 @@ interface TicketDetail {
   reopenRequestReason?: string | null;
   reopenRequestedAt?: string | null;
   reopenRequestedByName?: string | null;
+  reopenRequestedById?: string | null;
   reopenApproverName?: string | null;
   reopenDecidedAt?: string | null;
   reopenDecidedByName?: string | null;
@@ -192,6 +193,12 @@ export default function TicketDetailPage() {
     queryKey: ['tickets', id],
     queryFn: async () => (await api.get(`/api/tickets/${id}`)).data,
     enabled: !!id,
+  });
+  // The service provider's own name — an internal ticket's sender. Same query
+  // (and cache entry) as the header's.
+  const { data: providerClient } = useQuery<{ name: string } | null>({
+    queryKey: ['my-client'],
+    queryFn: async () => (await api.get('/api/auth/me/client')).data,
   });
 
   const { data: template } = useQuery<TemplateData>({
@@ -392,6 +399,16 @@ export default function TicketDetailPage() {
   // The client's own people reopen their tickets; an internal ticket (no customer
   // on it) has no client, so the call stays with staff. Same rule as the API.
   const canReopenTicket = isCustomerSide || (isStaff && !ticket.customerCompany);
+  // On an internal ticket only an Admin reopens directly; other staff ask, and
+  // an Admin approves — the same request flow a client's ticket uses.
+  const internalRequest = !ticket.customerCompany && isStaff && !isTenantAdmin;
+  const reopenByRequest = !!ticket.customerCompany || internalRequest;
+  // Whoever asked may withdraw: the client, or the staff member on an internal ticket.
+  const mayWithdrawReopen = isCustomerSide || (!ticket.customerCompany && ticket.reopenRequestedById === user?.id);
+  // The ticket's sender: the named requestor, else the client company it was
+  // raised for, else — an internal ticket — the service provider itself.
+  const requesterLabel =
+    ticket.requestorName?.trim() || ticket.customerCompany?.name || providerClient?.name || 'Internal';
   // Secondary lifecycle detail for the banner's second row. Reopened only counts
   // from the second time round, the same threshold the status row always used.
   const resolutionMeta = [
@@ -537,10 +554,11 @@ export default function TicketDetailPage() {
               <ReopenControl
                 ticket={ticket}
                 canReopen={canReopenTicket}
-                requestMode={!!ticket.customerCompany}
+                requestMode={reopenByRequest}
                 approverName={ticket.reopenApproverName}
+                deciderLabel={internalRequest ? 'an Admin' : undefined}
                 onReopen={(reason) =>
-                  ticket.customerCompany ? requestReopenMutation.mutate(reason) : reopenMutation.mutate(reason)}
+                  reopenByRequest ? requestReopenMutation.mutate(reason) : reopenMutation.mutate(reason)}
                 reopening={reopenMutation.isPending || requestReopenMutation.isPending}
               />
             </div>
@@ -575,7 +593,11 @@ export default function TicketDetailPage() {
                   ? 'Reopen Ticket Approval'
                   : isCustomerSide
                     ? `Reopen requested. Waiting for ${ticket.reopenApproverName ? `${ticket.reopenApproverName} (project manager)` : 'your provider'} to approve.`
-                    : `The client asked to reopen this ticket. Waiting for ${ticket.reopenApproverName ? `${ticket.reopenApproverName} (project manager)` : 'an admin'} to approve.`}
+                    : !ticket.customerCompany
+                      ? ticket.reopenRequestedById === user?.id
+                        ? 'Reopen requested. Waiting for an admin to approve.'
+                        : `${ticket.reopenRequestedByName ?? 'A colleague'} asked to reopen this ticket. Waiting for an admin to approve.`
+                      : `The client asked to reopen this ticket. Waiting for ${ticket.reopenApproverName ? `${ticket.reopenApproverName} (project manager)` : 'an admin'} to approve.`}
               </span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -589,7 +611,7 @@ export default function TicketDetailPage() {
                   </Button>
                 </>
               )}
-              {isCustomerSide && (
+              {mayWithdrawReopen && (
                 <Button size="sm" variant="outline" onClick={() => withdrawReopenMutation.mutate()} disabled={withdrawReopenMutation.isPending}>
                   Withdraw request
                 </Button>
@@ -737,10 +759,10 @@ export default function TicketDetailPage() {
                 <CardContent className="pb-4">
                   <div className="mb-2 flex items-center gap-2">
                     <div className="flex size-8 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
-                      {(ticket.requestorName || '??').slice(0, 2).toUpperCase()}
+                      {requesterLabel.slice(0, 2).toUpperCase()}
                     </div>
                     <div>
-                      <div className="text-sm font-medium text-foreground">{ticket.requestorName || 'Unknown requestor'}</div>
+                      <div className="text-sm font-medium text-foreground">{requesterLabel}</div>
                       <div className="text-xs text-muted-foreground">
                         {ticket.department ? `${ticket.department} · ` : ''}{fmtDateTime(ticket.createdAt)}
                       </div>
@@ -896,6 +918,7 @@ export default function TicketDetailPage() {
                 loggedHours={loggedHours}
                 openTasks={openTasks}
                 onViewTasks={sendToOpenTasks}
+                closed={statusMeaning === 'closed'}
               />
             </TabsContent>
             <TabsContent value="tasks">
@@ -907,6 +930,7 @@ export default function TicketDetailPage() {
                 // Bumped when a sign-off was refused for outstanding work: the
                 // grid then marks the rows that blocked it.
                 hintNonce={taskHint}
+                settled={!slaClockRunning}
               />
             </TabsContent>
             <TabsContent value="approvals">
@@ -982,7 +1006,9 @@ export default function TicketDetailPage() {
                 {/* Customers see status/priority read-only — only staff may change them. */}
                 <div>
                   <div className="mb-1 text-xs text-muted-foreground">Status</div>
-                  {isStaff ? (
+                  {/* A Closed ticket's status is frozen (the server refuses too):
+                      only a reopen brings it back, which moves the status itself. */}
+                  {isStaff && statusMeaning !== 'closed' ? (
                     <Select
                       value={ticket.ticketStatus}
                       onValueChange={(v) => {
@@ -1038,6 +1064,13 @@ export default function TicketDetailPage() {
                     <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-foreground">
                       {statusOptions.find((o) => o.value === ticket.ticketStatus)?.label ?? ticket.ticketStatus}
                     </div>
+                  )}
+                  {isStaff && statusMeaning === 'closed' && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {ticket.customerCompany
+                        ? 'Closed — changes only through a client reopen request.'
+                        : 'Closed — use Reopen to change it.'}
+                    </p>
                   )}
                   {/* When it last moved. The full trail is on History; this is the
                       one stamp worth reading next to the control that sets it. */}

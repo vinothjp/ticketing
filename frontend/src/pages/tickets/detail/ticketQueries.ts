@@ -6,6 +6,8 @@ export interface Worklog {
   id: string;
   hours: number | string;
   workDate: string;
+  /** When it was recorded — what places it in a resolution round. */
+  createdAt?: string;
   note?: string | null;
   consultantName?: string | null;
   /** The task this time was spent on, if the logger linked one. */
@@ -79,6 +81,17 @@ export function useAddWorklog(ticketId: string) {
     mutationFn: (body: NewWorklog) => api.post(`/api/tickets/${ticketId}/worklogs`, body),
     onSuccess: invalidate,
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error logging time'),
+  });
+}
+
+/** Correct a Resolution-tab entry's notes / hours (refused once the ticket is Closed). */
+export function useUpdateWorklog(ticketId: string) {
+  const invalidate = useWorklogInvalidate(ticketId);
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; hours: number; note: string }) =>
+      api.patch(`/api/tickets/${ticketId}/worklogs/${id}`, body),
+    onSuccess: invalidate,
+    onError: (e: any) => toast.error(e.response?.data?.message || 'Error saving entry'),
   });
 }
 

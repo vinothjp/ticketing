@@ -62,7 +62,7 @@ const roleKey = (u: { userRoles: { role: { name: string } }[] }) =>
   u.userRoles.map((r) => r.role.name).sort().join(', ');
 type SortDir = 'asc' | 'desc';
 
-const PAGE_SIZE = 10;
+const PAGE_SIZES = [5, 10, 25, 50, 100];
 
 /** Role-filter sentinel for users holding no role at all (Radix can't hold an empty value). */
 const NO_ROLE = '__none__';
@@ -144,6 +144,7 @@ export default function UsersPage() {
   const [sortField, setSortField] = useState<SortField>('username');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   const createForm = useForm<CreateUserValues>({
     resolver: zodResolver(createUserSchema),
@@ -179,7 +180,7 @@ export default function UsersPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [search, statusFilter, roleFilter]);
+  }, [search, statusFilter, roleFilter, pageSize]);
 
   const createMutation = useMutation({
     mutationFn: (data: CreateUserValues) => api.post('/api/users', data),
@@ -262,9 +263,9 @@ export default function UsersPage() {
     return sorted;
   }, [filteredUsers, sortField, sortDir]);
 
-  const totalPages = Math.max(1, Math.ceil(sortedUsers.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(sortedUsers.length / pageSize));
   const currentPage = Math.min(page, totalPages);
-  const pagedUsers = sortedUsers.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  const pagedUsers = sortedUsers.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   return (
     <div>
@@ -583,11 +584,18 @@ export default function UsersPage() {
             </TableBody>
           </Table>
 
-          <div className="flex items-center justify-between border-t px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-3">
             <span className="text-sm text-muted-foreground">
               Page {currentPage} of {totalPages}
             </span>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm text-muted-foreground">Rows per page</span>
+              <Select value={String(pageSize)} onValueChange={(v) => v && setPageSize(Number(v))}>
+                <SelectTrigger className="h-8 w-20"><SelectValue placeholder="10" /></SelectTrigger>
+                <SelectContent>
+                  {PAGE_SIZES.map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
+                </SelectContent>
+              </Select>
               <Button
                 size="sm"
                 variant="outline"

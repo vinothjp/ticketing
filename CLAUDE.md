@@ -40,7 +40,7 @@ Migrations are **not** driven by `prisma migrate dev`. The workflow is:
    ```bash
    MSYS_NO_PATHCONV=1 docker exec ticketing-backend-1 sh -c 'cd /app && ./node_modules/.bin/prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script'
    ```
-   Every manual file must be run once on **every** deployed database too — committing or deploying the code does not run it.
+   Deployed databases need no hand step: the production image's `deploy/backend-entrypoint.sh` runs **every** file in `manual/` on each container start, once before `prisma db push` and once after. That is why every file must stay idempotent — it re-runs on every restart. (The dev `docker-compose.yml` does not do this, hence step 3.)
 3. Apply it to the running DB: `docker exec -i ticketing-postgres-1 psql -U postgres -d rbac_db < backend/prisma/migrations/manual/<file>.sql`.
 4. Regenerate the client and restart so `@prisma/client` types update:
    ```bash

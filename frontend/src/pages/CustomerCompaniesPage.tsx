@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Plus, Pencil, Trash2, Building2, Boxes, Search, Upload, ShieldCheck, Unlink,
-  Hash, AtSign, Mail, Phone, FileText, MessageSquare, CircleDot } from 'lucide-react';
+  Hash, AtSign, Mail, Phone, FileText, MessageSquare, CircleDot, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../lib/api';
@@ -129,6 +129,17 @@ export default function CustomerCompaniesPage({ createPage = false }: { createPa
       (typeFilter === 'all' || (c.clientType ?? 'AMC') === typeFilter)
       && (!term || c.name.toLowerCase().includes(term) || (c.code ?? '').toLowerCase().includes(term) || (c.companyCode ?? '').toLowerCase().includes(term)));
   }, [companies, q, typeFilter]);
+
+  // Client-side paging (the whole list is one query). The page in play is clamped,
+  // since narrowing the filters can leave it past the end, and every filter or
+  // page-size change returns to the first page.
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(5);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const pageNow = Math.min(page, pageCount);
+  const pageStart = (pageNow - 1) * pageSize;
+  const paged = filtered.slice(pageStart, pageStart + pageSize);
+  useEffect(() => { setPage(1); }, [q, typeFilter, pageSize]);
 
   // The edited client, re-read from the list so the logo refreshes after upload.
   const current = editing ? companies.find((c) => c.id === editing.id) ?? editing : null;
@@ -482,7 +493,7 @@ export default function CustomerCompaniesPage({ createPage = false }: { createPa
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.map((c) => (
+              {paged.map((c) => (
                 <TableRow key={c.id}>
                   {/* The wide text columns cap their own width and ellipsize, so a long
                       name or address can't push the table into a horizontal scroll. */}
@@ -566,6 +577,41 @@ export default function CustomerCompaniesPage({ createPage = false }: { createPa
               ))}
             </TableBody>
           </Table>
+        </div>
+      )}
+
+      {!isLoading && filtered.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm">
+          <p className="text-muted-foreground">
+            Showing <span className="tabular-nums text-foreground">{pageStart + 1}–{pageStart + paged.length}</span> of{' '}
+            <span className="tabular-nums text-foreground">{filtered.length}</span>
+          </p>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground">Rows per page</span>
+              <Select value={String(pageSize)} onValueChange={(v) => v && setPageSize(Number(v))}>
+                <SelectTrigger className="h-8 w-20"><SelectValue placeholder="5" /></SelectTrigger>
+                <SelectContent>
+                  {[5, 10, 25, 50, 100].map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="outline" size="icon" className="size-8" title="Previous page"
+                disabled={pageNow <= 1} onClick={() => setPage(pageNow - 1)}
+              >
+                <ChevronLeft className="size-4" />
+              </Button>
+              <span className="px-1 tabular-nums text-muted-foreground">Page {pageNow} of {pageCount}</span>
+              <Button
+                variant="outline" size="icon" className="size-8" title="Next page"
+                disabled={pageNow >= pageCount} onClick={() => setPage(pageNow + 1)}
+              >
+                <ChevronRight className="size-4" />
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -77,6 +77,11 @@ model Client {
   // How many days a resolved ticket waits for the client's acknowledgement
   // before it closes itself. Tenant-editable on the Organization screen.
   ticketAutoCloseDays Int @default(3)
+  // How many times one ticket may be reopened (direct reopens and approved
+  // reopen requests alike, counted by `Ticket.reopenedCount`). Past it the
+  // ticket screen sends the user to raise a new ticket. Tenant-editable on the
+  // Organization screen.
+  ticketMaxReopens Int @default(3)
   // How dates are rendered on this tenant's ticket screens. A token pattern
   // (`dd/MM/yyyy`, `MMM dd, yyyy`, …) chosen on the Organization screen from the
   // DATE_FORMAT option list, so an admin can add a pattern without a deploy.
@@ -210,7 +215,7 @@ model CustomerCompany {
   // support-hours pool, visits allowance, reminders or renewals — the pool
   // resolver answers null for it. Its contract-services fields (contractCrApplicable
   // and friends) still apply, read at client level. Set on the client dialogs only.
-  clientType               String   @default("AMC")        // IMPLEMENTATION | AMC
+  clientType               String   @default("AMC")        // IMPLEMENTATION | INTEGRATION | JOB_WORK | AMC
   // Product contract scope. PRODUCT = each product carries its own warranty/AMC
   // terms; CUSTOMER = one shared contract (dates + hours) covering many products.
   contractScope            String   @default("PRODUCT")   // PRODUCT | CUSTOMER
@@ -610,6 +615,10 @@ model CustomerCompanyProduct {
   // on the client's new tickets. Plain ids: a module deleted from the product
   // just stops matching. Not a term, so a scope switch's reset leaves it alone.
   inactiveModuleIds    String[] @default([])
+  // How this client runs the product (S/4HANA only, on the client product
+  // screen): PRIVATE_CLOUD | PUBLIC_CLOUD | ECC | ON_PREMISES. Null = not set.
+  // Not a term — saved on pick, kept across scope / client-type switches.
+  deploymentModel      String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 

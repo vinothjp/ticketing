@@ -151,6 +151,7 @@ export default function App() {
                           {/* Admin-only sections — non-admins are redirected to their tickets */}
                           <Route path="/users" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><UsersPage /></RoleGate>} />
                           <Route path="/admin/customer-companies" element={<RoleGate allow={isStaff} redirectTo="/tickets"><CustomerCompaniesPage /></RoleGate>} />
+                          <Route path="/admin/customer-companies/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/admin/customer-companies"><CustomerCompaniesPage key="new" createPage /></RoleGate>} />
                           <Route path="/admin/clients/:companyId" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ClientDetailPage /></RoleGate>} />
                           <Route path="/admin/clients/:companyId/assign" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><ClientAssignProductPage /></RoleGate>} />
                           <Route path="/admin/clients/:companyId/products/:cpId" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ClientProductPage /></RoleGate>} />

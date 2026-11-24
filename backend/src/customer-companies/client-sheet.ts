@@ -81,13 +81,13 @@ export const CLIENT_COLUMNS: SheetColumn<ClientSheetRow>[] = [
   {
     header: 'Client type', aliases: ['AMC or Implementation'], width: 16,
     value: (r) => CLIENT_TYPE_LABELS[(r.clientType ?? 'AMC') as ClientType] ?? 'AMC',
-    note: 'AMC or Implementation, for a new client — blank adds it as AMC. An existing client\'s type is changed on its own screen; a row that would change it is refused.',
+    note: 'AMC, Implementation, Integration or Job Work, for a new client — blank adds it as AMC. An existing client\'s type is changed on its own screen; a row that would change it is refused.',
   },
 
   // Read-back context — see the note above on why scope is not importable.
   {
     header: 'Contract scope', width: 22, exportOnly: true,
-    value: (r) => (r.clientType === 'IMPLEMENTATION' ? '—' : r.contractScope === 'CUSTOMER' ? 'One customer contract' : 'Per product'),
+    value: (r) => ((r.clientType ?? 'AMC') !== 'AMC' ? '—' : r.contractScope === 'CUSTOMER' ? 'One customer contract' : 'Per product'),
   },
   { header: 'Contacts', width: 10, exportOnly: true, value: (r) => r.contactCount ?? 0 },
   { header: 'Tickets', width: 10, exportOnly: true, value: (r) => r.ticketCount ?? 0 },
@@ -97,7 +97,7 @@ export const CLIENT_IMPORT_NOTES = [
   'Fill one row per client. The first row must stay as the headers.',
   'A row whose Code (or, failing that, Client name) already exists updates that client instead of adding one.',
   'On an update, a blank cell leaves the stored value alone — clear a field on the client screen instead.',
-  'Client type (AMC or Implementation) is set when a client is added; blank adds it as AMC. To change an existing client\'s type, use its own screen.',
+  'Client type (AMC, Implementation, Integration or Job Work) is set when a client is added; blank adds it as AMC. To change an existing client\'s type, use its own screen.',
   'Contract terms, the purchase order and consultants are set on the client\'s own screen, not here — switching a client\'s contract scope moves which support-hours pool governs them.',
   'A client\'s login users are created by their own admin; importing a client never creates logins.',
 ];

@@ -40,6 +40,7 @@ const FIELD_KEY_TO_DTO_PROP: Record<string, keyof CreateTicketDto> = {
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Fallback reopen window for a tenant whose row predates the setting. */
 const DEFAULT_REOPEN_WINDOW_DAYS = 30;
+const DEFAULT_MAX_REOPENS = 3;
 /** Fallback auto-close window for a tenant whose row predates the setting. */
 const DEFAULT_AUTO_CLOSE_DAYS = 3;
 
@@ -144,6 +145,12 @@ export class TicketsService {
       await this.customerProducts.assertMayRaiseTicket(
         clientId, viewer.customerCompanyId, dto.productId ?? null,
       );
+    } else if (!dto.requestorName?.trim() && !dto.requestorEmail?.trim()) {
+      // Staff raising a ticket with no requester named: the person who raised it
+      // is the requester of record (client request — it used to read "—"). Name
+      // only: no email, so no client-facing mail is redirected to the raiser.
+      const me = await this.prisma.user.findUnique({ where: { id: actorId }, select: { username: true, name: true } });
+      if (me) requestorDefaults = { name: me.name?.trim() || me.username };
     }
     // Modules switched off for this client on their product screen can't be
     // named on their new tickets, and with every module off the product itself
@@ -747,6 +754,7 @@ export class TicketsService {
         : [],
     ]);
 
+    const providerName = (await this.prisma.client.findUnique({ where: { id: clientId }, select: { name: true } }))?.name ?? null;
     const nameById = (rows: { id: string; name: string }[]) => new Map(rows.map((r) => [r.id, r.name]));
     const labelOf = (rows: { value: string; label: string | null }[]) =>
       new Map(rows.map((r) => [r.value, (r.label ?? r.value).trim()]));
@@ -773,7 +781,8 @@ export class TicketsService {
       requestorEmail: t.requestorEmail,
       requestorContact: t.requestorContact,
       department: t.department,
-      customerCompanyName: t.customerCompany?.name ?? t.customerName ?? '',
+      // An internal ticket reads "Internal Ticket / <provider>", as on every screen.
+      customerCompanyName: t.customerCompany?.name ?? t.customerName ?? (providerName ? `Internal Ticket / ${providerName}` : 'Internal Ticket'),
       productName: t.productId ? productNames.get(t.productId) ?? '' : '',
       moduleName: t.moduleId ? moduleNames.get(t.moduleId) ?? '' : '',
       consultantType: t.consultantType,
@@ -823,7 +832,7 @@ export class TicketsService {
       ticket.reopenedById
         ? this.prisma.user.findUnique({ where: { id: ticket.reopenedById }, select: { username: true } })
         : null,
-      this.reopenWindow(clientId, ticket.resolvedAt),
+      this.reopenWindow(clientId, ticket.resolvedAt, ticket.reopenedCount),
       this.autoCloseWindow(clientId, ticket),
       // Total time on the ticket, and what still blocks resolving it. Both are on
       // the ticket itself rather than left to the worklog/task endpoints so a
@@ -861,6 +870,10 @@ export class TicketsService {
       reopenWindowDays: reopenWindow.windowDays,
       reopenDeadline: reopenWindow.reopenDeadline,
       reopenWindowOpen: reopenWindow.windowOpen,
+      // The tenant's cap on reopens and whether this ticket has used it up — the
+      // screen swaps the button for "Create new ticket" the same way.
+      maxReopens: reopenWindow.maxReopens,
+      reopenLimitReached: reopenWindow.limitReached,
       // When this resolution closes itself if nobody acknowledges it. Null on
       // anything that isn't a client ticket waiting for sign-off, so the banner
       // can render the line off its presence alone.
@@ -1667,15 +1680,28 @@ export class TicketsService {
    * `findOne()` projection the ticket screen renders from, so both agree. This is
    * purely about *time* — who may reopen is a separate rule (customer side only).
    */
-  private async reopenWindow(clientId: string, resolvedAt?: Date | null) {
+  private async reopenWindow(clientId: string, resolvedAt?: Date | null, reopenedCount = 0) {
     const client = await this.prisma.client.findUnique({
       where: { id: clientId },
-      select: { ticketReopenWindowDays: true },
+      select: { ticketReopenWindowDays: true, ticketMaxReopens: true },
     });
     const windowDays = client?.ticketReopenWindowDays ?? DEFAULT_REOPEN_WINDOW_DAYS;
-    if (!resolvedAt) return { windowDays, reopenDeadline: null, windowOpen: true };
+    // The tenant's cap on reopens per ticket. Counted off `reopenedCount`, which
+    // every reopen (direct or an approved request) increments.
+    const maxReopens = client?.ticketMaxReopens ?? DEFAULT_MAX_REOPENS;
+    const limitReached = reopenedCount >= maxReopens;
+    if (!resolvedAt) return { windowDays, reopenDeadline: null, windowOpen: true, maxReopens, limitReached };
     const reopenDeadline = new Date(resolvedAt.getTime() + windowDays * DAY_MS);
-    return { windowDays, reopenDeadline, windowOpen: Date.now() <= reopenDeadline.getTime() };
+    return { windowDays, reopenDeadline, windowOpen: Date.now() <= reopenDeadline.getTime(), maxReopens, limitReached };
+  }
+
+  /** Refuses a reopen once the ticket has used up the tenant's allowance. */
+  private assertReopensLeft(window: { maxReopens: number; limitReached: boolean }) {
+    if (window.limitReached) {
+      throw new BadRequestException(
+        `This ticket has already been reopened the maximum of ${window.maxReopens} time${window.maxReopens === 1 ? '' : 's'}. Please create a new ticket instead.`,
+      );
+    }
   }
 
   async reopen(
@@ -1697,14 +1723,21 @@ export class TicketsService {
           : 'Only the client can ask to reopen their own ticket. Raise a new ticket if the issue needs more work.',
       );
     }
+    // Only a ticket that is actually settled can come back — reopening one that is
+    // still being worked would just burn one of its reopens.
+    const liveLabel = await this.statusLabel(clientId, ticket.ticketStatus);
+    if (!ticket.resolvedAt || (liveLabel !== 'resolved' && liveLabel !== 'closed')) {
+      throw new BadRequestException('Only a resolved or closed ticket can be reopened');
+    }
     // A resolved ticket only stays reopenable for the tenant's window; after that
     // the issue is a fresh ticket, not a revival of an old one.
-    const window = await this.reopenWindow(clientId, ticket.resolvedAt);
+    const window = await this.reopenWindow(clientId, ticket.resolvedAt, ticket.reopenedCount);
     if (!window.windowOpen) {
       throw new BadRequestException(
         `This ticket was resolved more than ${window.windowDays} days ago and can no longer be reopened. Please create a new ticket instead.`,
       );
     }
+    this.assertReopensLeft(window);
     // Why it's coming back is the whole point of the action — the agents get it
     // as a notification and the history keeps it.
     const reason = dto?.reason?.trim();
@@ -1855,18 +1888,23 @@ export class TicketsService {
       if (isCustomerSide(viewer)) throw new ForbiddenException('Only the client can ask to reopen their own ticket');
       if (isAdmin(viewer)) throw new BadRequestException('As an Admin you can reopen this ticket directly');
     }
-    if (!ticket.resolvedAt) {
+    // Read the live status, not the `resolvedAt` stamp: staff moving a Resolved
+    // ticket back to In Progress leaves the stamp behind, and a request on a
+    // ticket that is already being worked would burn one of its reopens.
+    const liveLabel = await this.statusLabel(clientId, ticket.ticketStatus);
+    if (!ticket.resolvedAt || (liveLabel !== 'resolved' && liveLabel !== 'closed')) {
       throw new BadRequestException('Only a resolved or closed ticket can be reopened');
     }
     if (ticket.reopenRequestStatus === 'PENDING') {
       throw new BadRequestException('A reopen request for this ticket is already waiting for approval');
     }
-    const window = await this.reopenWindow(clientId, ticket.resolvedAt);
+    const window = await this.reopenWindow(clientId, ticket.resolvedAt, ticket.reopenedCount);
     if (!window.windowOpen) {
       throw new BadRequestException(
         `This ticket was resolved more than ${window.windowDays} days ago and can no longer be reopened. Please create a new ticket instead.`,
       );
     }
+    this.assertReopensLeft(window);
     const reason = dto?.reason?.trim();
     if (!reason) throw new BadRequestException('Tell us why this ticket needs to be reopened');
 
@@ -1970,12 +2008,19 @@ export class TicketsService {
   async approveReopenRequest(id: string, clientId: string, actorId: string, viewer: TicketViewer) {
     const ticket = await this.findOne(id, clientId, viewer);
     this.assertMayDecideReopen(ticket, viewer);
+    // The limit is checked again here: an Admin may have lowered it while the
+    // request sat pending. The decider rejects it instead.
+    if (ticket.resolvedAt && ['resolved', 'closed'].includes(await this.statusLabel(clientId, ticket.ticketStatus))) {
+      this.assertReopensLeft(await this.reopenWindow(clientId, ticket.resolvedAt, ticket.reopenedCount));
+    }
     const reason = ticket.reopenRequestReason ?? 'Reopen requested';
     const decided = { reopenRequestStatus: 'APPROVED', reopenDecidedAt: new Date(), reopenDecidedById: actorId };
     await this.activity.log({ ticketId: id, actorUserId: actorId, type: 'REOPEN_APPROVED', summary: 'Reopen request approved' });
     // A ticket someone already moved out of Resolved/Closed needs no reopening —
-    // the request is simply recorded as approved.
-    const updated = ticket.resolvedAt
+    // the request is simply recorded as approved, and no reopen is counted.
+    const liveLabel = await this.statusLabel(clientId, ticket.ticketStatus);
+    const stillSettled = !!ticket.resolvedAt && (liveLabel === 'resolved' || liveLabel === 'closed');
+    const updated = stillSettled
       ? await this.applyReopen(ticket, clientId, reason, ticket.reopenRequestedById ?? actorId, actorId, decided)
       : await this.prisma.ticket.update({ where: { id }, data: { ...decided, updatedBy: actorId } });
     await this.notifyReopenDecision(clientId, ticket, 'APPROVED', actorId, null);

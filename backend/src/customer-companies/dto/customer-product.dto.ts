@@ -1,5 +1,6 @@
 import { IsString, IsOptional, IsInt, IsNumber, Min, IsDateString, IsNotEmpty, IsIn, IsArray, IsBoolean } from 'class-validator';
 import { CLIENT_TYPES, type ClientType } from '../client-type';
+import { DEPLOYMENT_MODELS, type DeploymentModel } from '../deployment-model';
 
 // Set a company's product contract scope. CUSTOMER carries the shared dates/hours
 // + the list of covered products; PRODUCT just flips back to per-product terms.
@@ -56,6 +57,11 @@ export class SetPoNumberDto {
 // The one product manager (internal staff) for a client's product; null clears it.
 export class SetProductManagerDto {
   @IsOptional() @IsString() userId?: string | null;
+}
+
+// How the client runs this product (S/4HANA's deployment model); null clears it.
+export class SetDeploymentModelDto {
+  @IsOptional() @IsIn(DEPLOYMENT_MODELS) model?: DeploymentModel | null;
 }
 
 // Renew a customer contract into a fresh period (resets the used hours/visits).

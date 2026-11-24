@@ -29,6 +29,14 @@ export class UpdateMyClientDto {
   @Max(365)
   ticketAutoCloseDays?: number;
 
+  // How many times one ticket may be reopened. Defaults to 3; 0 means a
+  // resolved ticket is never reopened and the user raises a new one.
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  ticketMaxReopens?: number;
+
   // Token pattern every date on the ticket screens is rendered with. Picked from
   // the DATE_FORMAT option list, so it is validated as free text here rather
   // than against a fixed enum — an admin may add a pattern of their own.

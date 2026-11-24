@@ -4,6 +4,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, ChevronDown, Download, X, ArrowRight, ArrowUpDown, CalendarDays } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
+import { ticketSourceLabel, useProviderName } from '@/lib/ticketSource';
 import { downloadFilePost, blobErrorMessage } from '../../lib/download';
 import { useAuth } from '../../context/AuthContext';
 import { cn } from '@/lib/utils';
@@ -40,6 +41,7 @@ const SETTLED_STATUSES = '__settled__';
 const PRIORITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
 export default function TicketListPage() {
+  const providerName = useProviderName();
   const { fmtDateTime } = useDateFormat();
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -539,9 +541,8 @@ export default function TicketListPage() {
 
                     {/* Meta line 2 */}
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                      {/* No customer on it = an internal ticket; say so rather than
-                          leaving the line blank. */}
-                      <><span>Customer : <span className="text-foreground">{t.customerCompany?.name ?? 'Internal'}</span></span>{sep}</>
+                      {/* No customer on it = an internal ticket: "Internal Ticket / <provider>". */}
+                      <><span>Customer : <span className="text-foreground">{ticketSourceLabel(t.customerCompany?.name, providerName)}</span></span>{sep}</>
                       {t.department && (<><span>Department : <span className="text-foreground">{t.department}</span></span>{sep}</>)}
                       {t.ticketCategory && (<><span>Category : <span className="text-foreground">{t.ticketCategory}</span></span>{sep}</>)}
                       <AssignedTo

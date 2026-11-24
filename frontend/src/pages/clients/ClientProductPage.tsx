@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { ArrowLeft, ShieldCheck, Wrench, Clock, MapPin, RefreshCw, Trash2, Users } from 'lucide-react';
+import { isServicesOnly, clientTypeLabel } from '@/lib/clientType';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,6 +12,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import ProductIcon from '@/components/ProductIcon';
 import ConsultantGrid from '@/components/ConsultantGrid';
 import ManagerSelect from '@/components/ManagerSelect';
+import DeploymentModelChoice, { hasDeploymentModel } from '@/components/DeploymentModelChoice';
 import SupportHoursChoice from '@/components/SupportHoursChoice';
 import AutoAssignChoice from '@/components/AutoAssignChoice';
 import PurchaseOrderFields from '@/components/PurchaseOrderFields';
@@ -43,6 +45,8 @@ interface Purchased {
   inactiveModuleIds: string[]; activeForClient: boolean;
   // The one project manager for this product at this client (stored as productManagerId).
   productManagerId: string | null; productManagerName: string | null;
+  // How the client runs the product — offered for S/4HANA only.
+  deploymentModel: string | null;
 }
 interface Consultant { id: string; userId: string; username: string | null; name?: string | null; productId: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
 interface CatAgent { user: { id: string; username: string; name?: string | null } }
@@ -71,7 +75,7 @@ export default function ClientProductPage() {
   const qc = useQueryClient();
   const [searchParams] = useSearchParams();
 
-  const { data: company } = useQuery<{ name: string; clientType?: 'IMPLEMENTATION' | 'AMC'; contractScope?: 'PRODUCT' | 'CUSTOMER'; autoAssignTickets?: boolean }>({ queryKey: ['client', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}`)).data });
+  const { data: company } = useQuery<{ name: string; clientType?: string; contractScope?: 'PRODUCT' | 'CUSTOMER'; autoAssignTickets?: boolean }>({ queryKey: ['client', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}`)).data });
   const { data: products = [] } = useQuery<Purchased[]>({ queryKey: ['client-products', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}/purchased-products`)).data });
   const { data: consultants = [] } = useQuery<Consultant[]>({ queryKey: ['client-consultants', companyId], queryFn: async () => (await api.get(`/api/customer-companies/${companyId}/consultants`)).data });
   const { data: catalog = [] } = useQuery<CatProduct[]>({ queryKey: ['products'], queryFn: async () => (await api.get('/api/products')).data });
@@ -190,6 +194,8 @@ export default function ClientProductPage() {
   const setProductManager = (userId: string | null) =>
     run(api.patch(`/api/customer-companies/purchased-products/${cpId}/manager`, { userId }),
       userId ? 'Project manager assigned' : 'Project manager removed');
+  const setDeploymentModel = (model: string) =>
+    run(api.patch(`/api/customer-companies/purchased-products/${cpId}/deployment-model`, { model }), 'Deployment model saved');
   const setModuleActive = (moduleId: string, isActive: boolean) =>
     run(api.patch(`/api/customer-companies/purchased-products/${cpId}/modules/${moduleId}`, { isActive }),
       isActive ? 'Module activated for this client' : 'Module deactivated for this client');
@@ -199,7 +205,8 @@ export default function ClientProductPage() {
   // product page is only for its consultants. Driven by the saved scope, or by
   // navigating here from the customer-contract view (?view=consultants).
   // An Implementation client has no AMC at all, so it gets the same consultants-only page.
-  const impl = company?.clientType === 'IMPLEMENTATION';
+  const impl = isServicesOnly(company?.clientType);
+  const showDeployment = hasDeploymentModel(cp.productName);
   const customerScoped = impl || company?.contractScope === 'CUSTOMER' || searchParams.get('view') === 'consultants';
   // Support-hours meter figures: MONTHLY reads this month's ledger, else the whole-term pool.
   const monthlyHrs = cp.support?.period === 'MONTHLY' && !cp.hours.unlimited;
@@ -224,7 +231,7 @@ export default function ClientProductPage() {
             <h1 className="text-2xl font-bold text-foreground">{cp.productName}</h1>
             {/* An active contract with every module switched off reads as inactive — one pill, not two. */}
             <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${statusCls(productOff ? 'INACTIVE' : cp.status)}`}>{productOff ? 'inactive' : cp.status.toLowerCase()}</span>
-            {impl && <span title="Implementation client — no AMC" className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-xs font-semibold text-violet-700 dark:text-violet-300">Implementation</span>}
+            {impl && <span title={`${clientTypeLabel(company?.clientType)} client — no AMC`} className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-xs font-semibold text-violet-700 dark:text-violet-300">{clientTypeLabel(company?.clientType)}</span>}
           </div>
           {productOff && <div className="text-sm text-muted-foreground">Every module is switched off for this client, so they can't raise tickets on this product. Switch a module back on below to make it active again.</div>}
           {!impl && <div className="text-sm text-muted-foreground">Purchased {fmt(cp.purchaseDate)}</div>}
@@ -232,6 +239,11 @@ export default function ClientProductPage() {
             <ManagerSelect label="Project manager" value={cp.productManagerId} valueName={cp.productManagerName}
               staff={staff} readOnly={!isAdmin} onChange={setProductManager} />
           </div>
+          {/* Without a Terms card (shared contract / services-only client) the
+              deployment model sits up here instead. */}
+          {showDeployment && customerScoped && (
+            <DeploymentModelChoice className="mt-2" value={cp.deploymentModel} disabled={!isAdmin} onChange={setDeploymentModel} />
+          )}
         </div>
         <div className="flex gap-2">
           {!customerScoped && isAdmin && (
@@ -281,6 +293,10 @@ export default function ClientProductPage() {
               <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="AMC" /> Under AMC <span className="text-xs text-muted-foreground">(paid)</span></label>
             </RadioGroup>
             <SupportHoursChoice unlimited={terms.supportHoursUnlimited} disabled={!isAdmin} onChange={(u) => setTerms({ ...terms, supportHoursUnlimited: u })} />
+            {/* Not a term: saves on pick, like Ticket auto assignment below. */}
+            {showDeployment && (
+              <DeploymentModelChoice value={cp.deploymentModel} disabled={!isAdmin} onChange={setDeploymentModel} />
+            )}
             <div className="grid grid-cols-2 gap-2">
               <Num label="Start date" type="date" disabled={!isAdmin} value={terms.startDate} onChange={(v) => setTerms({ ...terms, startDate: v })} />
               <Num label="End date" type="date" min={terms.startDate || undefined} disabled={!isAdmin} value={terms.endDate} onChange={(v) => setTerms({ ...terms, endDate: v })} />

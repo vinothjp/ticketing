@@ -25,6 +25,7 @@ interface MyClientDetail {
   contactEmail?: string | null; contactPhone?: string | null; logoUrl?: string | null;
   ticketReopenWindowDays: number;
   ticketAutoCloseDays: number;
+  ticketMaxReopens: number;
   dateFormat?: string | null;
   timeFormat?: string | null;
   currency?: string | null;
@@ -50,6 +51,10 @@ const orgSchema = z.object({
   ticketAutoCloseDays: z
     .string()
     .refine((v) => Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 365, 'Enter 1 to 365 days'),
+  // How many times one ticket may be reopened. 0 = never.
+  ticketMaxReopens: z
+    .string()
+    .refine((v) => v.trim() !== '' && Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 100, 'Enter 0 to 100'),
   // The token pattern every date on the ticket screens is rendered with. Free
   // text rather than an enum — the choices come from the DATE_FORMAT option
   // list, which an admin may add to.
@@ -81,7 +86,7 @@ export default function OrganizationPage() {
     resolver: zodResolver(orgSchema),
     defaultValues: {
       name: '', contactEmail: '', contactPhone: '',
-      ticketReopenWindowDays: '30', ticketAutoCloseDays: '3',
+      ticketReopenWindowDays: '30', ticketAutoCloseDays: '3', ticketMaxReopens: '3',
       dateFormat: DEFAULT_DATE_FORMAT, timeFormat: DEFAULT_TIME_FORMAT, currency: 'USD',
     },
   });
@@ -94,6 +99,7 @@ export default function OrganizationPage() {
       contactPhone: client.contactPhone ?? '',
       ticketReopenWindowDays: String(client.ticketReopenWindowDays ?? 30),
       ticketAutoCloseDays: String(client.ticketAutoCloseDays ?? 3),
+      ticketMaxReopens: String(client.ticketMaxReopens ?? 3),
       dateFormat: client.dateFormat || DEFAULT_DATE_FORMAT,
       timeFormat: client.timeFormat || DEFAULT_TIME_FORMAT,
       currency: client.currency || 'USD',
@@ -119,6 +125,7 @@ export default function OrganizationPage() {
         contactPhone: values.contactPhone || undefined,
         ticketReopenWindowDays: Number(values.ticketReopenWindowDays),
         ticketAutoCloseDays: Number(values.ticketAutoCloseDays),
+        ticketMaxReopens: Number(values.ticketMaxReopens),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['my-client-detail'] });
@@ -188,7 +195,7 @@ export default function OrganizationPage() {
                   <dd className="font-medium text-foreground">{fmtDate(client.license.expiryDate)}</dd>
                 </div>
                 <div className="flex justify-between gap-3">
-                  <dt className="text-muted-foreground">Status</dt>
+                  <dt className="text-muted-foreground">License status</dt>
                   <dd>
                     <Badge variant={client.license.status === 'ACTIVE' ? 'success' : 'destructive'}>
                       {client.license.status}
@@ -254,10 +261,9 @@ export default function OrganizationPage() {
 
           <Form {...form}>
             <form onSubmit={form.handleSubmit((v) => updateMutation.mutate(v))} className="space-y-4">
-              {/* One two-column grid down the whole form: identity full-width,
-                  then the settings in pairs, with Currency spanning back to full
-                  width so the column never ends on a lone half-row. `sm:` so it
-                  collapses to a single column on a narrow screen. */}
+              {/* Identity full-width, contacts in a pair, then the ticket
+                  settings and the three option lists three to a row. `sm:` so
+                  it collapses to a single column on a narrow screen. */}
               <FormField
                 control={form.control}
                 name="name"
@@ -276,11 +282,10 @@ export default function OrganizationPage() {
                   <Input value={client.code} disabled />
                 </div>
                 <div>
-                  <FormLabel className="mb-2 block">Status</FormLabel>
                   {/* A badge, not an input — the status is set by the platform
-                      admin, so it sits at the input's own height rather than
-                      floating at the top of a taller cell. */}
-                  <div className="flex h-9 items-center">
+                      admin, so it sits on the label's own line. */}
+                  <div className="flex items-center gap-2">
+                    <FormLabel>Organization status</FormLabel>
                     <Badge variant={statusVariant[client.status]}>{client.status}</Badge>
                   </div>
                 </div>
@@ -311,10 +316,10 @@ export default function OrganizationPage() {
                 />
               </div>
 
-              {/* The two ticket windows. Their inputs fill the cell rather than
-                  carrying a max-width of their own, or the pair reads as ragged
-                  against every other row. */}
-              <div className="grid gap-4 sm:grid-cols-2">
+              {/* The ticket reopen/close settings, three to a row. Their inputs
+                  fill the cell rather than carrying a max-width of their own, or
+                  the row reads as ragged against every other one. */}
+              <div className="grid gap-4 sm:grid-cols-3">
                 <FormField
                   control={form.control}
                   name="ticketReopenWindowDays"
@@ -349,11 +354,28 @@ export default function OrganizationPage() {
                     </FormItem>
                   )}
                 />
+                <FormField
+                  control={form.control}
+                  name="ticketMaxReopens"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Ticket reopens allowed</FormLabel>
+                      <FormControl>
+                        <Input type="number" min={0} max={100} step={1} {...field} />
+                      </FormControl>
+                      <p className="text-xs text-muted-foreground">
+                        How many times one ticket can be reopened. Once used up, the ticket screen
+                        asks the user to raise a new ticket instead.
+                      </p>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
               </div>
 
               {/* The three Organization-module option lists. Same control
                   throughout — only the list and the preview differ. */}
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-4 sm:grid-cols-3">
                 <OptionListField
                   control={form.control}
                   name="dateFormat"
@@ -370,15 +392,14 @@ export default function OrganizationPage() {
                   preview={(code) => formatWithPattern(new Date(), code)}
                   hint="Appended to the date wherever a stamp carries the time too."
                 />
+                <OptionListField
+                  control={form.control}
+                  name="currency"
+                  label="Currency"
+                  listId={listId('CURRENCY')}
+                  hint="The currency this organization trades in. Recorded on the organization; no screen reads it yet."
+                />
               </div>
-
-              <OptionListField
-                control={form.control}
-                name="currency"
-                label="Currency"
-                listId={listId('CURRENCY')}
-                hint="The currency this organization trades in. Recorded on the organization; no screen reads it yet."
-              />
 
               <p className="text-xs text-muted-foreground">
                 Date format, time format and currency come from the{' '}

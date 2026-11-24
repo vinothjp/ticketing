@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { getPriorityMeta, formatDueStatus, isTerminalStatus, isOverdueTicket, isCreatedTodayTicket, type TicketSummary } from './tickets/ticketHelpers';
 import { staffLabel } from '@/lib/staffLabel';
+import { ticketSourceLabel, useProviderName } from '@/lib/ticketSource';
 
 interface UserOption { id: string; username: string; name?: string | null; }
 interface MyTask {
@@ -66,6 +67,7 @@ const STATUS_ORDER = [
 const STATUS_LABELS: Record<string, string> = { Open: 'Open tickets' };
 
 export default function DashboardPage() {
+  const providerName = useProviderName();
   const { user } = useAuth();
   const isAdmin = !!user?.roles.includes('Admin');
   const isCustomerAdmin = !!user?.roles.includes('CustomerAdmin');
@@ -351,7 +353,8 @@ export default function DashboardPage() {
                     </div>
                     <div className="shrink-0 text-right text-xs">
                       <div className={due.tone === 'overdue' ? 'text-destructive' : 'text-muted-foreground'}>{due.label}</div>
-                      <div className="text-muted-foreground">{t.requestorName || 'Unassigned requestor'}</div>
+                      {/* Who it is for: the client, or "Internal Ticket / <provider>". */}
+                      <div className="text-muted-foreground">{ticketSourceLabel(t.customerCompany?.name, providerName)}</div>
                     </div>
                   </div>
                   <div className="mt-1.5 flex flex-wrap gap-1.5">

@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Clock, Timer, Paperclip, FolderKanban, X, CheckCircle2, RotateCcw, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
+import { ticketSourceLabel } from '@/lib/ticketSource';
 import { useAuth } from '../../context/AuthContext';
 import { assetUrl } from '@/lib/assetUrl';
 import { Button } from '@/components/ui/button';
@@ -67,6 +68,8 @@ interface TicketDetail {
   reopenWindowDays?: number | null;
   reopenDeadline?: string | null;
   reopenWindowOpen?: boolean;
+  maxReopens?: number | null;
+  reopenLimitReached?: boolean;
   // When an unacknowledged resolution closes itself. Server-side: null unless
   // this ticket is actually waiting on a client's sign-off.
   autoCloseDays?: number | null;
@@ -407,8 +410,8 @@ export default function TicketDetailPage() {
   const mayWithdrawReopen = isCustomerSide || (!ticket.customerCompany && ticket.reopenRequestedById === user?.id);
   // The ticket's sender: the named requestor, else the client company it was
   // raised for, else — an internal ticket — the service provider itself.
-  const requesterLabel =
-    ticket.requestorName?.trim() || ticket.customerCompany?.name || providerClient?.name || 'Internal';
+  const sourceLabel = ticketSourceLabel(ticket.customerCompany?.name, providerClient?.name);
+  const requesterLabel = ticket.requestorName?.trim() || sourceLabel;
   // Secondary lifecycle detail for the banner's second row. Reopened only counts
   // from the second time round, the same threshold the status row always used.
   const resolutionMeta = [
@@ -872,7 +875,7 @@ export default function TicketDetailPage() {
                     </div>
                     <div>
                       <div className="mb-1 text-xs text-muted-foreground">Company</div>
-                      <div className="text-sm text-foreground">{ticket.customerCompany?.name ?? 'Internal'}</div>
+                      <div className="text-sm text-foreground">{sourceLabel}</div>
                       {ticket.customerName && <div className="text-xs text-muted-foreground">Customer: {ticket.customerName}</div>}
                     </div>
                   </div>

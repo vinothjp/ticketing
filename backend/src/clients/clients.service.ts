@@ -155,6 +155,7 @@ export class ClientsService {
     dto: UpdateClientDto & {
       ticketReopenWindowDays?: number;
       ticketAutoCloseDays?: number;
+      ticketMaxReopens?: number;
       dateFormat?: string;
       timeFormat?: string;
       currency?: string;

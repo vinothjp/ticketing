@@ -57,7 +57,7 @@ async function crTerms(prisma: PrismaService, clientId: string, customerCompanyI
   if (!company) return null;
   // An Implementation client has no contract, but keeps its contract services at
   // client level — the same columns a shared contract uses.
-  if (company.contractScope === 'CUSTOMER' || company.clientType === 'IMPLEMENTATION') {
+  if (company.contractScope === 'CUSTOMER' || company.clientType !== 'AMC') {
     return { name: company.name, applicable: company.contractCrApplicable, maxPerMonth: company.contractCrMaxPerMonth };
   }
   const covered = company.products.filter((p) => p.amcCrApplicable);

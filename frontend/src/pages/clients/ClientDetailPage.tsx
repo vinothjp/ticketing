@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { ArrowLeft, Plus, ChevronRight, Users, RefreshCw, ShieldCheck, Wrench, Clock, MapPin } from 'lucide-react';
+import { isServicesOnly } from '@/lib/clientType';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -42,7 +43,7 @@ interface Support {
 }
 interface Contract {
   // IMPLEMENTATION = services only: no contract type, coverage or terms on this screen.
-  clientType?: 'IMPLEMENTATION' | 'AMC';
+  clientType?: string;
   scope: 'PRODUCT' | 'CUSTOMER'; coverageType: 'WARRANTY' | 'AMC'; start: string | null; end: string | null; hoursUnlimited: boolean; hours: number | null; visits: number | null; monthlyCost: number | null;
   productIds: string[]; period: { pct: number; daysLeft: number | null; active: boolean }; hoursPool: CPool; visitsPool: CPool; support?: Support;
   services?: { thirdPartyIntegration: boolean; planRollout: boolean; crApplicable: boolean; crMaxPerMonth: number | null; crMaxHours: number | null };
@@ -190,7 +191,7 @@ export default function ClientDetailPage() {
   // Implementation client has no AMC, so this screen drops the contract type,
   // coverage, terms and support-hours settings and keeps its products, contract
   // services (CR terms), auto assignment and consultants.
-  const impl = contract?.clientType === 'IMPLEMENTATION';
+  const impl = isServicesOnly(contract?.clientType);
   const saveServices = () =>
     run(api.patch(`/api/customer-companies/${companyId}/services`, servicesPayload(services)), 'Contract services saved');
 

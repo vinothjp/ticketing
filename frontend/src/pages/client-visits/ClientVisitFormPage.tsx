@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
+import { isServicesOnly } from '@/lib/clientType';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -93,7 +94,7 @@ export function ClientVisitFormPage() {
   const awaitingNewDate = visit?.status === 'RESCHEDULE_REQUESTED';
 
   const selectedCompany = customerCompanies.find((c) => c.id === customerCompanyId);
-  const productRequired = selectedCompany?.contractScope === 'PRODUCT' && selectedCompany.clientType !== 'IMPLEMENTATION';
+  const productRequired = selectedCompany?.contractScope === 'PRODUCT' && !isServicesOnly(selectedCompany.clientType);
 
   // Product + consultant choices are whatever this client actually has — the
   // products assigned to them and the consultants assigned to them on the

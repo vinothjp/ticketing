@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Trash2, Building2, Boxes, Search, Upload, ShieldCheck, Unlink,
+import { ArrowLeft, Plus, Pencil, Trash2, Building2, Boxes, Search, Upload, ShieldCheck, Unlink,
   Hash, AtSign, Mail, Phone, FileText, MessageSquare, CircleDot } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../lib/api';
+import { CLIENT_TYPE_OPTIONS, clientTypeLabel, isServicesOnly, type ClientType } from '@/lib/clientType';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -53,7 +54,6 @@ interface Company {
   contractScope?: 'PRODUCT' | 'CUSTOMER';
   clientType?: ClientType;
 }
-type ClientType = 'IMPLEMENTATION' | 'AMC';
 interface Contact { id: string; username: string; name?: string | null; email: string; isActive: boolean; isAdmin: boolean; }
 interface AdminUser { id: string; username: string; name?: string | null; email: string; }
 
@@ -81,15 +81,17 @@ const empty = {
 
 /** The list's Type pill: what the client bought and, for AMC, which coverage model. */
 function typePill(c: Company) {
-  if (c.clientType === 'IMPLEMENTATION') {
-    return { label: 'Implementation', title: 'Implementation of services only — no AMC', cls: 'border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300' };
+  if (isServicesOnly(c.clientType)) {
+    const label = clientTypeLabel(c.clientType);
+    return { label, title: `${label} — services only, no AMC`, cls: 'border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300' };
   }
   return c.contractScope === 'CUSTOMER'
     ? { label: 'AMC · One contract', title: 'AMC — one shared contract covering every product', cls: 'border-primary/30 bg-primary/10 text-primary' }
     : { label: 'AMC · Per product', title: 'AMC — each product carries its own warranty/AMC coverage', cls: 'border-primary/30 bg-primary/10 text-primary' };
 }
 
-export default function CustomerCompaniesPage() {
+/** `createPage` renders the New Client full page (route /admin/customer-companies/new) instead of the list. */
+export default function CustomerCompaniesPage({ createPage = false }: { createPage?: boolean }) {
   const { user } = useAuth();
   const isAdmin = !!user?.roles.includes('Admin');
   const qc = useQueryClient();
@@ -99,7 +101,7 @@ export default function CustomerCompaniesPage() {
   const { data: departmentOptions = [] } = useQuery<{ value: string; label: string }[]>({
     queryKey: ['picklist-options', 'department'],
     queryFn: async () => (await api.get('/api/picklist-options', { params: { listKey: 'department' } })).data,
-    enabled: formOpen,
+    enabled: formOpen || createPage,
   });
   const [form, setForm] = useState<typeof empty>(empty);
   const [admin, setAdmin] = useState<AdminInput>(emptyAdmin);
@@ -206,8 +208,11 @@ export default function CustomerCompaniesPage() {
     else clearPending();
   };
 
-  const closeForm = () => { setFormOpen(false); setEditing(null); clearPending(); };
-  const openCreate = () => { setEditing(null); setForm(empty); setAdmin(emptyAdmin); clearPending(); setFormOpen(true); };
+  const closeForm = () => {
+    setFormOpen(false); setEditing(null); clearPending();
+    if (createPage) navigate('/admin/customer-companies');
+  };
+  const openCreate = () => navigate('/admin/customer-companies/new');
   const openEdit = (c: Company) => {
     setEditing(c);
     setAdmin(emptyAdmin);
@@ -229,6 +234,135 @@ export default function CustomerCompaniesPage() {
     if (typeChanged) { setConfirmType(form.clientType as ClientType); return; }
     saveMutation.mutate(form);
   };
+
+  // The form body, shared by the New Client page and the Edit Client dialog —
+  // one copy, so the two can never drift apart.
+  const identityFields = (
+    <>
+    <div className="flex items-center gap-4">
+      <CompanyLogo logoUrl={pendingPreview ?? current?.logoUrl} className="size-16" />
+      <div className="space-y-1.5">
+        <label className="text-sm font-medium">Logo <span className="font-normal text-muted-foreground">(optional)</span></label>
+        <div className="flex items-center gap-2">
+          <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-3 text-sm hover:bg-muted">
+            <Upload className="size-3.5" /> {hasLogo ? 'Change image' : 'Upload image'}
+            <input ref={fileRef} type="file" accept="image/*" className="hidden"
+              onChange={(e) => onPickLogo(e.target.files?.[0])} />
+          </label>
+          {hasLogo && (
+            <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={removeLogo}>Remove</Button>
+          )}
+        </div>
+      </div>
+    </div>
+
+    <div className="space-y-1.5">
+      <label className="text-sm font-medium">Company name</label>
+      <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Globex Ltd" />
+    </div>
+    <div className="grid grid-cols-3 gap-3">
+      {/* Generated by the server when the client is created, so it is shown,
+          never typed — a new client has no number until it is saved. */}
+      <div className="space-y-1.5">
+        <label className="text-sm font-medium">Company code</label>
+        <Input value={current?.companyCode ?? ''} readOnly disabled
+          placeholder={editing ? '—' : 'Generated on save'} title="Generated automatically" />
+      </div>
+      <div className="space-y-1.5">
+        <label className="text-sm font-medium">Short name</label>
+        <Input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="GLX" />
+      </div>
+      <div className="space-y-1.5">
+        <label className="text-sm font-medium">Max contacts</label>
+        <Input type="number" min={1} max={50} value={form.maxContacts} onChange={(e) => setForm({ ...form, maxContacts: Number(e.target.value) })} />
+      </div>
+    </div>
+
+    {/* Which departments this client's New Ticket form offers. Values come
+        from the Department option list; none ticked = every department. */}
+    <div className="space-y-1.5">
+      <label className="text-sm font-medium">Departments</label>
+      <MultiCheckSelect
+        options={departmentOptions}
+        value={form.departments}
+        onChange={(departments) => setForm({ ...form, departments })}
+        emptyLabel="All departments" />
+      <p className="text-xs text-muted-foreground">Shown in the Department dropdown on this client's new tickets.</p>
+    </div>
+
+    <ClientTypeChoice value={form.clientType} onChange={(t) => setForm({ ...form, clientType: t })} />
+    </>
+  );
+  const contactFields = (
+    <>
+    {/* The client's one customer admin, right under its identity: required
+        on create; on edit, set here once if the client has none. */}
+    {editing
+      ? <CustomerAdminSection companyId={editing.id} />
+      : (
+        <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+          <div className="text-sm font-medium">Customer admin <span className="text-destructive">*</span></div>
+          <p className="text-xs text-muted-foreground">
+            The client’s login. They manage their own team after this — you won’t add users here.
+          </p>
+          <CustomerAdminFields value={admin} onChange={setAdmin} />
+        </div>
+      )}
+
+    <div className="space-y-1.5">
+      <label className="text-sm font-medium">Contact email</label>
+      <Input type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} placeholder="ops@globex.example" />
+    </div>
+    <div className="grid grid-cols-2 gap-3">
+      <div className="space-y-1.5">
+        <label className="text-sm font-medium">Contact person</label>
+        <Input value={form.contactPerson} onChange={(e) => setForm({ ...form, contactPerson: e.target.value })} placeholder="e.g. Priya Nair" />
+      </div>
+      <div className="space-y-1.5">
+        <label className="text-sm font-medium">Contact number</label>
+        <Input value={form.contactNumber} onChange={(e) => setForm({ ...form, contactNumber: e.target.value })} placeholder="e.g. +91 98765 43210" />
+      </div>
+    </div>
+
+    {editing && (
+      <>
+        <Button variant="outline" className="w-full" onClick={() => { const id = editing.id; closeForm(); navigate(`/admin/clients/${id}`); }}>
+          <Boxes className="size-4" /> Products &amp; consultants
+        </Button>
+        <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          Products, warranty, AMC and default consultants are managed there.
+        </p>
+        <ContactsSection companyId={editing.id} maxContacts={form.maxContacts} />
+      </>
+    )}
+    </>
+  );
+  const saveDisabled = !form.name.trim() || !form.clientType || (!editing && !adminValid(admin)) || saveMutation.isPending;
+
+  // New Client is a full page (/admin/customer-companies/new), not a dialog.
+  if (createPage) {
+    return (
+      <div className="w-full">
+        <Button variant="ghost" size="sm" onClick={closeForm} className="mb-1 -ml-2">
+          <ArrowLeft className="size-4" /> All clients
+        </Button>
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold tracking-tight">New Client</h1>
+            <p className="text-sm text-muted-foreground">Company name, client type and a customer admin are required.</p>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={closeForm}>Cancel</Button>
+            <Button onClick={onSave} disabled={saveDisabled}>{saveMutation.isPending ? 'Saving…' : 'Create'}</Button>
+          </div>
+        </div>
+        <div className="grid items-start gap-4 lg:grid-cols-2">
+          <section className="space-y-4 rounded-lg border bg-card p-4">{identityFields}</section>
+          <section className="space-y-4 rounded-lg border bg-card p-4">{contactFields}</section>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -254,8 +388,7 @@ export default function CustomerCompaniesPage() {
           <SelectTrigger className="w-40" aria-label="Filter by client type"><SelectValue placeholder="All types" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All types</SelectItem>
-            <SelectItem value="IMPLEMENTATION">Implementation</SelectItem>
-            <SelectItem value="AMC">AMC</SelectItem>
+            {CLIENT_TYPE_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
           </SelectContent>
         </Select>
         {isAdmin && (
@@ -272,108 +405,17 @@ export default function CustomerCompaniesPage() {
         )}
       </div>
 
-      {/* Create / edit dialog */}
+      {/* Edit dialog (New Client is its own page) */}
       <Dialog open={formOpen} onOpenChange={(o) => (o ? setFormOpen(true) : closeForm())}>
         <DialogContent className="flex max-h-[90vh] flex-col">
-          <DialogHeader><DialogTitle>{editing ? 'Edit Client' : 'New Client'}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Edit Client</DialogTitle></DialogHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-            <div className="flex items-center gap-4">
-              <CompanyLogo logoUrl={pendingPreview ?? current?.logoUrl} className="size-16" />
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Logo <span className="font-normal text-muted-foreground">(optional)</span></label>
-                <div className="flex items-center gap-2">
-                  <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-3 text-sm hover:bg-muted">
-                    <Upload className="size-3.5" /> {hasLogo ? 'Change image' : 'Upload image'}
-                    <input ref={fileRef} type="file" accept="image/*" className="hidden"
-                      onChange={(e) => onPickLogo(e.target.files?.[0])} />
-                  </label>
-                  {hasLogo && (
-                    <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={removeLogo}>Remove</Button>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">Company name</label>
-              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Globex Ltd" />
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              {/* Generated by the server when the client is created, so it is shown,
-                  never typed — a new client has no number until it is saved. */}
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Company code</label>
-                <Input value={current?.companyCode ?? ''} readOnly disabled
-                  placeholder={editing ? '—' : 'Generated on save'} title="Generated automatically" />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Short name</label>
-                <Input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="GLX" />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Max contacts</label>
-                <Input type="number" min={1} max={50} value={form.maxContacts} onChange={(e) => setForm({ ...form, maxContacts: Number(e.target.value) })} />
-              </div>
-            </div>
-
-            {/* Which departments this client's New Ticket form offers. Values come
-                from the Department option list; none ticked = every department. */}
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">Departments</label>
-              <MultiCheckSelect
-                options={departmentOptions}
-                value={form.departments}
-                onChange={(departments) => setForm({ ...form, departments })}
-                emptyLabel="All departments" />
-              <p className="text-xs text-muted-foreground">Shown in the Department dropdown on this client's new tickets.</p>
-            </div>
-
-            <ClientTypeChoice value={form.clientType} onChange={(t) => setForm({ ...form, clientType: t })} />
-
-            {/* The client's one customer admin, right under its identity: required
-                on create; on edit, set here once if the client has none. */}
-            {editing
-              ? <CustomerAdminSection companyId={editing.id} />
-              : (
-                <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
-                  <div className="text-sm font-medium">Customer admin <span className="text-destructive">*</span></div>
-                  <p className="text-xs text-muted-foreground">
-                    The client’s login. They manage their own team after this — you won’t add users here.
-                  </p>
-                  <CustomerAdminFields value={admin} onChange={setAdmin} />
-                </div>
-              )}
-
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">Contact email</label>
-              <Input type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} placeholder="ops@globex.example" />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Contact person</label>
-                <Input value={form.contactPerson} onChange={(e) => setForm({ ...form, contactPerson: e.target.value })} placeholder="e.g. Priya Nair" />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Contact number</label>
-                <Input value={form.contactNumber} onChange={(e) => setForm({ ...form, contactNumber: e.target.value })} placeholder="e.g. +91 98765 43210" />
-              </div>
-            </div>
-
-            {editing && (
-              <>
-                <Button variant="outline" className="w-full" onClick={() => { const id = editing.id; closeForm(); navigate(`/admin/clients/${id}`); }}>
-                  <Boxes className="size-4" /> Products &amp; consultants
-                </Button>
-                <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                  Products, warranty, AMC and default consultants are managed there.
-                </p>
-                <ContactsSection companyId={editing.id} maxContacts={form.maxContacts} />
-              </>
-            )}
+            {identityFields}
+            {contactFields}
           </div>
           <DialogFooter>
-            <Button onClick={onSave} disabled={!form.name.trim() || !form.clientType || (!editing && !adminValid(admin)) || saveMutation.isPending}>
-              {saveMutation.isPending ? 'Saving…' : editing ? 'Save' : 'Create'}
+            <Button onClick={onSave} disabled={saveDisabled}>
+              {saveMutation.isPending ? 'Saving…' : 'Save'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -383,11 +425,15 @@ export default function CustomerCompaniesPage() {
       <Dialog open={!!confirmType} onOpenChange={(o) => { if (!o) setConfirmType(null); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Switch {editing?.name ?? 'this client'} to {confirmType === 'IMPLEMENTATION' ? 'Implementation' : 'AMC'}?</DialogTitle>
+            <DialogTitle>Switch {editing?.name ?? 'this client'} to {clientTypeLabel(confirmType)}?</DialogTitle>
           </DialogHeader>
-          {confirmType === 'IMPLEMENTATION' ? (
+          {isServicesOnly(confirmType) && isServicesOnly(editing?.clientType) ? (
+            <p className="text-sm text-muted-foreground">
+              Neither type carries an AMC, so nothing is cleared — products, consultants, contract services and tickets are kept.
+            </p>
+          ) : isServicesOnly(confirmType) ? (
             <div className="space-y-2 text-sm text-muted-foreground">
-              <p>Implementation clients have no AMC. Once you switch:</p>
+              <p>{clientTypeLabel(confirmType)} clients have no AMC. Once you switch:</p>
               <ul className="list-disc space-y-1 pl-5">
                 <li>The AMC terms, support-hours pool, visits allowance, contract services and purchase order are <strong className="text-foreground">cleared</strong> — on this client and on each of its products.</li>
                 <li>Tickets are no longer counted against support hours, and no expiry or hours-low reminders go out.</li>
@@ -675,37 +721,21 @@ function CustomerAdminSection({ companyId }: { companyId: string }) {
 }
 
 /**
- * What the client bought, as two choice cards. Set here and only here — the
+ * What the client bought, as plain radio options. Set here and only here — the
  * client screen carries just the AMC contract type. Changing it on Edit is
  * confirmed before it is written (see `onSave`).
  */
 function ClientTypeChoice({ value, onChange }: { value: ClientType | ''; onChange: (t: ClientType) => void }) {
-  const options: { value: ClientType; label: string; hint: string }[] = [
-    { value: 'IMPLEMENTATION', label: 'Implementation', hint: 'Implementation of services only. No AMC, support hours or coverage.' },
-    { value: 'AMC', label: 'AMC', hint: 'Implementation + AMC: contract terms, support hours, coverage and renewals.' },
-  ];
   return (
     <div className="space-y-1.5">
       <div className="text-sm font-medium">Client type <span className="text-destructive">*</span></div>
-      <div role="radiogroup" aria-label="Client type" className="grid gap-2 sm:grid-cols-2">
-        {options.map((o) => {
-          const on = value === o.value;
-          return (
-            <button key={o.value} type="button" role="radio" aria-checked={on}
-              onClick={() => { if (!on) onChange(o.value); }}
-              className={`flex items-start gap-2.5 rounded-lg border p-3 text-left transition-colors ${
-                on ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:border-primary/50 hover:bg-muted/40'}`}>
-              <span className={`mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border ${on ? 'border-primary' : 'border-muted-foreground/50'}`}>
-                {on && <span className="size-2 rounded-full bg-primary" />}
-              </span>
-              <span className="min-w-0">
-                <span className="block text-sm font-semibold text-foreground">{o.label}</span>
-                <span className="block text-xs text-muted-foreground">{o.hint}</span>
-              </span>
-            </button>
-          );
-        })}
-      </div>
+      {/* Hand-rolled RadioGroup fires on every click — ignore a re-pick. */}
+      <RadioGroup value={value} onValueChange={(v) => { if (v && v !== value) onChange(v as ClientType); }}
+        className="flex flex-wrap gap-x-5 gap-y-2">
+        {CLIENT_TYPE_OPTIONS.map((o) => (
+          <label key={o.value} className="flex items-center gap-2 text-sm"><RadioGroupItem value={o.value} /> {o.label}</label>
+        ))}
+      </RadioGroup>
     </div>
   );
 }

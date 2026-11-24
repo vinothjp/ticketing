@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Boxes, Plus, ShieldCheck, Wrench, Clock, CalendarClock, Users, MapPin } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { isServicesOnly } from '@/lib/clientType';
+import { deploymentModelLabel } from '@/components/DeploymentModelChoice';
 import api from '../lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -23,6 +25,8 @@ interface MyProduct {
   hours: Pool; visits: Pool; paidTerms: PaidTerms;
   // False once the provider has switched off every module of it for you.
   activeForClient: boolean;
+  // How you run it (S/4HANA only) — set by the provider; null when not chosen.
+  deploymentModel?: string | null;
 }
 interface CatalogueItem { id: string; name: string; code: string; description?: string | null }
 interface ProductReq { id: string; product: { name: string; code: string }; status: string; note?: string | null; decisionNote?: string | null; createdAt: string }
@@ -93,7 +97,7 @@ export default function MyProductsPage() {
   const [note, setNote] = useState('');
 
   const { data: contract } = useQuery<{
-    clientType?: 'IMPLEMENTATION' | 'AMC';
+    clientType?: string;
     scope: 'PRODUCT' | 'CUSTOMER'; start: string | null; end: string | null; hours: number | null; visits: number | null;
     period?: { pct: number; daysLeft: number | null; active: boolean };
     hoursPool?: Pool;
@@ -108,7 +112,7 @@ export default function MyProductsPage() {
   });
   // An Implementation client bought services only — no warranty, AMC, hours or
   // visits to count down — so each product card shows just the product.
-  const impl = contract?.clientType === 'IMPLEMENTATION';
+  const impl = isServicesOnly(contract?.clientType);
   const customerScope = !impl && contract?.scope === 'CUSTOMER';
   // Contract-period progress for the customer-specific view (from the shared pool).
   const cPct = contract?.period?.pct ?? 0;
@@ -244,6 +248,9 @@ export default function MyProductsPage() {
                       <div className="flex items-center gap-2">
                         <span className="text-base font-semibold text-foreground">{p.productName}</span>
                         <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${b.cls}`}>{b.label}</span>
+                        {deploymentModelLabel(p.deploymentModel) && (
+                          <span className="text-sm text-muted-foreground">({deploymentModelLabel(p.deploymentModel)})</span>
+                        )}
                       </div>
                       <div className="text-xs text-muted-foreground">Purchased {fmt(p.purchaseDate)}</div>
                     </div>

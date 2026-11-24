@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { ArrowLeft, Paperclip, FileText, X, Plus, Users } from 'lucide-react';
+import { isServicesOnly, clientTypeLabel } from '@/lib/clientType';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -19,7 +20,7 @@ interface CatAgent { track: string; isPrimary?: boolean; user: { id: string; use
 interface CatModule { id: string; name: string; consultants: CatAgent[] }
 interface CatProduct { id: string; name: string; imageUrl?: string | null; modules: CatModule[]; consultants: CatAgent[] }
 interface Purchased { productId: string }
-interface Client { id: string; name: string; clientType?: 'IMPLEMENTATION' | 'AMC'; contractScope?: 'PRODUCT' | 'CUSTOMER'; autoAssignTickets?: boolean }
+interface Client { id: string; name: string; clientType?: string; contractScope?: 'PRODUCT' | 'CUSTOMER'; autoAssignTickets?: boolean }
 interface StaffUser { id: string; username: string; name?: string | null }
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -42,7 +43,7 @@ export default function ClientAssignProductPage() {
   // used — the contract owns them — so this form only picks the product and its
   // consultants, the same way ClientProductPage hides its Coverage/Terms.
   // An Implementation client has no terms to enter either: only the product is recorded.
-  const impl = client?.clientType === 'IMPLEMENTATION';
+  const impl = isServicesOnly(client?.clientType);
   const customerScoped = impl || client?.contractScope === 'CUSTOMER';
 
   const owned = new Set(products.map((p) => p.productId));
@@ -197,7 +198,7 @@ export default function ClientAssignProductPage() {
 
         {impl ? (
           <p className="max-w-2xl rounded-lg border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-            This is an <span className="font-medium text-foreground">Implementation</span> client, so there are no warranty or
+            This is an <span className="font-medium text-foreground">{clientTypeLabel(client?.clientType)}</span> client, so there are no warranty or
             AMC terms to enter — only the product and its consultants are recorded.
           </p>
         ) : customerScoped ? (

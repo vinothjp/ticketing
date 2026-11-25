@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Plus, Pencil, Trash2, Building2, Boxes, Search, Upload, ShieldCheck, Unlink,
-  Hash, AtSign, Mail, Phone, FileText, MessageSquare, CircleDot, ChevronLeft, ChevronRight } from 'lucide-react';
+  Hash, AtSign, Mail, Phone, FileText, MessageSquare, CircleDot, ChevronLeft, ChevronRight,
+  Layers, UserRound, Users, Ticket, ArrowRight } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../lib/api';
@@ -90,18 +91,79 @@ function typePill(c: Company) {
     : { label: 'AMC · Per product', title: 'AMC — each product carries its own warranty/AMC coverage', cls: 'border-primary/30 bg-primary/10 text-primary' };
 }
 
-/** `createPage` renders the New Client full page (route /admin/customer-companies/new) instead of the list. */
-export default function CustomerCompaniesPage({ createPage = false }: { createPage?: boolean }) {
+/**
+ * A titled card on the New / Edit Client page: icon, heading and a one-line
+ * description in a tinted header, the fields below it.
+ */
+function FormSection({ icon: Icon, title, description, children }: {
+  icon: LucideIcon; title: ReactNode; description?: ReactNode; children: ReactNode;
+}) {
+  return (
+    <section className="overflow-hidden rounded-xl border bg-card shadow-xs">
+      <header className="flex items-center gap-3 border-b bg-muted/30 px-5 py-3">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <Icon className="size-4" />
+        </span>
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+          {description && <p className="text-xs text-muted-foreground">{description}</p>}
+        </div>
+      </header>
+      <div className="space-y-4 p-5">{children}</div>
+    </section>
+  );
+}
+
+/**
+ * A group heading inside a FormSection: small icon and label, an optional
+ * one-line description. Spacing alone separates the groups — no divider lines
+ * (client request).
+ */
+function SubHeading({ icon: Icon, required, description, children }: {
+  icon: LucideIcon; required?: boolean; description?: ReactNode; children: ReactNode;
+}) {
+  return (
+    <div className="pt-2 first:pt-0">
+      <div className="flex items-center gap-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+        <Icon className="size-3.5" />
+        {children}{required && <span className="-ml-1.5 text-destructive">*</span>}
+      </div>
+      {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
+    </div>
+  );
+}
+
+/** A labelled form field: label (with a required star), control, optional hint. */
+function Field({ label, required, hint, children, className = '' }: {
+  label: ReactNode; required?: boolean; hint?: ReactNode; children: ReactNode; className?: string;
+}) {
+  return (
+    <div className={`space-y-1.5 ${className}`}>
+      <label className="text-sm font-medium text-foreground">
+        {label}{required && <span className="ml-0.5 text-destructive">*</span>}
+      </label>
+      {children}
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+/**
+ * `createPage` renders the New Client full page (/admin/customer-companies/new),
+ * `editPage` the Edit Client page (/admin/customer-companies/:companyId/edit);
+ * neither renders the list. Both share one form, so they can never drift apart.
+ */
+export default function CustomerCompaniesPage({ createPage = false, editPage = false }: { createPage?: boolean; editPage?: boolean }) {
   const { user } = useAuth();
   const isAdmin = !!user?.roles.includes('Admin');
   const qc = useQueryClient();
-  const [formOpen, setFormOpen] = useState(false);
-  const [editing, setEditing] = useState<Company | null>(null);
-  // The Department option list, for the dialog's Departments picker (active values only).
+  const { companyId: editId } = useParams<{ companyId?: string }>();
+  const formPage = createPage || editPage;
+  // The Department option list, for the form's Departments picker (active values only).
   const { data: departmentOptions = [] } = useQuery<{ value: string; label: string }[]>({
     queryKey: ['picklist-options', 'department'],
     queryFn: async () => (await api.get('/api/picklist-options', { params: { listKey: 'department' } })).data,
-    enabled: formOpen || createPage,
+    enabled: formPage,
   });
   const [form, setForm] = useState<typeof empty>(empty);
   const [admin, setAdmin] = useState<AdminInput>(emptyAdmin);
@@ -141,8 +203,23 @@ export default function CustomerCompaniesPage({ createPage = false }: { createPa
   const paged = filtered.slice(pageStart, pageStart + pageSize);
   useEffect(() => { setPage(1); }, [q, typeFilter, pageSize]);
 
-  // The edited client, re-read from the list so the logo refreshes after upload.
-  const current = editing ? companies.find((c) => c.id === editing.id) ?? editing : null;
+  // The edited client, read from the list query so the logo refreshes after upload.
+  const editing = editPage ? companies.find((c) => c.id === editId) ?? null : null;
+  const current = editing;
+
+  // Hydrate the Edit form once per client — never again on a refetch, which
+  // would throw away whatever the admin has typed.
+  const hydratedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!editing || hydratedFor.current === editing.id) return;
+    hydratedFor.current = editing.id;
+    setForm({
+      ...empty, name: editing.name, code: editing.code ?? '', contactEmail: editing.contactEmail ?? '',
+      contactPerson: editing.contactPerson ?? '', contactNumber: editing.contactNumber ?? '', maxContacts: editing.maxContacts,
+      departments: editing.departments ?? [],
+      clientType: editing.clientType ?? 'AMC',
+    });
+  }, [editing]);
 
   useEffect(() => () => { if (pendingPreview) URL.revokeObjectURL(pendingPreview); }, [pendingPreview]);
 
@@ -220,22 +297,11 @@ export default function CustomerCompaniesPage({ createPage = false }: { createPa
   };
 
   const closeForm = () => {
-    setFormOpen(false); setEditing(null); clearPending();
-    if (createPage) navigate('/admin/customer-companies');
+    clearPending();
+    navigate('/admin/customer-companies');
   };
   const openCreate = () => navigate('/admin/customer-companies/new');
-  const openEdit = (c: Company) => {
-    setEditing(c);
-    setAdmin(emptyAdmin);
-    clearPending();
-    setForm({
-      ...empty, name: c.name, code: c.code ?? '', contactEmail: c.contactEmail ?? '',
-      contactPerson: c.contactPerson ?? '', contactNumber: c.contactNumber ?? '', maxContacts: c.maxContacts,
-      departments: c.departments ?? [],
-      clientType: c.clientType ?? 'AMC',
-    });
-    setFormOpen(true);
-  };
+  const openEdit = (c: Company) => navigate(`/admin/customer-companies/${c.id}/edit`);
 
   const hasLogo = editing ? !!current?.logoUrl : !!pendingPreview;
 
@@ -246,131 +312,211 @@ export default function CustomerCompaniesPage({ createPage = false }: { createPa
     saveMutation.mutate(form);
   };
 
-  // The form body, shared by the New Client page and the Edit Client dialog —
-  // one copy, so the two can never drift apart.
-  const identityFields = (
-    <>
-    <div className="flex items-center gap-4">
-      <CompanyLogo logoUrl={pendingPreview ?? current?.logoUrl} className="size-16" />
-      <div className="space-y-1.5">
-        <label className="text-sm font-medium">Logo <span className="font-normal text-muted-foreground">(optional)</span></label>
-        <div className="flex items-center gap-2">
-          <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-3 text-sm hover:bg-muted">
-            <Upload className="size-3.5" /> {hasLogo ? 'Change image' : 'Upload image'}
-            <input ref={fileRef} type="file" accept="image/*" className="hidden"
-              onChange={(e) => onPickLogo(e.target.files?.[0])} />
-          </label>
-          {hasLogo && (
-            <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={removeLogo}>Remove</Button>
-          )}
-        </div>
-      </div>
-    </div>
-
-    <div className="space-y-1.5">
-      <label className="text-sm font-medium">Company name</label>
-      <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Globex Ltd" />
-    </div>
-    <div className="grid grid-cols-3 gap-3">
-      {/* Generated by the server when the client is created, so it is shown,
-          never typed — a new client has no number until it is saved. */}
-      <div className="space-y-1.5">
-        <label className="text-sm font-medium">Company code</label>
-        <Input value={current?.companyCode ?? ''} readOnly disabled
-          placeholder={editing ? '—' : 'Generated on save'} title="Generated automatically" />
-      </div>
-      <div className="space-y-1.5">
-        <label className="text-sm font-medium">Short name</label>
-        <Input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="GLX" />
-      </div>
-      <div className="space-y-1.5">
-        <label className="text-sm font-medium">Max contacts</label>
-        <Input type="number" min={1} max={50} value={form.maxContacts} onChange={(e) => setForm({ ...form, maxContacts: Number(e.target.value) })} />
-      </div>
-    </div>
-
-    {/* Which departments this client's New Ticket form offers. Values come
-        from the Department option list; none ticked = every department. */}
-    <div className="space-y-1.5">
-      <label className="text-sm font-medium">Departments</label>
-      <MultiCheckSelect
-        options={departmentOptions}
-        value={form.departments}
-        onChange={(departments) => setForm({ ...form, departments })}
-        emptyLabel="All departments" />
-      <p className="text-xs text-muted-foreground">Shown in the Department dropdown on this client's new tickets.</p>
-    </div>
-
-    <ClientTypeChoice value={form.clientType} onChange={(t) => setForm({ ...form, clientType: t })} />
-    </>
-  );
-  const contactFields = (
-    <>
-    {/* The client's one customer admin, right under its identity: required
-        on create; on edit, set here once if the client has none. */}
-    {editing
-      ? <CustomerAdminSection companyId={editing.id} />
-      : (
-        <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
-          <div className="text-sm font-medium">Customer admin <span className="text-destructive">*</span></div>
-          <p className="text-xs text-muted-foreground">
-            The client’s login. They manage their own team after this — you won’t add users here.
-          </p>
-          <CustomerAdminFields value={admin} onChange={setAdmin} />
-        </div>
-      )}
-
-    <div className="space-y-1.5">
-      <label className="text-sm font-medium">Contact email</label>
-      <Input type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} placeholder="ops@globex.example" />
-    </div>
-    <div className="grid grid-cols-2 gap-3">
-      <div className="space-y-1.5">
-        <label className="text-sm font-medium">Contact person</label>
-        <Input value={form.contactPerson} onChange={(e) => setForm({ ...form, contactPerson: e.target.value })} placeholder="e.g. Priya Nair" />
-      </div>
-      <div className="space-y-1.5">
-        <label className="text-sm font-medium">Contact number</label>
-        <Input value={form.contactNumber} onChange={(e) => setForm({ ...form, contactNumber: e.target.value })} placeholder="e.g. +91 98765 43210" />
-      </div>
-    </div>
-
-    {editing && (
-      <>
-        <Button variant="outline" className="w-full" onClick={() => { const id = editing.id; closeForm(); navigate(`/admin/clients/${id}`); }}>
-          <Boxes className="size-4" /> Products &amp; consultants
-        </Button>
-        <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-          Products, warranty, AMC and default consultants are managed there.
-        </p>
-        <ContactsSection companyId={editing.id} maxContacts={form.maxContacts} />
-      </>
-    )}
-    </>
-  );
   const saveDisabled = !form.name.trim() || !form.clientType || (!editing && !adminValid(admin)) || saveMutation.isPending;
 
-  // New Client is a full page (/admin/customer-companies/new), not a dialog.
-  if (createPage) {
-    return (
-      <div className="w-full">
-        <Button variant="ghost" size="sm" onClick={closeForm} className="mb-1 -ml-2">
-          <ArrowLeft className="size-4" /> All clients
+  // Changing what a client bought, confirmed before anything is written.
+  const confirmDialog = (
+    <Dialog open={!!confirmType} onOpenChange={(o) => { if (!o) setConfirmType(null); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Switch {editing?.name ?? 'this client'} to {clientTypeLabel(confirmType)}?</DialogTitle>
+        </DialogHeader>
+        {isServicesOnly(confirmType) && isServicesOnly(editing?.clientType) ? (
+          <p className="text-sm text-muted-foreground">
+            Neither type carries an AMC, so nothing is cleared — products, consultants, contract services and tickets are kept.
+          </p>
+        ) : isServicesOnly(confirmType) ? (
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <p>{clientTypeLabel(confirmType)} clients have no AMC. Once you switch:</p>
+            <ul className="list-disc space-y-1 pl-5">
+              <li>The AMC terms, support-hours pool, visits allowance, contract services and purchase order are <strong className="text-foreground">cleared</strong> — on this client and on each of its products.</li>
+              <li>Tickets are no longer counted against support hours, and no expiry or hours-low reminders go out.</li>
+              <li>Products, consultants and existing tickets are <strong className="text-foreground">kept</strong>.</li>
+            </ul>
+            <p>Switching back to AMC later starts with blank terms to fill in.</p>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            The client gets a support contract. It starts as <strong className="text-foreground">Per product</strong> with
+            blank terms — choose the contract type on the client screen, then enter and save the terms. Products,
+            consultants and tickets are kept.
+          </p>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setConfirmType(null)}>Cancel</Button>
+          <Button disabled={saveMutation.isPending} onClick={() => { setConfirmType(null); saveMutation.mutate(form); }}>Switch</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+
+  // New Client and Edit Client are full pages sharing this one form.
+  if (formPage) {
+    if (editPage && !editing) {
+      return (
+        <div className="mx-auto w-full max-w-6xl">
+          <Button variant="ghost" size="sm" onClick={closeForm} className="mb-2 -ml-2">
+            <ArrowLeft className="size-4" /> All clients
+          </Button>
+          <p className="text-sm text-muted-foreground">{isLoading ? 'Loading…' : 'Client not found.'}</p>
+        </div>
+      );
+    }
+    const actions = (
+      <div className="flex gap-2">
+        <Button variant="outline" onClick={closeForm}>Cancel</Button>
+        <Button onClick={onSave} disabled={saveDisabled}>
+          {saveMutation.isPending ? 'Saving…' : editing ? 'Save changes' : 'Create client'}
         </Button>
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-bold tracking-tight">New Client</h1>
-            <p className="text-sm text-muted-foreground">Company name, client type and a customer admin are required.</p>
+      </div>
+    );
+    return (
+      <div className="mx-auto w-full max-w-6xl">
+        {/* Top row: back link on the left; on Edit, Cancel / Save on the right
+            (New puts them in the heading row, where Edit has its products card). */}
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <Button variant="ghost" size="sm" onClick={closeForm} className="-ml-2 text-muted-foreground">
+            <ArrowLeft className="size-4" /> All clients
+          </Button>
+          {editing && actions}
+        </div>
+
+        {/* Heading: the client as it will read in the list; on Edit, the way out
+            to its products and consultants sits on the right. */}
+        {/* One 2/3 + 1/3 grid for the heading and the panels, so both panels start
+            on one line. Over the right column sits the Products & consultants card
+            on Edit, and Cancel / Create on New (which has no card to show). */}
+        <div className="grid items-start gap-5 lg:grid-cols-3">
+          <div className="flex min-w-0 items-center gap-4 self-center lg:col-span-2">
+            {editing && <CompanyLogo logoUrl={current?.logoUrl} className="size-14 shrink-0 rounded-xl border" />}
+            <div className="min-w-0">
+              <h1 className="truncate text-2xl font-bold tracking-tight" title={editing?.name}>
+                {editing ? form.name.trim() || editing.name : 'New Client'}
+              </h1>
+              {editing ? (
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                  {editing.companyCode && <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{editing.companyCode}</code>}
+                  <span className={`whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-semibold ${typePill(editing).cls}`}>
+                    {typePill(editing).label}
+                  </span>
+                  <span>Edit client details</span>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">Fields marked <span className="text-destructive">*</span> are required.</p>
+              )}
+            </div>
           </div>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={closeForm}>Cancel</Button>
-            <Button onClick={onSave} disabled={saveDisabled}>{saveMutation.isPending ? 'Saving…' : 'Create'}</Button>
+          {editing && (
+            <button type="button"
+              onClick={() => navigate(`/admin/clients/${editing.id}`)}
+              className="group flex w-full items-center gap-3 self-center rounded-xl border bg-card p-4 text-left shadow-xs transition-colors hover:border-primary/40 hover:bg-primary/5">
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Boxes className="size-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold text-foreground">Products &amp; consultants</span>
+                <span className="block text-xs text-muted-foreground">Products, warranty, AMC and default consultants.</span>
+              </span>
+              <ArrowRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+            </button>
+          )}
+          {!editing && <div className="flex justify-end self-center">{actions}</div>}
+
+          {/* The client's own details in one card, split into Company · Client
+              type · Contact by dividers rather than three separate cards. */}
+          <div className="lg:col-span-2">
+            <FormSection icon={Building2} title="Client details" description="Who the client is, what they bought and how to reach them.">
+              <div className="flex items-center gap-4 rounded-lg border border-dashed p-3">
+                <CompanyLogo logoUrl={pendingPreview ?? current?.logoUrl} className="size-14 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium">Logo <span className="font-normal text-muted-foreground">(optional)</span></div>
+                  <p className="text-xs text-muted-foreground">PNG, JPG or SVG, up to 2 MB.</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border bg-background px-3 text-sm hover:bg-muted">
+                    <Upload className="size-3.5" /> {hasLogo ? 'Change' : 'Upload'}
+                    <input ref={fileRef} type="file" accept="image/*" className="hidden"
+                      onChange={(e) => onPickLogo(e.target.files?.[0])} />
+                  </label>
+                  {hasLogo && (
+                    <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={removeLogo}>Remove</Button>
+                  )}
+                </div>
+              </div>
+
+              <Field label="Company name" required>
+                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Globex Ltd" />
+              </Field>
+              <div className="grid gap-4 sm:grid-cols-3">
+                {/* Generated by the server when the client is created, so it is shown,
+                    never typed — a new client has no number until it is saved. */}
+                <Field label="Company code">
+                  <Input value={current?.companyCode ?? ''} readOnly disabled
+                    placeholder={editing ? '—' : 'Generated on save'} title="Generated automatically" />
+                </Field>
+                <Field label="Short name">
+                  <Input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="GLX" />
+                </Field>
+                <Field label="Max contacts">
+                  <Input type="number" min={1} max={50} value={form.maxContacts} onChange={(e) => setForm({ ...form, maxContacts: Number(e.target.value) })} />
+                </Field>
+              </div>
+
+              <SubHeading icon={Layers} required>Client type</SubHeading>
+              <ClientTypeChoice value={form.clientType} onChange={(t) => setForm({ ...form, clientType: t })} />
+
+              <SubHeading icon={UserRound}>Contact</SubHeading>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Contact person">
+                  <Input value={form.contactPerson} onChange={(e) => setForm({ ...form, contactPerson: e.target.value })} placeholder="e.g. Priya Nair" />
+                </Field>
+                <Field label="Contact number">
+                  <Input value={form.contactNumber} onChange={(e) => setForm({ ...form, contactNumber: e.target.value })} placeholder="e.g. +91 98765 43210" />
+                </Field>
+              </div>
+              <Field label="Contact email">
+                <Input type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} placeholder="ops@globex.example" />
+              </Field>
+            </FormSection>
+          </div>
+
+          <div className="space-y-5">
+            {/* Login, departments and people in one card, like the left side. */}
+            <FormSection icon={ShieldCheck} title="Client access" description="Who logs in for the client and what they can raise.">
+              {/* The client's one customer admin: required on create; on edit, shown
+                  with Unlink, or set here once if the client has none. */}
+              <SubHeading icon={ShieldCheck} required={!editing}
+                description="The client’s login. They manage their own team after this.">
+                Customer admin
+              </SubHeading>
+              {editing
+                ? <CustomerAdminSection companyId={editing.id} />
+                : <CustomerAdminFields value={admin} onChange={setAdmin} />}
+
+              {/* Which departments this client's New Ticket form offers. Values come
+                  from the Department option list; none ticked = every department. */}
+              <SubHeading icon={Ticket}
+                description="Shown in the Department dropdown on this client's new tickets. Leave empty for all.">
+                Departments involved
+              </SubHeading>
+              <MultiCheckSelect listBelow
+                options={departmentOptions}
+                value={form.departments}
+                onChange={(departments) => setForm({ ...form, departments })}
+                emptyLabel="All departments" />
+
+              {editing && (
+                <>
+                  <SubHeading icon={Users} description="Managed by the client’s admin in My Team.">People</SubHeading>
+                  <ContactsSection companyId={editing.id} maxContacts={form.maxContacts} />
+                </>
+              )}
+            </FormSection>
           </div>
         </div>
-        <div className="grid items-start gap-4 lg:grid-cols-2">
-          <section className="space-y-4 rounded-lg border bg-card p-4">{identityFields}</section>
-          <section className="space-y-4 rounded-lg border bg-card p-4">{contactFields}</section>
-        </div>
+
+        <div className="mt-6 flex justify-end border-t pt-4">{actions}</div>
+        {confirmDialog}
       </div>
     );
   }
@@ -415,59 +561,6 @@ export default function CustomerCompaniesPage({ createPage = false }: { createPa
           </>
         )}
       </div>
-
-      {/* Edit dialog (New Client is its own page) */}
-      <Dialog open={formOpen} onOpenChange={(o) => (o ? setFormOpen(true) : closeForm())}>
-        <DialogContent className="flex max-h-[90vh] flex-col">
-          <DialogHeader><DialogTitle>Edit Client</DialogTitle></DialogHeader>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-            {identityFields}
-            {contactFields}
-          </div>
-          <DialogFooter>
-            <Button onClick={onSave} disabled={saveDisabled}>
-              {saveMutation.isPending ? 'Saving…' : 'Save'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Changing what a client bought, confirmed before anything is written. */}
-      <Dialog open={!!confirmType} onOpenChange={(o) => { if (!o) setConfirmType(null); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Switch {editing?.name ?? 'this client'} to {clientTypeLabel(confirmType)}?</DialogTitle>
-          </DialogHeader>
-          {isServicesOnly(confirmType) && isServicesOnly(editing?.clientType) ? (
-            <p className="text-sm text-muted-foreground">
-              Neither type carries an AMC, so nothing is cleared — products, consultants, contract services and tickets are kept.
-            </p>
-          ) : isServicesOnly(confirmType) ? (
-            <div className="space-y-2 text-sm text-muted-foreground">
-              <p>{clientTypeLabel(confirmType)} clients have no AMC. Once you switch:</p>
-              <ul className="list-disc space-y-1 pl-5">
-                <li>The AMC terms, support-hours pool, visits allowance, contract services and purchase order are <strong className="text-foreground">cleared</strong> — on this client and on each of its products.</li>
-                <li>Tickets are no longer counted against support hours, and no expiry or hours-low reminders go out.</li>
-                <li>Products, consultants and existing tickets are <strong className="text-foreground">kept</strong>.</li>
-              </ul>
-              <p>Switching back to AMC later starts with blank terms to fill in.</p>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              The client gets a support contract. It starts as <strong className="text-foreground">Per product</strong> with
-              blank terms — choose the contract type on the client screen, then enter and save the terms. Products,
-              consultants and tickets are kept.
-            </p>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmType(null)}>Cancel</Button>
-            <Button disabled={saveMutation.isPending} onClick={() => { setConfirmType(null); saveMutation.mutate(form); }}>Switch</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* What is waiting on this user, wherever it lives — an approver should not
-          have to guess which client raised the request. */}
 
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
@@ -627,23 +720,35 @@ function ContactsSection({ companyId, maxContacts }: { companyId: string; maxCon
   });
 
   return (
-    <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
-      <div className="text-sm font-medium">People <span className="font-normal text-muted-foreground">({contacts.length}/{maxContacts})</span></div>
-      {contacts.length === 0 && (
-        <p className="text-xs text-muted-foreground">No people yet. Once the client has a customer admin, they add the rest.</p>
+    <div className="space-y-2">
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>Seats used</span>
+        <span className="tabular-nums font-medium text-foreground">{contacts.length} / {maxContacts}</span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+        <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, (contacts.length / Math.max(1, maxContacts)) * 100)}%` }} />
+      </div>
+      {contacts.length === 0 ? (
+        <p className="pt-1 text-xs text-muted-foreground">No people yet. Once the client has a customer admin, they add the rest.</p>
+      ) : (
+        <ul className="divide-y rounded-lg border">
+          {contacts.map((c) => (
+            <li key={c.id} className="flex items-center gap-3 px-3 py-2">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold uppercase text-muted-foreground">
+                {displayName(c).slice(0, 1)}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                  <span className="truncate" title={displayName(c)}>{displayName(c)}</span>
+                  {c.isAdmin && <Badge variant="secondary" className="shrink-0 gap-1"><ShieldCheck className="size-3" /> Admin</Badge>}
+                </div>
+                <div className="truncate text-xs text-muted-foreground" title={c.email}>{c.email}</div>
+              </div>
+              {!c.isActive && <span className="shrink-0 text-xs text-muted-foreground">Inactive</span>}
+            </li>
+          ))}
+        </ul>
       )}
-      {contacts.map((c) => (
-        <div key={c.id} className="flex items-center justify-between rounded-lg border bg-background px-3 py-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5 truncate text-sm font-medium text-foreground">
-              {displayName(c)}
-              {c.isAdmin && <Badge variant="secondary" className="gap-1"><ShieldCheck className="size-3" /> Admin</Badge>}
-            </div>
-            <div className="truncate text-xs text-muted-foreground">{c.email}</div>
-          </div>
-          {!c.isActive && <span className="text-xs text-muted-foreground">Inactive</span>}
-        </div>
-      ))}
     </div>
   );
 }
@@ -661,20 +766,31 @@ function CustomerAdminFields({ value, onChange }: { value: AdminInput; onChange:
   const set = (patch: Partial<AdminInput>) => onChange({ ...value, ...patch });
 
   return (
-    <div className="space-y-2">
-      {/* The hand-rolled RadioGroup re-emits the current value on every click — harmless here. */}
-      <RadioGroup value={value.mode} onValueChange={(m) => set({ mode: m as AdminInput['mode'] })} className="flex flex-wrap gap-4">
-        <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="new" /> Create a new admin</label>
-        <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="link" /> Link an existing admin</label>
+    <div className="space-y-3">
+      {/* A two-way segmented switch. The hand-rolled RadioGroup re-emits the
+          current value on every click — harmless here. */}
+      <RadioGroup value={value.mode} onValueChange={(m) => set({ mode: m as AdminInput['mode'] })}
+        className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
+        {([['new', 'Create new'], ['link', 'Link existing']] as const).map(([m, label]) => (
+          <label key={m}
+            className={`flex cursor-pointer items-center justify-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors ${
+              value.mode === m ? 'bg-background font-medium text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'}`}>
+            <span className="sr-only"><RadioGroupItem value={m} /></span>{label}
+          </label>
+        ))}
       </RadioGroup>
       {value.mode === 'new' ? (
-        <>
-          <div className="grid grid-cols-2 gap-2">
-            <Input placeholder="Admin username" value={value.username} onChange={(e) => set({ username: e.target.value })} />
-            <Input type="email" placeholder="Admin email" value={value.email} onChange={(e) => set({ email: e.target.value })} />
-          </div>
-          <Input type="text" placeholder="Temporary password (min 6)" value={value.password} onChange={(e) => set({ password: e.target.value })} />
-        </>
+        <div className="space-y-3">
+          <Field label="Username">
+            <Input placeholder="e.g. globex.admin" value={value.username} onChange={(e) => set({ username: e.target.value })} />
+          </Field>
+          <Field label="Email">
+            <Input type="email" placeholder="admin@globex.example" value={value.email} onChange={(e) => set({ email: e.target.value })} />
+          </Field>
+          <Field label="Temporary password" hint="At least 6 characters.">
+            <Input type="text" value={value.password} onChange={(e) => set({ password: e.target.value })} />
+          </Field>
+        </div>
       ) : isSuccess && available.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           No unlinked customer admins. Create one on the Users screen with the CustomerAdmin role, or create a new admin here.
@@ -729,12 +845,11 @@ function CustomerAdminSection({ companyId }: { companyId: string }) {
   });
 
   return (
-    <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
-      <div className="text-sm font-medium">Customer admin</div>
+    <div className="space-y-3">
       {!isSuccess ? (
         <p className="text-xs text-muted-foreground">Loading…</p>
       ) : current ? (
-        <div className="flex items-center justify-between gap-2 rounded-lg border bg-background px-3 py-2">
+        <div className="flex items-center justify-between gap-2 rounded-lg border bg-muted/30 px-3 py-2">
           <div className="min-w-0">
             <div className="truncate text-sm font-medium text-foreground">{displayName(current)}</div>
             <div className="truncate text-xs text-muted-foreground">{current.email}</div>
@@ -773,15 +888,17 @@ function CustomerAdminSection({ companyId }: { companyId: string }) {
  */
 function ClientTypeChoice({ value, onChange }: { value: ClientType | ''; onChange: (t: ClientType) => void }) {
   return (
-    <div className="space-y-1.5">
-      <div className="text-sm font-medium">Client type <span className="text-destructive">*</span></div>
-      {/* Hand-rolled RadioGroup fires on every click — ignore a re-pick. */}
-      <RadioGroup value={value} onValueChange={(v) => { if (v && v !== value) onChange(v as ClientType); }}
-        className="flex flex-wrap gap-x-5 gap-y-2">
-        {CLIENT_TYPE_OPTIONS.map((o) => (
-          <label key={o.value} className="flex items-center gap-2 text-sm"><RadioGroupItem value={o.value} /> {o.label}</label>
-        ))}
-      </RadioGroup>
-    </div>
+    // Plain radios, no hints (client request) — laid out as even tiles so the
+    // picked one stands out. Hand-rolled RadioGroup fires on every click — ignore a re-pick.
+    <RadioGroup value={value} onValueChange={(v) => { if (v && v !== value) onChange(v as ClientType); }}
+      className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {CLIENT_TYPE_OPTIONS.map((o) => (
+        <label key={o.value}
+          className={`flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2.5 text-sm transition-colors ${
+            value === o.value ? 'border-primary bg-primary/5 font-medium text-foreground' : 'hover:bg-muted/50'}`}>
+          <RadioGroupItem value={o.value} /> {o.label}
+        </label>
+      ))}
+    </RadioGroup>
   );
 }

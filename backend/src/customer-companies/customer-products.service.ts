@@ -1403,15 +1403,19 @@ export class CustomerProductsService {
   // ---- customer: my products, catalogue, requests ----------------------------
 
   async listMyProducts(clientId: string, companyId: string) {
-    const [rows, agents, logged] = await Promise.all([
+    const [rows, logged] = await Promise.all([
       this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId: companyId, customerCompany: { clientId } }, include: { product: { include: { modules: { select: { id: true } } } }, productManager: MANAGER_SELECT }, orderBy: { createdAt: 'asc' } }),
-      this.agentsByProduct(companyId, clientId),
       this.ticketHours(companyId, clientId),
     ]);
+    // No consultants on the customer's view: routing hands a ticket to whoever
+    // on the list is free (or nobody), so naming the primaries promised the
+    // client an agent they may not get — and production usernames are bare
+    // employee numbers. Withheld here, not just hidden in the UI. The ticket
+    // itself names the agent once one is assigned.
     return Promise.all(rows.map((r) => this.toView(
       r,
       clientId,
-      agents.byProduct.get(r.productId) ?? agents.defaults,
+      [],
       this.hoursSince(logged.byProduct.get(r.productId), r.amcStart),
     )));
   }

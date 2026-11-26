@@ -12,10 +12,39 @@ import type { PrismaService } from '../prisma/prisma.service';
  * Authorship columns (createdBy, comment/activity authors) are deliberately not
  * checked: they are history, and almost every user would be undeletable.
  */
+/**
+ * Tickets this user raised that are neither Closed nor Rejected. A finished
+ * ticket no longer blocks a delete (client request): it keeps the requester's name and email as
+ * text, and every reader of `requestorUserId` already falls back to those when
+ * the user is gone. "Closed" is read off the tenant's own `ticketStatus` labels,
+ * like every other status check, never a stored stamp.
+ */
+async function openTicketsRaised(prisma: PrismaService, userId: string) {
+  const raised = await prisma.ticket.findMany({
+    where: { requestorUserId: userId },
+    select: { clientId: true, ticketStatus: true },
+  });
+  if (!raised.length) return 0;
+  const options = await prisma.picklistOption.findMany({
+    where: { clientId: { in: [...new Set(raised.map((t) => t.clientId))] }, listKey: 'ticketStatus' },
+    select: { clientId: true, value: true, label: true },
+  });
+  const finished = new Set(
+    options
+      .filter((o) => ['closed', 'rejected'].includes((o.label ?? o.value).trim().toLowerCase()))
+      .map((o) => `${o.clientId}|${o.value}`),
+  );
+  // The literals always count too: reject() writes 'Rejected' directly rather
+  // than resolving the picklist, as settledStatusValues notes.
+  return raised.filter(
+    (t) => !['Closed', 'Rejected'].includes(t.ticketStatus) && !finished.has(`${t.clientId}|${t.ticketStatus}`),
+  ).length;
+}
+
 export async function assertUserDeletable(prisma: PrismaService, userId: string, displayName: string) {
   const checks: [[string, string], Promise<number>][] = [
     [['assigned ticket', 'assigned tickets'], prisma.ticketTechnician.count({ where: { userId } })],
-    [['ticket raised by them', 'tickets raised by them'], prisma.ticket.count({ where: { requestorUserId: userId } })],
+    [['open ticket raised by them', 'open tickets raised by them'], openTicketsRaised(prisma, userId)],
     [['ticket task', 'ticket tasks'], prisma.ticketTask.count({ where: { assigneeUserId: userId } })],
     [['ticket approval', 'ticket approvals'], prisma.ticketApproval.count({ where: { approverUserId: userId } })],
     [['pending ticket reopen request', 'pending ticket reopen requests'], prisma.ticket.count({ where: { reopenApproverUserId: userId, reopenRequestStatus: 'PENDING' } })],

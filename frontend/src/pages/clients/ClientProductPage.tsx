@@ -292,11 +292,12 @@ export default function ClientProductPage() {
               <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="WARRANTY" /> Under warranty <span className="text-xs text-muted-foreground">(free)</span></label>
               <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="AMC" /> Under AMC <span className="text-xs text-muted-foreground">(paid)</span></label>
             </RadioGroup>
-            <SupportHoursChoice unlimited={terms.supportHoursUnlimited} disabled={!isAdmin} onChange={(u) => setTerms({ ...terms, supportHoursUnlimited: u })} />
-            {/* Not a term: saves on pick, like Ticket auto assignment below. */}
+            {/* Not a term: saves on pick, like Ticket auto assignment below.
+                Sits above Support hours (client request). */}
             {showDeployment && (
               <DeploymentModelChoice value={cp.deploymentModel} disabled={!isAdmin} onChange={setDeploymentModel} />
             )}
+            <SupportHoursChoice unlimited={terms.supportHoursUnlimited} disabled={!isAdmin} onChange={(u) => setTerms({ ...terms, supportHoursUnlimited: u })} />
             <div className="grid grid-cols-2 gap-2">
               <Num label="Start date" type="date" disabled={!isAdmin} value={terms.startDate} onChange={(v) => setTerms({ ...terms, startDate: v })} />
               <Num label="End date" type="date" min={terms.startDate || undefined} disabled={!isAdmin} value={terms.endDate} onChange={(v) => setTerms({ ...terms, endDate: v })} />

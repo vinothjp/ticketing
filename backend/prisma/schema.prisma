@@ -215,7 +215,7 @@ model CustomerCompany {
   // support-hours pool, visits allowance, reminders or renewals — the pool
   // resolver answers null for it. Its contract-services fields (contractCrApplicable
   // and friends) still apply, read at client level. Set on the client dialogs only.
-  clientType               String   @default("AMC")        // IMPLEMENTATION | INTEGRATION | JOB_WORK | AMC
+  clientType               String   @default("AMC")        // IMPLEMENTATION | AMC
   // Product contract scope. PRODUCT = each product carries its own warranty/AMC
   // terms; CUSTOMER = one shared contract (dates + hours) covering many products.
   contractScope            String   @default("PRODUCT")   // PRODUCT | CUSTOMER
@@ -616,7 +616,7 @@ model CustomerCompanyProduct {
   // just stops matching. Not a term, so a scope switch's reset leaves it alone.
   inactiveModuleIds    String[] @default([])
   // How this client runs the product (S/4HANA only, on the client product
-  // screen): PRIVATE_CLOUD | PUBLIC_CLOUD | ECC | ON_PREMISES. Null = not set.
+  // screen): PRIVATE_CLOUD | PUBLIC_CLOUD | ON_PREMISES. Null = not set.
   // Not a term — saved on pick, kept across scope / client-type switches.
   deploymentModel      String?
   createdAt         DateTime @default(now())

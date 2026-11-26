@@ -78,7 +78,8 @@ export default function MultiCheckSelect({
   return (
     <div className="space-y-2">
       {menu}
-      {value.length > 0 && <ul className="divide-y rounded-md border">
+      {/* Five rows tall (5 × 32px + dividers + border), then it scrolls. */}
+      {value.length > 0 && <ul className="max-h-[166px] divide-y overflow-y-auto rounded-md border">
         {value.map((v) => (
           <li key={v} className="flex items-center justify-between gap-2 px-3 py-1.5 text-sm">
             <span className="truncate" title={labelOf(v)}>{labelOf(v)}</span>

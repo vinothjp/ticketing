@@ -891,7 +891,7 @@ function ClientTypeChoice({ value, onChange }: { value: ClientType | ''; onChang
     // Plain radios, no hints (client request) — laid out as even tiles so the
     // picked one stands out. Hand-rolled RadioGroup fires on every click — ignore a re-pick.
     <RadioGroup value={value} onValueChange={(v) => { if (v && v !== value) onChange(v as ClientType); }}
-      className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      className="grid grid-cols-2 gap-2">
       {CLIENT_TYPE_OPTIONS.map((o) => (
         <label key={o.value}
           className={`flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2.5 text-sm transition-colors ${

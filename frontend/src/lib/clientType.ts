@@ -3,12 +3,12 @@
  * Every type but AMC is services only (no contract, terms, pool or renewals),
  * so screens ask `isServicesOnly`, never "is this Implementation?".
  */
-export type ClientType = 'IMPLEMENTATION' | 'INTEGRATION' | 'JOB_WORK' | 'AMC';
+// Integration and Job Work were offered and withdrawn (client request);
+// `client_type_retire_integration_job_work.sql` relabels any such client.
+export type ClientType = 'IMPLEMENTATION' | 'AMC';
 
 export const CLIENT_TYPE_OPTIONS: { value: ClientType; label: string }[] = [
   { value: 'IMPLEMENTATION', label: 'Implementation' },
-  { value: 'INTEGRATION', label: 'Integration' },
-  { value: 'JOB_WORK', label: 'Job Work' },
   { value: 'AMC', label: 'AMC' },
 ];
 

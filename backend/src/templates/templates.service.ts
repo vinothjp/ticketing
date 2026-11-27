@@ -250,7 +250,6 @@ export class TemplatesService {
         name,
         category: dto.category,
         description: dto.description,
-        descriptionGuidance: dto.descriptionGuidance,
         icon: dto.icon,
         color: dto.color,
         defaultPriority: dto.defaultPriority,
@@ -286,9 +285,6 @@ export class TemplatesService {
         ...(dto.name !== undefined && { name: dto.name.trim() }),
         ...(dto.category !== undefined && { category: dto.category }),
         ...(dto.description !== undefined && { description: dto.description }),
-        ...(dto.descriptionGuidance !== undefined && {
-          descriptionGuidance: dto.descriptionGuidance,
-        }),
         ...(dto.icon !== undefined && { icon: dto.icon }),
         ...(dto.color !== undefined && { color: dto.color }),
         ...(dto.defaultPriority !== undefined && {

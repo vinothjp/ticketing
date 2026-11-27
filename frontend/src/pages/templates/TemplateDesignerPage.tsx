@@ -8,7 +8,6 @@ import { toast } from 'sonner';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
@@ -73,7 +72,6 @@ export default function TemplateDesignerPage() {
     [category],
   );
   const [description, setDescription] = useState('');
-  const [descriptionGuidance, setDescriptionGuidance] = useState('');
   const [icon, setIcon] = useState('layout-template');
   const [color, setColor] = useState(TEMPLATE_COLORS[6]);
   const [isActive, setIsActive] = useState(true);
@@ -98,7 +96,6 @@ export default function TemplateDesignerPage() {
     setName(template.name ?? '');
     setCategory(template.category ?? '');
     setDescription(template.description ?? '');
-    setDescriptionGuidance(template.descriptionGuidance ?? '');
     setIcon(template.icon ?? 'layout-template');
     setColor(template.color ?? TEMPLATE_COLORS[6]);
     setIsActive(template.isActive ?? true);
@@ -269,7 +266,6 @@ export default function TemplateDesignerPage() {
         name: name.trim(),
         category: category || undefined,
         description: description || undefined,
-        descriptionGuidance: descriptionGuidance || undefined,
         icon,
         color,
         isActive,
@@ -344,10 +340,6 @@ export default function TemplateDesignerPage() {
               <div className="space-y-1.5">
                 <label className="text-sm font-medium">Short description</label>
                 <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Shown on the templates list" />
-              </div>
-              <div className="space-y-1.5 sm:col-span-2">
-                <label className="text-sm font-medium">Description guidance</label>
-                <Textarea rows={2} value={descriptionGuidance} onChange={(e) => setDescriptionGuidance(e.target.value)} placeholder="Pre-fills the Description field on new tickets." />
               </div>
               <div className="space-y-1.5">
                 <label className="text-sm font-medium">Icon</label>

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { ArrowLeft, Plus, ChevronRight, Users, RefreshCw, ShieldCheck, Wrench, Clock, MapPin } from 'lucide-react';
+import { isServicesOnly } from '@/lib/clientType';
 import api from '../../lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -21,6 +22,7 @@ import PurchaseOrderFields from '@/components/PurchaseOrderFields';
 import { useAuth } from '../../context/AuthContext';
 import CoverageMeter, { wholeHrs } from '@/components/CoverageMeter';
 import { cn } from '@/lib/utils';
+import { useDateFormat } from '@/lib/dateFormat';
 
 interface Pool { allocated: number | null; used: number; left: number | null }
 interface Cov { end: string | null; label: string; pct: number; active: boolean }
@@ -42,7 +44,7 @@ interface Support {
 }
 interface Contract {
   // IMPLEMENTATION = services only: no contract type, coverage or terms on this screen.
-  clientType?: 'IMPLEMENTATION' | 'AMC';
+  clientType?: string;
   scope: 'PRODUCT' | 'CUSTOMER'; coverageType: 'WARRANTY' | 'AMC'; start: string | null; end: string | null; hoursUnlimited: boolean; hours: number | null; visits: number | null; monthlyCost: number | null;
   productIds: string[]; period: { pct: number; daysLeft: number | null; active: boolean }; hoursPool: CPool; visitsPool: CPool; support?: Support;
   services?: { thirdPartyIntegration: boolean; planRollout: boolean; crApplicable: boolean; crMaxPerMonth: number | null; crMaxHours: number | null };
@@ -69,6 +71,8 @@ const productPill = (p: { status: string; activeForClient: boolean }) =>
     : { label: p.status.toLowerCase(), cls: statusCls(p.status), title: undefined };
 
 export default function ClientDetailPage() {
+  const { fmtDate } = useDateFormat();
+  const fmt = (d: string | null) => (d ? fmtDate(d) : '—');
   const { companyId } = useParams<{ companyId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -190,7 +194,7 @@ export default function ClientDetailPage() {
   // Implementation client has no AMC, so this screen drops the contract type,
   // coverage, terms and support-hours settings and keeps its products, contract
   // services (CR terms), auto assignment and consultants.
-  const impl = contract?.clientType === 'IMPLEMENTATION';
+  const impl = isServicesOnly(contract?.clientType);
   const saveServices = () =>
     run(api.patch(`/api/customer-companies/${companyId}/services`, servicesPayload(services)), 'Contract services saved');
 
@@ -393,7 +397,7 @@ export default function ClientDetailPage() {
               {/* Client-level, so it saves on click rather than with the contract
                   below — see setAutoAssign. */}
               <AutoAssignChoice
-                value={client?.autoAssignTickets ?? true}
+                value={client?.autoAssignTickets ?? false}
                 disabled={!isAdmin || !client}
                 onChange={setAutoAssign} />
               {isAdmin && (
@@ -481,7 +485,7 @@ export default function ClientDetailPage() {
           <section className="flex h-full flex-col gap-3 rounded-lg border bg-card p-4">
             <h2 className="text-base font-semibold text-foreground">Ticket assignment</h2>
             <AutoAssignChoice
-              value={client?.autoAssignTickets ?? true}
+              value={client?.autoAssignTickets ?? false}
               disabled={!isAdmin || !client}
               onChange={setAutoAssign} />
           </section>
@@ -569,7 +573,6 @@ export default function ClientDetailPage() {
   );
 }
 
-const fmt = (d: string | null) => (d ? new Date(d).toLocaleDateString() : '—');
 
 /** Countdown for the contract's remaining term, in the per-product screen's "12 mo 4 d" shape. */
 function timeLeft(daysLeft: number | null): string {

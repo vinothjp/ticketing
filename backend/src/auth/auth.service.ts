@@ -306,8 +306,9 @@ export class AuthService {
       // Hand-built projection: a column added to Client reaches the app only if
       // it is named here. `dateFormat` rides along because every logged-in user
       // — staff and customer contacts alike — needs it to render a date, and
-      // this is the one client read they all have.
-      select: { name: true, logoUrl: true, dateFormat: true, timeFormat: true },
+      // this is the one client read they all have. `currency` likewise, so a
+      // customer screen quoting money uses the tenant's currency.
+      select: { name: true, logoUrl: true, dateFormat: true, timeFormat: true, currency: true },
     });
     return client;
   }

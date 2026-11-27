@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ArrowLeft, Plus, Trash2, X, Upload, Star } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, X, Upload, Star, Pencil } from 'lucide-react';
 import api from '../lib/api';
 import ProductIcon from '@/components/ProductIcon';
 import { Button } from '@/components/ui/button';
@@ -133,6 +133,7 @@ export default function ProductEditorPage() {
   const removeModuleAgent = (mid: string, cid: string) => (isNew ? patchDMod(mid, (m) => ({ ...m, agents: removeLink(m.agents, cid) })) : call(api.delete(`/api/products/modules/${mid}/consultants/${cid}`)));
   const modulePrimary = (mid: string, cid: string) => (isNew ? patchDMod(mid, (m) => ({ ...m, agents: primaryLink(m.agents, cid) })) : call(api.put(`/api/products/modules/${mid}/consultants/${cid}/primary`)));
   const removeModule = (mid: string) => (isNew ? setDModules(dModules.filter((m) => m.key !== mid)) : call(api.delete(`/api/products/modules/${mid}`)));
+  const renameModule = (mid: string, name: string) => (isNew ? patchDMod(mid, (m) => ({ ...m, name })) : call(api.patch(`/api/products/modules/${mid}`, { name }), 'Module renamed'));
   const addModule = () => {
     const name = newModule.trim(); if (!name) return;
     if (isNew) { setDModules([...dModules, { key: `d${Date.now()}`, name, agents: [] }]); setNewModule(''); }
@@ -216,6 +217,7 @@ export default function ProductEditorPage() {
                   onRemove={(mid, cid) => removeModuleAgent(mid, cid)}
                   onPrimary={(mid, cid) => modulePrimary(mid, cid)}
                   onRemoveRow={removeModule}
+                  onRenameRow={renameModule}
                   addRow={{ value: newModule, onChange: setNewModule, onAdd: addModule }}
                 />
               </section>
@@ -229,7 +231,7 @@ export default function ProductEditorPage() {
 
 // ---- grid ----
 function AgentGrid({
-  rows, staff, showModuleCol, onAdd, onRemove, onPrimary, onRemoveRow, addRow,
+  rows, staff, showModuleCol, onAdd, onRemove, onPrimary, onRemoveRow, onRenameRow, addRow,
 }: {
   rows: { key: string; name: string | null; agents: Agent[]; removable?: boolean }[];
   staff: StaffUser[]; showModuleCol?: boolean;
@@ -237,9 +239,20 @@ function AgentGrid({
   onRemove: (rowKey: string, cid: string) => void;
   onPrimary: (rowKey: string, cid: string) => void;
   onRemoveRow?: (rowKey: string) => void;
+  onRenameRow?: (rowKey: string, name: string) => void;
   addRow?: { value: string; onChange: (v: string) => void; onAdd: () => void };
 }) {
   const colCount = (showModuleCol ? 1 : 0) + COLS.length;
+  // Inline rename of a module: Enter or leaving the box saves, Escape cancels.
+  // An empty or unchanged name is simply dropped.
+  const [renaming, setRenaming] = useState<{ key: string; value: string } | null>(null);
+  const commitRename = () => {
+    if (!renaming) return;
+    const name = renaming.value.trim();
+    const current = rows.find((r) => r.key === renaming.key)?.name ?? '';
+    setRenaming(null);
+    if (name && name !== current) onRenameRow?.(renaming.key, name);
+  };
   return (
     <div className="overflow-hidden rounded-lg border">
       <table className="w-full border-collapse text-sm">
@@ -254,12 +267,31 @@ function AgentGrid({
             <tr key={row.key} className="align-top">
               {showModuleCol && (
                 <td className="border-b px-3 py-2">
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="font-medium text-foreground">{row.name}</span>
-                    {row.removable && onRemoveRow && (
-                      <button className="text-muted-foreground hover:text-destructive" onClick={() => onRemoveRow(row.key)}><Trash2 className="size-3.5" /></button>
-                    )}
-                  </div>
+                  {renaming?.key === row.key ? (
+                    <input
+                      autoFocus
+                      value={renaming.value}
+                      onChange={(e) => setRenaming({ key: row.key, value: e.target.value })}
+                      onBlur={commitRename}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+                        if (e.key === 'Escape') { e.preventDefault(); setRenaming(null); }
+                      }}
+                      className="h-7 w-full rounded border border-input bg-background px-2 text-sm font-medium outline-none focus:border-primary"
+                    />
+                  ) : (
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="truncate font-medium text-foreground" title={row.name ?? undefined}>{row.name}</span>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {onRenameRow && (
+                          <button title="Rename module" className="text-muted-foreground hover:text-foreground" onClick={() => setRenaming({ key: row.key, value: row.name ?? '' })}><Pencil className="size-3.5" /></button>
+                        )}
+                        {row.removable && onRemoveRow && (
+                          <button title="Delete module" className="text-muted-foreground hover:text-destructive" onClick={() => onRemoveRow(row.key)}><Trash2 className="size-3.5" /></button>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </td>
               )}
               {COLS.map((c) => {
@@ -268,7 +300,10 @@ function AgentGrid({
                 return (
                   <td key={c.key} className="border-b border-l px-2 py-2 align-top">
                     <div className="space-y-1">
-                      {list.map((a) => (
+                      {/* At most 5 agents tall (5 × 24px rows + 4 × 4px gaps),
+                          then the list scrolls; the type-ahead below stays
+                          visible outside the scroll box. */}
+                      {list.length > 0 && <div className="max-h-[8.5rem] space-y-1 overflow-y-auto pr-0.5">{list.map((a) => (
                         <div key={a.id} className="group flex items-center gap-1 rounded bg-muted px-1.5 py-1 text-xs">
                           {a.isPrimary
                             ? <Star className="size-3 shrink-0 fill-amber-500 text-amber-500" />
@@ -276,7 +311,7 @@ function AgentGrid({
                           <span className="flex-1 truncate text-foreground" title={staffLabel(a.user)}>{staffLabel(a.user)}</span>
                           <button className="shrink-0 text-muted-foreground hover:text-destructive" onClick={() => onRemove(row.key, a.id)}><X className="size-3" /></button>
                         </div>
-                      ))}
+                      ))}</div>}
                       <AgentTypeahead staff={staff} exclude={taken} onPick={(uid) => onAdd(row.key, c.key, uid)} />
                     </div>
                   </td>

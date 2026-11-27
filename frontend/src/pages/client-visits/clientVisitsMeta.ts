@@ -48,8 +48,8 @@ export interface CustomerCompanyOption {
   name: string;
   /** Coverage model — PRODUCT makes the visit's product field mandatory. */
   contractScope?: 'PRODUCT' | 'CUSTOMER';
-  /** IMPLEMENTATION has no visits allowance, so its visits never need a product. */
-  clientType?: 'IMPLEMENTATION' | 'AMC';
+  /** A services-only client (not AMC) has no visits allowance, so its visits never need a product. */
+  clientType?: string;
 }
 
 export interface UserOption {

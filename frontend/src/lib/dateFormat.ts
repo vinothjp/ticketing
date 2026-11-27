@@ -83,6 +83,8 @@ interface MyClient {
   logoUrl?: string | null;
   dateFormat?: string | null;
   timeFormat?: string | null;
+  /** `Client.currency` (default USD) — rides on the same read, see `currency` below. */
+  currency?: string | null;
 }
 
 /**
@@ -103,6 +105,8 @@ export function useDateFormat() {
   return {
     pattern,
     timePattern,
+    /** The tenant's currency code, for `formatMoney` — money follows the tenant too. */
+    currency: data?.currency || 'USD',
     /** Date only, in the tenant's format. */
     fmtDate: (v: string | number | Date | null | undefined) => formatWithPattern(v, pattern),
     /** Date and time — the date format with the tenant's own clock appended. */

@@ -28,13 +28,13 @@ const toDateInput = (v?: string | null) => (v ? new Date(v).toISOString().slice(
  * action both open.
  *
  * It carries the task's own fields (title, status, assignee, due date, estimate,
- * description), the time booked against it, and its comment thread. Text commits
- * on blur and the pickers save on change, with one exception: a **status move is
- * confirmed, not saved on the pick**. Picking a status — here or in the grid,
- * which hands the move over as `pendingStatus` — raises the panel below it,
- * asking for the hours the move cost. That figure is prefilled from the estimate
- * the task was raised with, less whatever has already been booked, so the usual
- * case is a confirm rather than a number typed twice.
+ * description), the time booked against it, and its comment thread. **Nothing
+ * saves on change** (client request — no auto-save anywhere on the ticket
+ * screen): every field, and any status move — picked here, or handed over by the
+ * grid as `pendingStatus` — is a draft until the footer's **Save**, which writes
+ * them in one PATCH. Closing with unsaved changes asks first. A move to Completed
+ * asks for the hours it cost, prefilled from the estimate less what is already
+ * booked. Comments keep their own Post button, as on every screen.
  */
 export default function TicketTaskDialog({
   ticketId,
@@ -75,6 +75,13 @@ export default function TicketTaskDialog({
   // an empty string included — is the consultant's and is left alone.
   const [logDraft, setLogDraft] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState('');
+  // Assignee and due date drafts; null = untouched (the stored value shows).
+  // '' for the assignee means Unassigned.
+  const [assigneeDraft, setAssigneeDraft] = useState<string | null>(null);
+  const [dueDraft, setDueDraft] = useState<string | null>(null);
+  // Another task opened in the same dialog starts clean.
+  const [draftFor, setDraftFor] = useState(taskId);
+  if (draftFor !== taskId) { setDraftFor(taskId); setAssigneeDraft(null); setDueDraft(null); }
 
   const { data: task } = useQuery<TaskDetail>({
     queryKey: ['ticket-task', taskId],
@@ -113,11 +120,23 @@ export default function TicketTaskDialog({
   // out. Until then the estimate is all the screen shows, and it is read-only.
   const asksForTime = pending === COMPLETED_TASK_STATUS && !reopening;
   // Work in progress is somebody's work, so starting an unassigned task waits on
-  // one. There is no second picker for it: the panel points at the Assignee field
-  // the form already has, which saves on change like every other field here — so
-  // picking someone there clears this on the next read. Mirrors the same refusal
+  // one. There is no second picker for it: the hint points at the Assignee field
+  // the form already has, and both go out together on Save. Mirrors the same refusal
   // in `TasksService.update`.
-  const asksForAssignee = pending === 'IN_PROGRESS' && !task?.assigneeUserId;
+  const assigneeNow = assigneeDraft ?? task?.assigneeUserId ?? '';
+  const dueNow = dueDraft ?? toDateInput(task?.dueDate);
+  const asksForAssignee = pending === 'IN_PROGRESS' && !assigneeNow;
+  // The fields that differ from what is stored — what Save sends.
+  const fieldChanges = (): Record<string, unknown> => {
+    if (!task) return {};
+    const c: Record<string, unknown> = {};
+    if (title.trim() !== (task.title ?? '').trim()) c.title = title.trim();
+    if (description.trim() !== (task.description ?? '').trim()) c.description = description.trim();
+    if (assigneeNow !== (task.assigneeUserId ?? '')) c.assigneeUserId = assigneeNow;
+    if (dueNow !== toDateInput(task.dueDate)) c.dueDate = dueNow || null;
+    return c;
+  };
+  const dirty = !!pending || Object.keys(fieldChanges()).length > 0;
 
   // Unassigned leads, then every agent. A task is routinely raised with nobody
   // on it, so clearing the field has to be as reachable as picking someone.
@@ -157,18 +176,10 @@ export default function TicketTaskDialog({
     qc.invalidateQueries({ queryKey: ['ticket-activity', ticketId] });
     qc.invalidateQueries({ queryKey: ['tickets', ticketId] });
   };
-  const patch = useMutation({
-    mutationFn: (data: Record<string, unknown>) =>
-      api.patch(`/api/tickets/${ticketId}/tasks/${taskId}`, data),
-    onSuccess: invalidate,
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error updating task'),
-  });
-
   /**
-   * The confirmed status move, with the time it cost. Separate from `patch` only
-   * so the panel closes and the billable caches are cleared on success — logged
-   * hours move the ticket header's chip and the customer's support-hours pool,
-   * not just this list.
+   * Save: the changed fields and any status move (with the time it cost) in one
+   * PATCH. The billable caches are cleared too — logged hours move the ticket
+   * header's chip and the customer's support-hours pool, not just this list.
    */
   const applyStatus = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
@@ -176,9 +187,9 @@ export default function TicketTaskDialog({
     onSuccess: (_res, data) => {
       invalidate();
       invalidateWorklogs();
-      dropPending();
+      resetDrafts();
       onClose();
-      toast.success(data.reopenNote ? 'Task reopened' : 'Status updated');
+      toast.success(data.reopenNote ? 'Task reopened' : 'Task saved');
     },
     // Keep the server's message: an exhausted support-hours pool, or an excess
     // request still with its approver, is what usually refuses this.
@@ -193,6 +204,20 @@ export default function TicketTaskDialog({
     setNoteDraft('');
     onPendingHandled();
   };
+  // Throws away every unsaved change: the status move and the field drafts.
+  const resetDrafts = () => {
+    dropPending();
+    setAssigneeDraft(null);
+    setDueDraft(null);
+    setTitle(task?.title ?? '');
+    setDescription(task?.description ?? '');
+  };
+  // Any way out but Save: ask before losing changes.
+  const requestClose = () => {
+    if (dirty && !applyStatus.isPending && !window.confirm('Discard your unsaved changes to this task?')) return;
+    resetDrafts();
+    onClose();
+  };
 
   // Two different rights. The task's *fields* — title, description, assignee,
   // due date — belong to the ticket's agent, the task's assignee or an admin
@@ -205,16 +230,10 @@ export default function TicketTaskDialog({
   // that rule instead: the ticket's own agent or an admin.
   const statusEditable = completed ? canReopen : mayTrack;
 
-  /** Save a text field only when it actually changed, on blur. */
-  const commit = (field: 'title' | 'description', value: string) => {
-    const saved = (field === 'title' ? task?.title : task?.description) ?? '';
-    if (value.trim() === saved.trim()) return;
-    if (field === 'title' && !value.trim()) return setTitle(saved);
-    patch.mutate({ [field]: value.trim() });
-  };
-
-  const confirmStatus = () => {
-    if (!task || !pending) return;
+  const save = () => {
+    if (!task || !dirty) return;
+    if (!title.trim()) return toast.error('A task needs a title');
+    if (!pending) return applyStatus.mutate(fieldChanges());
     const hours = asksForTime && logValue.trim() ? Number(logValue) : 0;
     if (asksForTime && logValue.trim() && !(hours >= 0)) {
       return toast.error('Enter the time as a number of hours');
@@ -228,6 +247,7 @@ export default function TicketTaskDialog({
       return toast.error(`Log the time spent on "${task.title}" before completing it`);
     }
     applyStatus.mutate({
+      ...fieldChanges(),
       status: pending,
       ...(hours > 0 && { logHours: hours }),
       ...(reopening && { reopenNote: noteDraft.trim() }),
@@ -235,7 +255,7 @@ export default function TicketTaskDialog({
   };
 
   return (
-    <Dialog open={!!taskId} onOpenChange={(o) => { if (!o) { dropPending(); onClose(); } }}>
+    <Dialog open={!!taskId} onOpenChange={(o) => { if (!o) requestClose(); }}>
       <DialogContent className="flex max-h-[calc(100svh-2rem)] w-[calc(100vw-2rem)] flex-col overflow-hidden sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-baseline gap-2 pr-6 break-words">
@@ -254,8 +274,6 @@ export default function TicketTaskDialog({
                 value={title}
                 disabled={!editable}
                 onChange={(e) => setTitle(e.target.value)}
-                onBlur={() => commit('title', title)}
-                onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
               />
             </div>
 
@@ -294,7 +312,7 @@ export default function TicketTaskDialog({
                     slow way round. Ringed while a queued Start is waiting on it,
                     so the panel's line below has something to point at. */}
                 <Combobox
-                  value={task.assigneeUserId ?? UNASSIGNED}
+                  value={assigneeNow || UNASSIGNED}
                   disabled={!editable}
                   options={assigneeOptions}
                   placeholder="Unassigned"
@@ -302,8 +320,7 @@ export default function TicketTaskDialog({
                   className={asksForAssignee ? 'rounded-md ring-2 ring-amber-400 ring-offset-1' : ''}
                   onChange={(v) => {
                     if (!v) return;
-                    const next = v === UNASSIGNED ? '' : v;
-                    if (next !== (task.assigneeUserId ?? '')) patch.mutate({ assigneeUserId: next });
+                    setAssigneeDraft(v === UNASSIGNED ? '' : v);
                   }}
                 />
                 {asksForAssignee && (
@@ -317,8 +334,8 @@ export default function TicketTaskDialog({
                 <Input
                   type="date"
                   disabled={!editable}
-                  value={toDateInput(task.dueDate)}
-                  onChange={(e) => patch.mutate({ dueDate: e.target.value || null })}
+                  value={dueNow}
+                  onChange={(e) => setDueDraft(e.target.value)}
                 />
               </div>
             </div>
@@ -377,7 +394,6 @@ export default function TicketTaskDialog({
                 disabled={!editable}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                onBlur={() => commit('description', description)}
                 placeholder="What does this task involve?"
               />
             </div>
@@ -422,19 +438,10 @@ export default function TicketTaskDialog({
               <Trash2 className="size-4" /> Delete task
             </Button>
           )}
-          {pending ? (
-            <>
-              <Button variant="ghost" onClick={() => { dropPending(); onClose(); }}>Cancel</Button>
-              <Button disabled={applyStatus.isPending} onClick={confirmStatus}>
-                {applyStatus.isPending ? 'Saving…' : 'Save'}
-              </Button>
-            </>
-          ) : (
-            <>
-              <span className="text-xs text-muted-foreground">Changes save automatically</span>
-              <Button onClick={onClose}>Close</Button>
-            </>
-          )}
+          <Button variant="ghost" onClick={requestClose}>{dirty ? 'Cancel' : 'Close'}</Button>
+          <Button disabled={!dirty || applyStatus.isPending} onClick={save}>
+            {applyStatus.isPending ? 'Saving…' : 'Save'}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

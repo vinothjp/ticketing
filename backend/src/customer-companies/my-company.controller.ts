@@ -35,16 +35,6 @@ export class MyCompanyController {
     return this.service.ticketProducts(req.user.clientId, companyId);
   }
 
-  // Departments the New Ticket form offers for a client — same scoping as
-  // `products`: staff pass the client they picked, a customer gets their own.
-  @Get('departments')
-  departments(@Request() req: AuthedRequest, @Query('customerCompanyId') customerCompanyId?: string) {
-    const roles = req.user.roles ?? [];
-    const isStaff = roles.includes('Admin') || withImpliedRoles(roles).includes('Viewer');
-    const companyId = isStaff ? customerCompanyId || null : (req.user.customerCompanyId ?? null);
-    return this.service.ticketDepartments(req.user.clientId, companyId);
-  }
-
   // Clients an agent may raise a ticket for. Admins already have the full list at
   // `api/customer-companies`, but that route is Admin-only — a Viewer needs the
   // names to pick a client (and therefore a product) on the ticket form.

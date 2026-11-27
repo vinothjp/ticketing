@@ -60,6 +60,12 @@ export class MailerService {
     return { messageId: (info as { messageId?: string })?.messageId };
   }
 
+  /** The address the effective config sends as — where a connection test mails its proof. */
+  async senderAddress(clientId?: string | null): Promise<{ address: string | null; host: string | null }> {
+    const config = await this.resolveConfig(clientId);
+    return { address: config?.fromAddress || config?.username || null, host: config?.host ?? null };
+  }
+
   /** Whether SMTP is configured + enabled for this client (or the global fallback). */
   async isConfigured(clientId?: string | null): Promise<boolean> {
     return !!(await this.resolveConfig(clientId));

@@ -161,32 +161,14 @@ export default function TasksTab({
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error adding task'),
   });
 
-  const patch = useMutation({
-    mutationFn: ({ taskId, data }: { taskId: string; data: Record<string, unknown> }) =>
-      api.patch(`/api/tickets/${ticketId}/tasks/${taskId}`, data),
-    onSuccess: invalidate,
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error updating task'),
-  });
-
   /**
-   * A status picked in the grid, routed by what the move still needs.
-   *
-   * Three moves have something to collect, and each opens the task's edit screen
-   * with the move queued rather than writing it: **Completed** wants the hours
-   * the task took, **In progress** on an unassigned task wants whoever is taking
-   * it, and leaving Completed is a reopen and wants its reason. Every other move
-   * — pausing a task, cancelling one, starting one that already has an assignee —
-   * asks nothing, so it is written straight from the pill.
+   * A status picked in the grid never writes from the pill (client request — no
+   * auto-save on the ticket screen). It opens the task's edit screen with the
+   * move queued, and that screen's Save applies it — asking there for whatever
+   * the move needs: the hours for **Completed**, an assignee for **In progress**
+   * on an unassigned task, a reason for leaving Completed.
    */
   const askStatus = (task: Task, to: string) => {
-    const needsInput =
-      to === COMPLETED_TASK_STATUS
-      || isCompleted(task)
-      || (to === 'IN_PROGRESS' && !task.assigneeUserId);
-    if (!needsInput) {
-      patch.mutate({ taskId: task.id, data: { status: to } });
-      return;
-    }
     setPendingStatus(to);
     setOpenTaskId(task.id);
   };

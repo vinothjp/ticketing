@@ -4,7 +4,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CreateClientVisitDto, UpdateClientVisitDto, VISIT_STATUS_LABELS } from './dto/client-visit.dto';
-import { exportSheet } from '../lib/spreadsheet';
+import { exportSheet, tenantDateFormat } from '../lib/spreadsheet';
 import { CLIENT_VISIT_COLUMNS } from './client-visit-sheet';
 
 /** The one status that books a visit against the customer's visit allowance. */
@@ -59,10 +59,11 @@ export class ClientVisitsService {
   private async consultantName(clientId: string, consultantId: string) {
     const consultant = await this.prisma.user.findFirst({
       where: { id: consultantId, clientId },
-      select: { username: true },
+      select: { username: true, name: true },
     });
     if (!consultant) throw new BadRequestException('Consultant not found');
-    return consultant.username;
+    // Full name, not username — a username is often an employee id (client request).
+    return consultant.name?.trim() || consultant.username;
   }
 
   /** Resolve a product the customer actually owns; denormalised onto the visit. */
@@ -105,7 +106,7 @@ export class ClientVisitsService {
     productId?: string | null,
   ) {
     // An Implementation client has no allowance to spend, so nothing needs naming.
-    if (company.clientType === 'IMPLEMENTATION') return;
+    if (company.clientType !== 'AMC') return;
     if (company.contractScope === 'PRODUCT' && !productId) {
       throw new BadRequestException(
         `${company.name} is on per-product coverage, so a visit must name the product it is booked against`,
@@ -371,6 +372,7 @@ export class ClientVisitsService {
       'Client visits',
       CLIENT_VISIT_COLUMNS,
       visits.map((v) => ({ ...v, ticketNumber: v.ticketId ? numberOf.get(v.ticketId) ?? null : null })),
+      await tenantDateFormat(this.prisma, clientId),
     );
   }
 
@@ -417,7 +419,7 @@ export class ClientVisitsService {
 
     const visitNumber = `CL-${String(updatedClient.clientVisitSequence).padStart(6, '0')}`;
     // An Implementation client has no visits allowance: its visits are logged, never drawn down.
-    const contractDeducted = dto.status === DEDUCTING_STATUS && company.clientType !== 'IMPLEMENTATION';
+    const contractDeducted = dto.status === DEDUCTING_STATUS && company.clientType === 'AMC';
     const deductedCpId = contractDeducted
       ? await this.resolvePool(dto.customerCompanyId, dto.productId)
       : null;
@@ -504,7 +506,7 @@ export class ClientVisitsService {
     const effectiveCompany = company ?? (await this.assertCompany(clientId, customerCompanyId));
     this.assertProductForScope(effectiveCompany, productId);
     // An Implementation client has no visits allowance: its visits are logged, never drawn down.
-    const contractDeducted = newStatus === DEDUCTING_STATUS && effectiveCompany.clientType !== 'IMPLEMENTATION';
+    const contractDeducted = newStatus === DEDUCTING_STATUS && effectiveCompany.clientType === 'AMC';
     let productName = existingVisit.productName;
     if (!productId) {
       productName = null;

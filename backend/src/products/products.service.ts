@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -82,12 +82,15 @@ export class ProductsService {
 
   async addModule(productId: string, dto: CreateModuleDto, clientId: string) {
     await this.ownedProduct(productId, clientId);
+    if (!dto.name.trim()) throw new BadRequestException('Module name is required');
     const count = await this.prisma.productModule.count({ where: { productId } });
     return this.prisma.productModule.create({ data: { productId, name: dto.name.trim(), tracks: dto.tracks ?? [], sortOrder: count } });
   }
 
   async updateModule(moduleId: string, dto: UpdateModuleDto, clientId: string) {
     await this.ownedModule(moduleId, clientId);
+    // @IsNotEmpty passes '   ', which the trim below would store as a blank name.
+    if (dto.name !== undefined && !dto.name.trim()) throw new BadRequestException('Module name is required');
     if (dto.tracks) {
       await this.prisma.moduleConsultant.deleteMany({ where: { moduleId, track: { notIn: dto.tracks } } });
     }

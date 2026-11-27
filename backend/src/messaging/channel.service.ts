@@ -231,8 +231,11 @@ export class ChannelService {
       !viewer.roles.includes('Admin');
     const author = await this.prisma.user.findUnique({
       where: { id: actor.id },
-      select: { username: true, email: true },
+      select: { username: true, name: true, email: true },
     });
+    // People are named by full name in what we send — a username is often an
+    // employee id (client request). Falls back to the username when unset.
+    const authorName = author ? author.name?.trim() || author.username : null;
 
     let status = 'SENT';
     let error: string | null = null;
@@ -249,9 +252,9 @@ export class ChannelService {
       // provider side always (assigned agents + tenant admins, minus the author),
       // and the client's own people whenever staff posted.
       await this.notifyAssignedTechnicians(ticket.id, subject, input.body, author, attachments, ticket.clientId);
-      await this.notifyProviderSideOfChat(ticket, input.body, { id: actor.id, username: author?.username ?? null });
+      await this.notifyProviderSideOfChat(ticket, input.body, { id: actor.id, username: authorName });
       if (!viewerIsCustomerSide) {
-        await this.notifyCustomerSideOfChat(ticket, input.body, author?.username ?? null);
+        await this.notifyCustomerSideOfChat(ticket, input.body, authorName);
       }
     }
 
@@ -270,12 +273,12 @@ export class ChannelService {
         // A customer's message goes to the assigned support agent(s), greeting them by name.
         const techs = await this.prisma.ticketTechnician.findMany({
           where: { ticketId },
-          include: { user: { select: { email: true, username: true } } },
+          include: { user: { select: { email: true, username: true, name: true } } },
         });
         recipients = Array.from(new Set(techs.map((t) => t.user?.email).filter((e): e is string => !!e && EMAIL_RE.test(e))));
-        const names = Array.from(new Set(techs.map((t) => t.user?.username).filter((n): n is string => !!n)));
+        const names = Array.from(new Set(techs.map((t) => t.user?.name?.trim() || t.user?.username).filter((n): n is string => !!n)));
         greeting = `Hello ${names.length ? names.join(', ') : 'team'},`;
-        signerName = author?.username ?? 'Customer';
+        signerName = authorName ?? 'Customer';
         signerOrg = ticket.customerCompany?.name ?? null;
       } else {
         // An agent's reply goes to the requester's CURRENT email, signed by the agent + org.
@@ -283,7 +286,7 @@ export class ChannelService {
         if (!live) throw new BadRequestException('No email address on file for the requester');
         recipients = [live];
         greetName = ticket.requestorName ?? null;
-        signerName = author?.username;
+        signerName = authorName ?? undefined;
         signerOrg = org?.name;
       }
 
@@ -331,7 +334,7 @@ export class ChannelService {
         direction: 'OUTBOUND',
         isInternal: internal,
         authorUserId: actor.id,
-        authorName: author?.username ?? null,
+        authorName,
         fromAddress: author?.email ?? null,
         toAddress,
         subject: internal ? null : subject,

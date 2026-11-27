@@ -18,6 +18,7 @@ import type { EmployeeSheetRow } from './employee-sheet';
 import { USER_COLUMNS, USER_IMPORT_NOTES, BASE_STAFF_ROLE } from './user-sheet';
 import {
   exportSheet, importTemplate, readSheet, rowReader, asText, errorText,
+  tenantDateFormat,
 } from '../lib/spreadsheet';
 import type { ImportResult } from '../lib/spreadsheet';
 
@@ -205,7 +206,7 @@ export class UsersService {
     const counts = new Map(held.map((h) => [h.employeeUserId, h._count._all]));
 
     const rows: EmployeeSheetRow[] = staff.map((u) => ({ ...u, assetsHeld: counts.get(u.id) ?? 0 }));
-    return exportSheet('Employees', EMPLOYEE_COLUMNS, rows);
+    return exportSheet('Employees', EMPLOYEE_COLUMNS, rows, await tenantDateFormat(this.prisma, clientId));
   }
 
   /** The blank template: the same columns, minus the ones an import cannot set. */

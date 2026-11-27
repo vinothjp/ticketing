@@ -12,7 +12,7 @@ import { CustomerProductsService } from './customer-products.service';
 import { CreateCompanyDto, UpdateCompanyDto, CreateContactDto, CustomerAdminDto } from './dto/customer-company.dto';
 import {
   AssignProductDto, UpdateProductTermsDto, RenewAmcDto, GrantRequestDto, DeclineRequestDto, SetContractDto,
-  RenewContractDto, AddCustomerConsultantDto, LogUsageDto, SetPoNumberDto, SetModuleActiveDto, SetProductManagerDto,
+  RenewContractDto, AddCustomerConsultantDto, LogUsageDto, SetPoNumberDto, SetModuleActiveDto, SetProductManagerDto, SetDeploymentModelDto,
   SetClientTypeDto, SetClientServicesDto,
 } from './dto/customer-product.dto';
 import { sendWorkbook, stamp } from '../lib/spreadsheet';
@@ -202,6 +202,12 @@ export class CustomerCompaniesController {
   @Roles('Admin')
   setProductManager(@Param('cpId') cpId: string, @Body() dto: SetProductManagerDto, @Request() req: AuthedRequest) {
     return this.customerProducts.setProductManager(cpId, dto.userId, req.user.clientId);
+  }
+
+  @Patch('purchased-products/:cpId/deployment-model')
+  @Roles('Admin')
+  setDeploymentModel(@Param('cpId') cpId: string, @Body() dto: SetDeploymentModelDto, @Request() req: AuthedRequest) {
+    return this.customerProducts.setDeploymentModel(cpId, dto.model, req.user.clientId);
   }
 
   @Patch('purchased-products/:cpId/modules/:moduleId')

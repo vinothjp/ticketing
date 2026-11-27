@@ -14,6 +14,10 @@ export interface ReopenWindow {
   reopenDeadline?: string | null;
   /** Whether the window is still open. Purely about time — not about the viewer. */
   reopenWindowOpen?: boolean;
+  /** Tenant's cap on reopens per ticket (default 3). */
+  maxReopens?: number | null;
+  /** Whether this ticket has already been reopened `maxReopens` times. */
+  reopenLimitReached?: boolean;
 }
 
 /**
@@ -69,10 +73,17 @@ export default function ReopenControl({
   const deadline = ticket.reopenDeadline ? new Date(ticket.reopenDeadline) : null;
   // Absent from an older payload = treat as open, and let the API be the judge.
   const windowOpen = ticket.reopenWindowOpen !== false;
+  const limitReached = ticket.reopenLimitReached === true;
+  const max = ticket.maxReopens ?? 3;
+  const timesWord = `${max} time${max === 1 ? '' : 's'}`;
   const until = deadline ? ` (until ${fmtDate(deadline)})` : '';
   const decider = deciderLabel ?? (approverName ? `${approverName} (project manager)` : 'your provider');
   const hint = !canReopen
-    ? `Only the client can ask to reopen their own ticket, for ${days} days after it is resolved${until}. The project manager approves the request before it reopens.`
+    ? limitReached
+      ? `This ticket has been reopened the maximum of ${timesWord}. Any further issue needs a new ticket.`
+      : `Only the client can ask to reopen their own ticket, for ${days} days after it is resolved${until}, up to ${timesWord}. The project manager approves the request before it reopens.`
+    : limitReached
+      ? `This ticket has already been reopened the maximum of ${timesWord}. Raise a new ticket for this issue instead.`
     : !windowOpen
       ? `The ${days}-day reopening window closed${deadline ? ` on ${fmtDate(deadline)}` : ''}. Raise a new ticket for this issue instead.`
       : requestMode
@@ -89,7 +100,7 @@ export default function ReopenControl({
 
   return (
     <div className="flex items-center gap-1">
-      {canReopen && (windowOpen ? (
+      {canReopen && (windowOpen && !limitReached ? (
         <Button variant="outline" size="sm" onClick={() => setOpen(true)} disabled={reopening}>
           {requestMode ? 'Request reopen' : 'Reopen'}
         </Button>

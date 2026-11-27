@@ -1,4 +1,4 @@
-import { SheetColumn, dateCell } from '../lib/spreadsheet';
+import { SheetColumn, dateTimeCell } from '../lib/spreadsheet';
 
 /**
  * One ticket as the export writes it.
@@ -43,16 +43,8 @@ export interface TicketSheetRow {
 
 const text = (key: keyof TicketSheetRow) => (r: TicketSheetRow) => (r[key] as string | null) ?? '';
 
-/**
- * A stamp as `YYYY-MM-DD HH:mm`. The shared `dateCell` drops the time, which is
- * right for a purchase date but not for a ticket — a same-day due time is the
- * difference between met and breached. Local to this sheet for that reason.
- */
-const stampCell = (v?: Date | string | null) => {
-  if (!v) return '';
-  const d = new Date(v);
-  return `${dateCell(d)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-};
+/** A stamp with its time — a same-day due time is the difference between met and breached. */
+const stampCell = dateTimeCell;
 
 /** Two decimals at most, matching `hrs()` on the ticket screens. */
 const hours = (n: number) => Number((Number(n) || 0).toFixed(2));

@@ -24,6 +24,8 @@ interface AuthContextType {
   login: (username: string, password: string) => Promise<LoginResult>;
   verifyOtp: (challengeId: string, otp: string) => Promise<User>;
   logout: () => void;
+  /** Merge profile changes (name, email) into the stored session user. */
+  patchUser: (patch: Partial<Pick<User, 'name' | 'email'>>) => void;
   isAuthenticated: boolean;
 }
 
@@ -71,8 +73,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
   }, []);
 
+  const patchUser = useCallback((patch: Partial<Pick<User, 'name' | 'email'>>) => {
+    setUser((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, ...patch };
+      localStorage.setItem('user', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, login, verifyOtp, logout, isAuthenticated: !!user }}>
+    <AuthContext.Provider value={{ user, login, verifyOtp, logout, patchUser, isAuthenticated: !!user }}>
       {children}
     </AuthContext.Provider>
   );

@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { useDateFormat } from '@/lib/dateFormat';
 
 interface ProductRequest {
   id: string;
@@ -29,6 +30,7 @@ const badge = (s: string) =>
   : { label: 'Declined', cls: 'bg-destructive/15 text-destructive border-destructive/30' };
 
 export default function ProductRequestsPage() {
+  const { fmtDate } = useDateFormat();
   const qc = useQueryClient();
   const [grantFor, setGrantFor] = useState<ProductRequest | null>(null);
   const [terms, setTerms] = useState(emptyTerms);
@@ -72,7 +74,7 @@ export default function ProductRequestsPage() {
             <span className="text-base font-semibold text-foreground">{r.product.name}</span>
             <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${b.cls}`}>{b.label}</span>
           </div>
-          <div className="text-sm text-muted-foreground">Requested by {r.customerCompany.name} · {new Date(r.createdAt).toLocaleDateString()}</div>
+          <div className="text-sm text-muted-foreground">Requested by {r.customerCompany.name} · {fmtDate(r.createdAt)}</div>
           {r.note && <p className="mt-1 text-sm text-foreground">“{r.note}”</p>}
           {r.decisionNote && <p className="mt-1 text-xs text-muted-foreground">Your note: {r.decisionNote}</p>}
         </div>

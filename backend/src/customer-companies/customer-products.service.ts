@@ -11,7 +11,7 @@ import {
 } from './dto/customer-product.dto';
 import { productOffForClient } from './module-switch';
 import { assertAssignableManager, managerName, MANAGER_SELECT } from './client-managers';
-import { isImplementation, type ClientType } from './client-type';
+import { isServicesOnly, CLIENT_TYPE_LABELS, type ClientType } from './client-type';
 
 const DAY = 86_400_000;
 /**
@@ -236,7 +236,7 @@ export class CustomerProductsService {
     if (!company) return null;
     // An Implementation client has no pool at all: nothing caps, ledgers or
     // blocks its hours, which is what every caller of this resolver relies on.
-    if (isImplementation(company)) return null;
+    if (isServicesOnly(company)) return null;
     if (company.contractScope === 'CUSTOMER') {
       return {
         scope: 'CONTRACT' as const, ownerId: company.id, clientId,
@@ -483,6 +483,7 @@ export class CustomerProductsService {
       // inactive for them — see module-switch.ts.
       activeForClient: !productOffForClient((cp.product?.modules ?? []).map((m) => m.id), cp.inactiveModuleIds),
       productManagerId: cp.productManagerId,
+      deploymentModel: cp.deploymentModel,
       productManagerName: managerName(cp.productManager),
       // Paid-AMC terms shown so the customer knows what a subscription buys.
       paidTerms: {
@@ -599,9 +600,11 @@ export class CustomerProductsService {
    * API refuses what the screens never offer.
    */
   private assertAmc(company: { clientType?: string }) {
-    if (!isImplementation(company)) return;
+    if (!isServicesOnly(company)) return;
+    const label = CLIENT_TYPE_LABELS[company.clientType as ClientType] ?? company.clientType ?? '';
+    const article = /^[aeiou]/i.test(label) ? 'an' : 'a';
     throw new BadRequestException(
-      'This is an Implementation client — it has no AMC terms. Change its client type to AMC to add a support contract.',
+      `This is ${article} ${label} client — it has no AMC terms. Change its client type to AMC to add a support contract.`,
     );
   }
 
@@ -638,7 +641,7 @@ export class CustomerProductsService {
     // only records that it covers the product — the same row `setContract`'s
     // `productIds` writes. Per-product terms here would be a pool nothing reads.
     // An Implementation client has no timeline at all, so it records the same.
-    if (company.contractScope === 'CUSTOMER' || isImplementation(company)) {
+    if (company.contractScope === 'CUSTOMER' || isServicesOnly(company)) {
       return this.prisma.customerCompanyProduct.upsert({
         where: { customerCompanyId_productId: { customerCompanyId: companyId, productId: dto.productId } },
         update: { status: 'ACTIVE' },
@@ -948,6 +951,13 @@ export class CustomerProductsService {
     return { productManagerId: userId || null };
   }
 
+  /** Record how the client runs this product (S/4HANA deployment model). Either scope, any client type. */
+  async setDeploymentModel(cpId: string, model: string | null | undefined, clientId: string) {
+    await this.ownedCp(cpId, clientId);
+    await this.prisma.customerCompanyProduct.update({ where: { id: cpId }, data: { deploymentModel: model || null } });
+    return { deploymentModel: model || null };
+  }
+
   async removeProduct(cpId: string, clientId: string) {
     const cp = await this.ownedCp(cpId, clientId);
     await this.prisma.customerCompanyProduct.delete({ where: { id: cpId } });
@@ -1053,7 +1063,11 @@ export class CustomerProductsService {
   async setClientType(companyId: string, type: ClientType, clientId: string) {
     const company = await this.ownedCompany(companyId, clientId);
     if (company.clientType === type) return { clientType: type };
-    if (type === 'IMPLEMENTATION') {
+    // Between two services-only types (Implementation / Integration / Job Work)
+    // there are no AMC terms to clear — just relabel.
+    if (type !== 'AMC' && isServicesOnly(company)) {
+      await this.prisma.customerCompany.update({ where: { id: companyId }, data: { clientType: type } });
+    } else if (type !== 'AMC') {
       if (company.contractPoFileUrl) await this.deletePoFile(company.contractPoFileUrl);
       await this.resetProductTerms(companyId);
       await this.prisma.customerCompany.update({
@@ -1078,7 +1092,7 @@ export class CustomerProductsService {
    */
   async setClientServices(companyId: string, dto: SetClientServicesDto, clientId: string) {
     const company = await this.ownedCompany(companyId, clientId);
-    if (!isImplementation(company)) {
+    if (!isServicesOnly(company)) {
       throw new BadRequestException('Contract services of an AMC client are saved with its terms.');
     }
     const data: Prisma.CustomerCompanyUpdateInput = {};
@@ -1389,15 +1403,19 @@ export class CustomerProductsService {
   // ---- customer: my products, catalogue, requests ----------------------------
 
   async listMyProducts(clientId: string, companyId: string) {
-    const [rows, agents, logged] = await Promise.all([
+    const [rows, logged] = await Promise.all([
       this.prisma.customerCompanyProduct.findMany({ where: { customerCompanyId: companyId, customerCompany: { clientId } }, include: { product: { include: { modules: { select: { id: true } } } }, productManager: MANAGER_SELECT }, orderBy: { createdAt: 'asc' } }),
-      this.agentsByProduct(companyId, clientId),
       this.ticketHours(companyId, clientId),
     ]);
+    // No consultants on the customer's view: routing hands a ticket to whoever
+    // on the list is free (or nobody), so naming the primaries promised the
+    // client an agent they may not get — and production usernames are bare
+    // employee numbers. Withheld here, not just hidden in the UI. The ticket
+    // itself names the agent once one is assigned.
     return Promise.all(rows.map((r) => this.toView(
       r,
       clientId,
-      agents.byProduct.get(r.productId) ?? agents.defaults,
+      [],
       this.hoursSince(logged.byProduct.get(r.productId), r.amcStart),
     )));
   }
@@ -1410,7 +1428,7 @@ export class CustomerProductsService {
    */
   async productSupportHours(clientId: string, companyId: string, productId: string) {
     const company = await this.prisma.customerCompany.findFirst({ where: { id: companyId, clientId } });
-    if (!company || isImplementation(company)) return { hasPool: false as const, allocated: null, used: 0, left: null };
+    if (!company || isServicesOnly(company)) return { hasPool: false as const, allocated: null, used: 0, left: null };
     const logged = await this.ticketHours(companyId, clientId);
 
     if (company.contractScope === 'CUSTOMER') {

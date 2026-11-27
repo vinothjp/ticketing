@@ -8,6 +8,7 @@ import { useAuth } from '../../context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import type { KbArticle } from '../KnowledgeBasePage';
+import { useDateFormat } from '@/lib/dateFormat';
 
 function Block({ title, text }: { title: string; text?: string | null }) {
   if (!text) return null;
@@ -25,12 +26,13 @@ function Meta({ label, value }: { label: string; value?: string | null }) {
 }
 
 export default function KbArticlePage() {
+  const { fmtDate } = useDateFormat();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { user } = useAuth();
   const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer' || r === 'Manager');
-  const fmt = (d?: string | null) => (d ? new Date(d).toLocaleDateString() : null);
+  const fmt = (d?: string | null) => (d ? fmtDate(d) : null);
 
   const { data: article, isLoading, isError } = useQuery<KbArticle>({
     queryKey: ['kb-article', id],

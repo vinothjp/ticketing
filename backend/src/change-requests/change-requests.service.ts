@@ -21,6 +21,12 @@ export class ChangeRequestsService {
     private notifications: NotificationsService,
   ) {}
 
+  /** Who raised it, by full name — a username is often an employee id (client request). */
+  private async actorName(actor: Actor) {
+    const u = await this.prisma.user.findUnique({ where: { id: actor.id }, select: { username: true, name: true } });
+    return u?.name?.trim() || u?.username || actor.username || null;
+  }
+
   async list(clientId: string, opts: { search?: string; status?: string; priority?: string }) {
     await this.options.ensureDefaults(clientId);
     const where: Prisma.ChangeRequestWhereInput = { clientId };
@@ -180,6 +186,7 @@ export class ChangeRequestsService {
       cabApprovalStatus: 'NONE',
     }, { createdAt: new Date() });
 
+    const createdByName = await this.actorName(actor);
     return this.prisma.$transaction(async (tx) => {
       const client = await tx.client.update({
         where: { id: clientId },
@@ -233,7 +240,7 @@ export class ChangeRequestsService {
           targetReleaseDate: dates.targetReleaseDate,
           expectedGoLiveDate: dates.expectedGoLiveDate,
           createdBy: actor.id,
-          createdByName: actor.username ?? null,
+          createdByName,
           updatedBy: actor.id,
         },
       });

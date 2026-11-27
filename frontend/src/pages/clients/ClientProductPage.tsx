@@ -21,6 +21,7 @@ import ContractServicesConfig from '@/components/ContractServicesConfig';
 import { servicesForm, servicesPayload, type ContractServicesValue } from '@/components/contractServices';
 import CoverageMeter, { wholeHrs } from '@/components/CoverageMeter';
 import { useAuth } from '../../context/AuthContext';
+import { useDateFormat } from '@/lib/dateFormat';
 
 interface Pool { allocated: number | null; used: number; left: number | null; unlimited?: boolean }
 interface Cov { end: string | null; label: string; pct: number; active: boolean }
@@ -54,7 +55,6 @@ interface CatModule { id: string; name: string; tracks: string[]; consultants: C
 interface CatProduct { id: string; name: string; imageUrl?: string | null; modules: CatModule[]; consultants: CatAgent[] }
 interface StaffUser { id: string; username: string; name?: string | null; isActive?: boolean }
 
-const fmt = (d: string | null) => (d ? new Date(d).toLocaleDateString() : '—');
 const statusCls = (s: string) =>
   s === 'ACTIVE' ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
   : s === 'EXPIRED' ? 'bg-destructive/15 text-destructive border-destructive/30'
@@ -70,6 +70,8 @@ function Num({ label, value, onChange, type = 'number', min, disabled }: { label
 }
 
 export default function ClientProductPage() {
+  const { fmtDate } = useDateFormat();
+  const fmt = (d: string | null) => (d ? fmtDate(d) : '—');
   const { companyId, cpId } = useParams<{ companyId: string; cpId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -325,7 +327,7 @@ export default function ClientProductPage() {
             {/* A client-level switch, so it saves on click rather than with the
                 terms below — see setAutoAssign. */}
             <AutoAssignChoice
-              value={company?.autoAssignTickets ?? true}
+              value={company?.autoAssignTickets ?? false}
               disabled={!isAdmin || !company}
               onChange={setAutoAssign} />
             {isAdmin && (

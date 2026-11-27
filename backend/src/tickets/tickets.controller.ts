@@ -74,6 +74,14 @@ export class TicketsController {
     return this.ticketsService.findOne(id, req.user.clientId, req.user);
   }
 
+  // The Assigned agent field's options: the ticket's product/module agents plus
+  // the client's own consultants (all staff when it names no product).
+  @Get(':id/assignable-agents')
+  @UseGuards(StaffGuard)
+  getAssignableAgents(@Param('id') id: string, @Request() req: AuthedRequest) {
+    return this.ticketsService.assignableAgents(id, req.user.clientId, req.user);
+  }
+
   @Get(':id/activity')
   getActivity(@Param('id') id: string, @Request() req: AuthedRequest) {
     return this.ticketsService.getActivity(id, req.user.clientId, req.user);

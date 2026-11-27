@@ -43,6 +43,7 @@ export class CustomerTeamService {
     return users.map((u) => ({
       id: u.id,
       username: u.username,
+      name: u.name,
       email: u.email,
       isActive: u.isActive,
       role: this.roleLabel(u.userRoles.map((ur) => ur.role.name)),
@@ -128,13 +129,42 @@ export class CustomerTeamService {
       }
     }
 
-    if (dto.isActive !== undefined) {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { isActive: dto.isActive, updatedBy: actor.id },
+    const data: { isActive?: boolean; username?: string; email?: string; name?: string | null } = {};
+    if (dto.isActive !== undefined) data.isActive = dto.isActive;
+
+    // Profile edits. Username and email are platform-wide unique and login
+    // matches either case-insensitively, so the clash check is too — "Jane"
+    // beside "jane" would make one of them impossible to sign in as.
+    const username = dto.username?.trim();
+    const email = dto.email?.trim().toLowerCase();
+    if (dto.username !== undefined && !username) throw new BadRequestException('Username cannot be empty');
+    if (username && username !== target.username) data.username = username;
+    if (email && email !== target.email.toLowerCase()) data.email = email;
+    if (data.username || data.email) {
+      const clash = await this.prisma.user.findFirst({
+        where: {
+          id: { not: userId },
+          OR: [
+            ...(data.username ? [{ username: { equals: data.username, mode: 'insensitive' as const } }] : []),
+            ...(data.email ? [{ email: { equals: data.email, mode: 'insensitive' as const } }] : []),
+          ],
+        },
+        select: { username: true, email: true },
       });
+      if (clash) {
+        throw new ConflictException(
+          data.username && clash.username.toLowerCase() === data.username.toLowerCase()
+            ? `Username "${data.username}" is already taken`
+            : `Email "${data.email}" is already in use`,
+        );
+      }
     }
-    return { message: 'Team member updated' };
+    if (dto.name !== undefined) data.name = dto.name.trim() || null;
+
+    if (Object.keys(data).length) {
+      await this.prisma.user.update({ where: { id: userId }, data: { ...data, updatedBy: actor.id } });
+    }
+    return { message: 'Team member updated', usernameChanged: isSelf && !!data.username };
   }
 
   async remove(userId: string, actor: Actor) {

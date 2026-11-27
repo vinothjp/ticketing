@@ -181,8 +181,9 @@ export function ClientVisitFormPage() {
     // Only narrowing can invalidate a pick, and only a product narrows.
     if (!productPicked || !consultantsLoaded || !consultantId) return;
     if (consultantOptions.some((c) => c.userId === consultantId)) return;
-    const dropped = customerConsultants.find((c) => c.userId === consultantId)?.username
-      ?? staff.find((u) => u.id === consultantId)?.username;
+    const cc = customerConsultants.find((c) => c.userId === consultantId);
+    const su = staff.find((u) => u.id === consultantId);
+    const dropped = (cc && (cc.name?.trim() || cc.username)) || (su && (su.name?.trim() || su.username));
     setConsultantId('');
     toast.info(
       dropped

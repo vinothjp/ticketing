@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateClientDto } from './dto/create-client.dto';
@@ -159,10 +159,22 @@ export class ClientsService {
       dateFormat?: string;
       timeFormat?: string;
       currency?: string;
+      criticalTicketEmail?: string | null;
+      criticalTicketAlerts?: boolean;
     },
     actorId: string,
   ) {
-    await this.findOne(id);
+    const current = await this.findOne(id);
+    // Critical ticket admin: a blank address is stored as none, and the alerts
+    // cannot be on without one — they would silently go nowhere.
+    if (dto.criticalTicketEmail !== undefined) {
+      dto = { ...dto, criticalTicketEmail: dto.criticalTicketEmail?.trim().toLowerCase() || null };
+    }
+    const alertsOn = dto.criticalTicketAlerts ?? current.criticalTicketAlerts;
+    const alertEmail = dto.criticalTicketEmail !== undefined ? dto.criticalTicketEmail : current.criticalTicketEmail;
+    if (alertsOn && !alertEmail) {
+      throw new BadRequestException('Enter the critical ticket admin email before switching critical ticket emails on');
+    }
     if (dto.code) {
       const existing = await this.prisma.client.findUnique({ where: { code: dto.code } });
       if (existing && existing.id !== id) throw new ConflictException('Client code already exists');

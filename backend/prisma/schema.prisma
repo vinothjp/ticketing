@@ -82,6 +82,11 @@ model Client {
   // ticket screen sends the user to raise a new ticket. Tenant-editable on the
   // Organization screen.
   ticketMaxReopens Int @default(3)
+  // Critical ticket admin (Organization screen): when on, every ticket that is
+  // Critical — raised as one, or raised to it later — is emailed to this one
+  // address. Off by default; switching it on needs an address.
+  criticalTicketEmail  String?
+  criticalTicketAlerts Boolean @default(false)
   // How dates are rendered on this tenant's ticket screens. A token pattern
   // (`dd/MM/yyyy`, `MMM dd, yyyy`, …) chosen on the Organization screen from the
   // DATE_FORMAT option list, so an admin can add a pattern without a deploy.
@@ -191,8 +196,9 @@ model CustomerCompany {
   code         String?
   // Auto-generated on create from Client.companySequence; never typed or edited.
   companyCode  String?
-  // Department values (PicklistOption.value of listKey "department") offered on
-  // this client's New Ticket form. Empty = every department.
+  // DORMANT — the per-client department filter on the New Ticket form was
+  // withdrawn (client request). Nothing reads or writes it; kept so the stored
+  // values survive `db push --accept-data-loss`.
   departments  String[] @default([])
   contactEmail String?
   contactPerson String?
@@ -292,8 +298,9 @@ model CustomerCompany {
   // Whether tickets this client raises are auto-routed to a free consultant at
   // all. Off = every ticket lands unassigned for a manager to pick. Applies
   // whatever the contractScope is, hence no contract* prefix. Unrelated to the
-  // (dead) Product.autoAssign.
-  autoAssignTickets        Boolean  @default(true)
+  // (dead) Product.autoAssign. Off by default (client request): a new client
+  // gets auto-routing only once an Admin switches it on for them.
+  autoAssignTickets        Boolean  @default(false)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   createdBy    String?
@@ -733,7 +740,7 @@ model Template {
   name                String
   category            String?
   description         String?
-  descriptionGuidance String?
+  descriptionGuidance String? // DORMANT — the Description pre-fill was withdrawn (client request); nothing reads or writes it
   icon                String?
   color               String?
   defaultPriority     String?

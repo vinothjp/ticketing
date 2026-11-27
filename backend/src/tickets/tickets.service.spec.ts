@@ -79,6 +79,10 @@ function build(
         ),
       findMany: jest.fn().mockResolvedValue(statusOptions),
     },
+    // The assignable-agents gate: a module's agents, the client's own consultants.
+    moduleConsultant: { findMany: jest.fn().mockResolvedValue([]) },
+    productConsultant: { findMany: jest.fn().mockResolvedValue([]) },
+    customerConsultant: { findMany: jest.fn().mockResolvedValue([]) },
     ticketTechnician: {
       findMany: jest.fn().mockResolvedValue([{ userId: 'agent-1' }]),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -861,6 +865,9 @@ describe('TicketsService — reassignment tells everyone waiting on the ticket',
   ) {
     prisma.ticketTechnician.findMany.mockResolvedValue(previous.map((u) => ({ user: u })));
     prisma.user.count.mockResolvedValue(incoming.length);
+    // A ticket naming no product may be assigned to any staff member: the
+    // assignable-agents gate reads all staff first (only when assigning someone).
+    if (incoming.length) prisma.user.findMany.mockResolvedValueOnce([...previous, ...incoming]);
     prisma.user.findMany
       // the incoming agents, for the activity summary
       .mockResolvedValueOnce(incoming)
@@ -868,6 +875,22 @@ describe('TicketsService — reassignment tells everyone waiting on the ticket',
       .mockResolvedValueOnce([{ id: 'company-admin-1', email: 'ada@acme.test' }])
       .mockResolvedValueOnce([{ id: 'admin-1', email: 'pm@provider.test' }]);
   }
+
+  it("refuses an agent who is not set up for the ticket's module", async () => {
+    const { service, prisma } = build({ ...openTicket(), productId: 'product-1', moduleId: 'module-mm' });
+    prisma.ticketTechnician.findMany.mockResolvedValue([]);
+    prisma.user.count.mockResolvedValue(1);
+    // MM's agents (any track) are agent-1 only; the client adds nobody.
+    prisma.moduleConsultant.findMany.mockResolvedValue([{ userId: 'agent-1' }]);
+    prisma.user.findMany
+      .mockResolvedValueOnce([{ id: 'agent-1', username: 'agent1', name: 'Ada One' }]) // the assignable list
+      .mockResolvedValueOnce([{ username: 'agent2', name: 'Bo Two' }]); // who was refused, for the message
+
+    await expect(
+      service.assignTechnicians('ticket-1', CLIENT_ID, ['agent-2'], admin.id, admin),
+    ).rejects.toThrow("Bo Two is not set up for this ticket's product/module");
+    expect(prisma.ticketTechnician.createMany).not.toHaveBeenCalled();
+  });
 
   const AGENT_1 = { id: 'agent-1', username: 'agent1', email: 'a1@provider.test' };
   const AGENT_2 = { id: 'agent-2', username: 'agent2', email: 'a2@provider.test' };
@@ -946,7 +969,37 @@ describe('TicketsService — reassignment tells everyone waiting on the ticket',
     await expect(
       service.assignTechnicians('ticket-1', CLIENT_ID, ['agent-2'], admin.id, admin),
     ).resolves.toBeDefined();
+    await service.flushMail();
     expect(mailer.sendMail).not.toHaveBeenCalled();
+  });
+
+  it('returns before the email is sent, then sends it', async () => {
+    const { service, prisma, mailer } = build(openTicket());
+    wireAssignment(prisma, [AGENT_1], [AGENT_2]);
+    mailer.isConfigured.mockResolvedValue(true);
+    let release!: () => void;
+    // A slow mail server: the send hangs until released.
+    mailer.sendMail.mockImplementation(() => new Promise((r) => { release = () => r({}); }));
+
+    await service.assignTechnicians('ticket-1', CLIENT_ID, ['agent-2'], admin.id, admin);
+    // The assignment came back while the first email was still in flight.
+    expect(mailer.sendMail).toHaveBeenCalledTimes(1);
+    release();
+    await new Promise((r) => setImmediate(r));
+    release();
+    await service.flushMail();
+    expect(mailer.sendMail).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs a failed email and keeps sending the next one', async () => {
+    const { service, prisma, mailer } = build(openTicket());
+    wireAssignment(prisma, [AGENT_1], [AGENT_2]);
+    mailer.isConfigured.mockResolvedValue(true);
+    mailer.sendMail.mockRejectedValueOnce(new Error('SMTP down')).mockResolvedValue({});
+
+    await service.assignTechnicians('ticket-1', CLIENT_ID, ['agent-2'], admin.id, admin);
+    await service.flushMail();
+    expect(mailer.sendMail).toHaveBeenCalledTimes(2);
   });
 
   it('sends the client and the provider separate emails', async () => {
@@ -956,6 +1009,8 @@ describe('TicketsService — reassignment tells everyone waiting on the ticket',
     mailer.sendMail.mockResolvedValue({});
 
     await service.assignTechnicians('ticket-1', CLIENT_ID, ['agent-2'], admin.id, admin);
+    // Emails are queued and sent after the call returns; nothing goes out before.
+    await service.flushMail();
 
     const recipients = mailer.sendMail.mock.calls.map((c) => (c[0] as { to: string }).to);
     expect(recipients).toHaveLength(2);
@@ -1012,5 +1067,50 @@ describe('TicketsService — a Closed ticket\'s status is frozen until a reopen'
       service.update('ticket-1', CLIENT_ID, { ticketStatus: 'In Progress' }, agent.id, agent),
     ).rejects.toThrow(/ticket is closed/);
     expect(prisma.ticket.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('TicketsService — Critical tickets are mailed to the critical ticket admin', () => {
+  type Alerting = { alertCriticalTicket(c: string, id: string, how: 'raised' | 'raised to Critical'): Promise<void> };
+  const arm = (
+    prisma: ReturnType<typeof build>['prisma'],
+    mailer: ReturnType<typeof build>['mailer'],
+    org: { criticalTicketAlerts: boolean; criticalTicketEmail: string | null },
+    priority: string,
+  ) => {
+    (prisma.client.findUnique as jest.Mock).mockResolvedValueOnce({ name: 'Acme', ...org });
+    (prisma.ticket as unknown as { findUnique: jest.Mock }).findUnique = jest.fn().mockResolvedValue({
+      ticketNumber: 'T-000009', subject: 'Payroll down', priority, ticketStatus: 'Open', createdBy: null,
+      customerName: null, productId: null, moduleId: null, customerCompany: { name: 'Globex' },
+    });
+    mailer.isConfigured.mockResolvedValue(true);
+    mailer.sendMail.mockResolvedValue({});
+  };
+
+  it('emails a Critical ticket to the configured address', async () => {
+    const { service, prisma, mailer } = build(ticketRow());
+    arm(prisma, mailer, { criticalTicketAlerts: true, criticalTicketEmail: 'lead@acme.test' }, 'critical');
+    await (service as unknown as Alerting).alertCriticalTicket(CLIENT_ID, 'ticket-1', 'raised');
+    await service.flushMail();
+    expect(mailer.sendMail).toHaveBeenCalledTimes(1);
+    const [msg] = mailer.sendMail.mock.calls[0] as [{ to: string; subject: string }];
+    expect(msg.to).toBe('lead@acme.test');
+    expect(msg.subject).toBe('[T-000009] Critical ticket: Payroll down');
+  });
+
+  it('sends nothing while the switch is off', async () => {
+    const { service, prisma, mailer } = build(ticketRow());
+    arm(prisma, mailer, { criticalTicketAlerts: false, criticalTicketEmail: 'lead@acme.test' }, 'critical');
+    await (service as unknown as Alerting).alertCriticalTicket(CLIENT_ID, 'ticket-1', 'raised');
+    await service.flushMail();
+    expect(mailer.sendMail).not.toHaveBeenCalled();
+  });
+
+  it('sends nothing for a ticket that is not Critical', async () => {
+    const { service, prisma, mailer } = build(ticketRow());
+    arm(prisma, mailer, { criticalTicketAlerts: true, criticalTicketEmail: 'lead@acme.test' }, 'high');
+    await (service as unknown as Alerting).alertCriticalTicket(CLIENT_ID, 'ticket-1', 'raised');
+    await service.flushMail();
+    expect(mailer.sendMail).not.toHaveBeenCalled();
   });
 });

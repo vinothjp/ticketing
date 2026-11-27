@@ -44,12 +44,14 @@ export interface SheetSpec<T> {
  * `readSheet` reads back, so a screen whose export is also its import keeps its
  * importable rows first and puts read-back detail on the sheets after it.
  */
-export function exportWorkbook(sheets: SheetSpec<any>[]): Buffer {
+export function exportWorkbook(sheets: SheetSpec<any>[], dateFormat?: string | null): Buffer {
+  const z = excelDatePattern(dateFormat);
   const wb = XLSX.utils.book_new();
   for (const { name, columns, rows } of sheets) {
     const body = rows.map((row) =>
       columns.map((c) => {
         const v = c.value?.(row);
+        if (v instanceof DateCell) return { t: 'n', v: v.serial, z: v.withTime ? `${z} hh:mm` : z };
         return v === undefined || v === null ? '' : v;
       }),
     );
@@ -61,8 +63,8 @@ export function exportWorkbook(sheets: SheetSpec<any>[]): Buffer {
 }
 
 /** A sheet of `rows` under `columns`, as a workbook buffer. */
-export function exportSheet<T>(sheetName: string, columns: SheetColumn<T>[], rows: T[]): Buffer {
-  return exportWorkbook([{ name: sheetName, columns, rows }]);
+export function exportSheet<T>(sheetName: string, columns: SheetColumn<T>[], rows: T[], dateFormat?: string | null): Buffer {
+  return exportWorkbook([{ name: sheetName, columns, rows }], dateFormat);
 }
 
 /**
@@ -176,12 +178,68 @@ export function asDate(v: unknown, label: string): string | null {
   if (!text) return null;
   const date = v instanceof Date ? v : new Date(text);
   if (isNaN(date.getTime())) throw new BadRequestException(`${label}: "${text}" is not a date`);
+  // The reader builds an Excel date at *local* midnight, so read its local
+  // calendar day — the UTC one is the day before anywhere east of Greenwich.
+  if (v instanceof Date) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  }
   return date.toISOString().slice(0, 10);
 }
 
-/** `Date` | ISO -> the `YYYY-MM-DD` an export cell carries. */
-export const dateCell = (v?: Date | string | null) =>
-  v ? new Date(v).toISOString().slice(0, 10) : '';
+/**
+ * A date for an export cell. Written as a real Excel date (a serial number)
+ * displayed in the tenant's date format, so the sheet reads as the screens do
+ * and still sorts — and an import reads it back as a `Date` (`cellDates`).
+ */
+export class DateCell {
+  constructor(readonly serial: number, readonly withTime = false) {}
+}
+export const dateCell = (v?: Date | string | null): DateCell | '' => {
+  if (!v) return '';
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return '';
+  // Whole days since Excel's epoch (1899-12-30), by the UTC calendar day.
+  const day = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  return new DateCell((day - Date.UTC(1899, 11, 30)) / 86_400_000);
+};
+
+/** A date and time (`… HH:mm`) for an export cell — same idea as `dateCell`. */
+export const dateTimeCell = (v?: Date | string | null): DateCell | '' => {
+  if (!v) return '';
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return '';
+  const ms = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes());
+  return new DateCell((ms - Date.UTC(1899, 11, 30)) / 86_400_000, true);
+};
+
+/**
+ * The tenant's date pattern (`dd/MM/yyyy` tokens, see the frontend's
+ * `lib/dateFormat.ts`) as an Excel number format. Excel spells months `m` and
+ * minutes `m` alike, so only date tokens are carried; anything else is quoted.
+ */
+export function excelDatePattern(pattern?: string | null): string {
+  const src = pattern || 'dd/MM/yyyy';
+  const map: [string, string][] = [
+    ['yyyy', 'yyyy'], ['yy', 'yy'], ['MMMM', 'mmmm'], ['MMM', 'mmm'], ['MM', 'mm'], ['M', 'm'], ['dd', 'dd'], ['d', 'd'],
+  ];
+  let out = '';
+  for (let i = 0; i < src.length; ) {
+    const hit = map.find(([t]) => src.startsWith(t, i));
+    if (hit) { out += hit[1]; i += hit[0].length; continue; }
+    const ch = src[i++];
+    out += /[\s/.,:-]/.test(ch) ? ch : `"${ch}"`;
+  }
+  return out;
+}
+
+/** The tenant's chosen date format (`Client.dateFormat`), for an export. */
+export async function tenantDateFormat(
+  prisma: { client: { findUnique(args: any): Promise<{ dateFormat: string | null } | null> } },
+  clientId: string,
+): Promise<string | null> {
+  const c = await prisma.client.findUnique({ where: { id: clientId }, select: { dateFormat: true } });
+  return c?.dateFormat ?? null;
+}
 
 /**
  * A cell matched against a fixed vocabulary, by stored value or by label, so a

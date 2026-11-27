@@ -3,13 +3,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Building2, X } from 'lucide-react';
+import { Building2, Info, X } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../lib/api';
 import { assetUrl } from '@/lib/assetUrl';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import type { Control } from 'react-hook-form';
@@ -29,6 +31,8 @@ interface MyClientDetail {
   dateFormat?: string | null;
   timeFormat?: string | null;
   currency?: string | null;
+  criticalTicketEmail?: string | null;
+  criticalTicketAlerts?: boolean;
   license: License | null; _count: { users: number };
 }
 
@@ -61,6 +65,12 @@ const orgSchema = z.object({
   dateFormat: z.string().min(1, 'Pick a date format'),
   timeFormat: z.string().min(1, 'Pick a time format'),
   currency: z.string().min(1, 'Pick a currency'),
+  // Critical ticket admin: who every Critical ticket is emailed to, and the switch.
+  criticalTicketEmail: z.string().email('Enter a valid email').optional().or(z.literal('')),
+  criticalTicketAlerts: z.boolean(),
+}).refine((v) => !v.criticalTicketAlerts || !!v.criticalTicketEmail?.trim(), {
+  message: 'Enter the email that critical tickets go to',
+  path: ['criticalTicketEmail'],
 });
 type OrgValues = z.infer<typeof orgSchema>;
 
@@ -88,6 +98,7 @@ export default function OrganizationPage() {
       name: '', contactEmail: '', contactPhone: '',
       ticketReopenWindowDays: '30', ticketAutoCloseDays: '3', ticketMaxReopens: '3',
       dateFormat: DEFAULT_DATE_FORMAT, timeFormat: DEFAULT_TIME_FORMAT, currency: 'USD',
+      criticalTicketEmail: '', criticalTicketAlerts: false,
     },
   });
 
@@ -103,6 +114,8 @@ export default function OrganizationPage() {
       dateFormat: client.dateFormat || DEFAULT_DATE_FORMAT,
       timeFormat: client.timeFormat || DEFAULT_TIME_FORMAT,
       currency: client.currency || 'USD',
+      criticalTicketEmail: client.criticalTicketEmail ?? '',
+      criticalTicketAlerts: !!client.criticalTicketAlerts,
     });
   }, [client, form]);
 
@@ -126,6 +139,8 @@ export default function OrganizationPage() {
         ticketReopenWindowDays: Number(values.ticketReopenWindowDays),
         ticketAutoCloseDays: Number(values.ticketAutoCloseDays),
         ticketMaxReopens: Number(values.ticketMaxReopens),
+        // Empty clears it on the server.
+        criticalTicketEmail: values.criticalTicketEmail?.trim() ?? '',
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['my-client-detail'] });
@@ -325,14 +340,10 @@ export default function OrganizationPage() {
                   name="ticketReopenWindowDays"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Ticket reopen window (days)</FormLabel>
+                      <LabelWithHint hint="Days after it is resolved that a ticket can still be reopened. After that, the user raises a new ticket.">Ticket reopen window (days)</LabelWithHint>
                       <FormControl>
                         <Input type="number" min={1} max={3650} step={1} {...field} />
                       </FormControl>
-                      <p className="text-xs text-muted-foreground">
-                        How long after a ticket is resolved it can still be reopened. Past this
-                        window the ticket screen asks the user to raise a new ticket instead.
-                      </p>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -342,14 +353,10 @@ export default function OrganizationPage() {
                   name="ticketAutoCloseDays"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Auto-close after (days)</FormLabel>
+                      <LabelWithHint hint="Days a resolved client ticket waits for acknowledgement before closing itself. Internal tickets are closed by staff.">Auto-close after (days)</LabelWithHint>
                       <FormControl>
                         <Input type="number" min={1} max={365} step={1} {...field} />
                       </FormControl>
-                      <p className="text-xs text-muted-foreground">
-                        How long a resolved ticket waits for the client's acknowledgement before
-                        it closes itself. Only client tickets wait — internal ones are closed by staff.
-                      </p>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -359,14 +366,10 @@ export default function OrganizationPage() {
                   name="ticketMaxReopens"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Ticket reopens allowed</FormLabel>
+                      <LabelWithHint hint="How many times one ticket can be reopened. Once used up, the user raises a new ticket.">Ticket reopens allowed</LabelWithHint>
                       <FormControl>
                         <Input type="number" min={0} max={100} step={1} {...field} />
                       </FormControl>
-                      <p className="text-xs text-muted-foreground">
-                        How many times one ticket can be reopened. Once used up, the ticket screen
-                        asks the user to raise a new ticket instead.
-                      </p>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -382,7 +385,6 @@ export default function OrganizationPage() {
                   label="Date format"
                   listId={listId('DATE_FORMAT')}
                   preview={(code) => formatWithPattern(new Date(), code)}
-                  hint="How every date on the ticket screens is written for this organization."
                 />
                 <OptionListField
                   control={form.control}
@@ -390,22 +392,48 @@ export default function OrganizationPage() {
                   label="Time format"
                   listId={listId('TIME_FORMAT')}
                   preview={(code) => formatWithPattern(new Date(), code)}
-                  hint="Appended to the date wherever a stamp carries the time too."
                 />
                 <OptionListField
                   control={form.control}
                   name="currency"
                   label="Currency"
                   listId={listId('CURRENCY')}
-                  hint="The currency this organization trades in. Recorded on the organization; no screen reads it yet."
                 />
               </div>
 
-              <p className="text-xs text-muted-foreground">
-                Date format, time format and currency come from the{' '}
-                <span className="font-medium">Organization</span> module on the Option List
-                screen &mdash; add a value there and it appears here.
-              </p>
+              {/* Critical ticket admin: the address, with the switch that turns
+                  the emails on sitting beside its label. */}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="criticalTicketEmail"
+                  render={({ field }) => (
+                    <FormItem>
+                      <div className="flex items-center gap-3">
+                        <FormLabel>Critical ticket admin</FormLabel>
+                        <FormField
+                          control={form.control}
+                          name="criticalTicketAlerts"
+                          render={({ field: alerts }) => (
+                            <div className="flex items-center gap-1.5">
+                              <Switch checked={alerts.value} onCheckedChange={alerts.onChange} aria-label="Email critical tickets" />
+                              <span className="text-xs text-muted-foreground">{alerts.value ? 'On' : 'Off'}</span>
+                            </div>
+                          )}
+                        />
+                      </div>
+                      <FormControl>
+                        <Input type="email" placeholder="e.g. support-lead@yourcompany.com" {...field} />
+                      </FormControl>
+                      <p className="text-xs text-muted-foreground">
+                        Every Critical ticket is emailed to this address — when it is raised, and when a
+                        ticket is raised to Critical later.
+                      </p>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
 
               {/* Right-aligned, so the eye lands on it after reading down the
                   right-hand column rather than jumping back to the margin. */}
@@ -445,7 +473,7 @@ function OptionListField({
   listId?: string;
   /** Renders the value as it will actually be seen, beside the code. */
   preview?: (code: string) => string;
-  hint: string;
+  hint?: string;
 }) {
   const { data: values = [] } = useQuery<OptionValue[]>({
     queryKey: ['option-list-values', listId],
@@ -487,11 +515,30 @@ function OptionListField({
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">{hint}</p>
+            {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
             <FormMessage />
           </FormItem>
         );
       }}
     />
+  );
+}
+
+/** A field label with its explanation behind an info icon, shown on hover. */
+function LabelWithHint({ children, hint }: { children: React.ReactNode; hint: string }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <FormLabel>{children}</FormLabel>
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button type="button" aria-label="What this means" className="text-muted-foreground hover:text-foreground">
+              <Info className="size-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{hint}</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    </div>
   );
 }

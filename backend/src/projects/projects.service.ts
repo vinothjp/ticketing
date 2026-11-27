@@ -11,6 +11,7 @@ import {
 } from './dto/project.dto';
 import {
   exportSheet, importTemplate, readSheet, rowReader, asText, asDate, errorText,
+  tenantDateFormat,
 } from '../lib/spreadsheet';
 import type { ImportResult } from '../lib/spreadsheet';
 import { RESOURCE_COLUMNS, RESOURCE_IMPORT_NOTES } from './resource-sheet';
@@ -1276,7 +1277,7 @@ export class ProjectsService {
       include: { user: { select: { username: true, name: true, employeeId: true } }, category: true },
       orderBy: { createdAt: 'asc' },
     });
-    return exportSheet('Resources', RESOURCE_COLUMNS, rows as unknown as ResourceSheetRow[]);
+    return exportSheet('Resources', RESOURCE_COLUMNS, rows as unknown as ResourceSheetRow[], await tenantDateFormat(this.prisma, clientId));
   }
 
   /** The blank template: the same columns, minus the ones an import cannot set. */

@@ -10,6 +10,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import type { ClientVisit } from './clientVisitsMeta';
+import { useDateFormat } from '@/lib/dateFormat';
 
 /** The outcomes a consultant reports; a visit can never be un-planned from here. */
 const REPORT_STATUSES = [
@@ -27,6 +28,7 @@ const REPORT_STATUSES = [
  * it is shown read-only here — matching what the API will accept.
  */
 export function VisitReportDialog({ visit, onClose }: { visit: ClientVisit | null; onClose: () => void }) {
+  const { fmtDate } = useDateFormat();
   const qc = useQueryClient();
   const [hours, setHours] = useState('');
   const [status, setStatus] = useState('');
@@ -85,7 +87,7 @@ export function VisitReportDialog({ visit, onClose }: { visit: ClientVisit | nul
               <dt className="col-span-1 text-muted-foreground">Client</dt>
               <dd className="col-span-2">{visit.customerCompany?.name ?? '-'}</dd>
               <dt className="col-span-1 text-muted-foreground">Date</dt>
-              <dd className="col-span-2">{new Date(visit.visitDate).toLocaleDateString()}</dd>
+              <dd className="col-span-2">{fmtDate(visit.visitDate)}</dd>
               <dt className="col-span-1 text-muted-foreground">Product</dt>
               <dd className="col-span-2">{visit.productName || '-'}</dd>
               <dt className="col-span-1 text-muted-foreground">Purpose</dt>

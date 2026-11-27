@@ -4,7 +4,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CreateClientVisitDto, UpdateClientVisitDto, VISIT_STATUS_LABELS } from './dto/client-visit.dto';
-import { exportSheet } from '../lib/spreadsheet';
+import { exportSheet, tenantDateFormat } from '../lib/spreadsheet';
 import { CLIENT_VISIT_COLUMNS } from './client-visit-sheet';
 
 /** The one status that books a visit against the customer's visit allowance. */
@@ -59,10 +59,11 @@ export class ClientVisitsService {
   private async consultantName(clientId: string, consultantId: string) {
     const consultant = await this.prisma.user.findFirst({
       where: { id: consultantId, clientId },
-      select: { username: true },
+      select: { username: true, name: true },
     });
     if (!consultant) throw new BadRequestException('Consultant not found');
-    return consultant.username;
+    // Full name, not username — a username is often an employee id (client request).
+    return consultant.name?.trim() || consultant.username;
   }
 
   /** Resolve a product the customer actually owns; denormalised onto the visit. */
@@ -371,6 +372,7 @@ export class ClientVisitsService {
       'Client visits',
       CLIENT_VISIT_COLUMNS,
       visits.map((v) => ({ ...v, ticketNumber: v.ticketId ? numberOf.get(v.ticketId) ?? null : null })),
+      await tenantDateFormat(this.prisma, clientId),
     );
   }
 

@@ -10,6 +10,7 @@ import { ASSET_COLUMNS, ASSET_IMPORT_NOTES } from './asset-sheet';
 import type { AssetSheetRow } from './asset-sheet';
 import {
   exportSheet, importTemplate, readSheet, rowReader, asText, asDate, asEnum, errorText,
+  tenantDateFormat,
 } from '../lib/spreadsheet';
 import type { ImportResult, SheetColumn } from '../lib/spreadsheet';
 
@@ -211,7 +212,7 @@ export class AssetsService {
    */
   async exportSheet(clientId: string) {
     const rows = await this.list(clientId);
-    return exportSheet('Assets', ASSET_COLUMNS, rows as unknown as AssetSheetRow[]);
+    return exportSheet('Assets', ASSET_COLUMNS, rows as unknown as AssetSheetRow[], await tenantDateFormat(this.prisma, clientId));
   }
 
   /** The blank template: the same columns, minus the ones an import cannot set. */

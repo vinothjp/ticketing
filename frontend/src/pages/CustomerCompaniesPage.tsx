@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Plus, Pencil, Trash2, Building2, Boxes, Search, Upload, ShieldCheck, Unlink,
   Hash, AtSign, Mail, Phone, FileText, MessageSquare, CircleDot, ChevronLeft, ChevronRight,
-  Layers, UserRound, Users, Ticket, ArrowRight } from 'lucide-react';
+  Layers, UserRound, Users, ArrowRight } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../lib/api';
@@ -12,7 +12,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import CompanyLogo from '@/components/CompanyLogo';
-import MultiCheckSelect from '@/components/MultiCheckSelect';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAuth } from '../context/AuthContext';
 import ImportExportBar from '@/components/ImportExportBar';
@@ -43,8 +42,6 @@ interface Company {
   code?: string | null;
   /** Auto-generated client id (CC-000001); set by the server on create, never edited. */
   companyCode?: string | null;
-  /** Departments offered on this client's New Ticket form; empty = all. */
-  departments?: string[];
   contactEmail?: string | null;
   contactPerson?: string | null;
   contactNumber?: string | null;
@@ -74,7 +71,6 @@ const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 
 const empty = {
   name: '', code: '', contactEmail: '', contactPerson: '', contactNumber: '', maxContacts: 5,
-  departments: [] as string[],
   // Required on New Client and deliberately not preselected: what the client
   // bought decides which screens they get, so the admin has to say.
   clientType: '' as ClientType | '',
@@ -159,12 +155,6 @@ export default function CustomerCompaniesPage({ createPage = false, editPage = f
   const qc = useQueryClient();
   const { companyId: editId } = useParams<{ companyId?: string }>();
   const formPage = createPage || editPage;
-  // The Department option list, for the form's Departments picker (active values only).
-  const { data: departmentOptions = [] } = useQuery<{ value: string; label: string }[]>({
-    queryKey: ['picklist-options', 'department'],
-    queryFn: async () => (await api.get('/api/picklist-options', { params: { listKey: 'department' } })).data,
-    enabled: formPage,
-  });
   const [form, setForm] = useState<typeof empty>(empty);
   const [admin, setAdmin] = useState<AdminInput>(emptyAdmin);
   const [q, setQ] = useState('');
@@ -189,7 +179,10 @@ export default function CustomerCompaniesPage({ createPage = false, editPage = f
     const term = q.trim().toLowerCase();
     return companies.filter((c) =>
       (typeFilter === 'all' || (c.clientType ?? 'AMC') === typeFilter)
-      && (!term || c.name.toLowerCase().includes(term) || (c.code ?? '').toLowerCase().includes(term) || (c.companyCode ?? '').toLowerCase().includes(term)));
+      && (!term || c.name.toLowerCase().includes(term) || (c.code ?? '').toLowerCase().includes(term) || (c.companyCode ?? '').toLowerCase().includes(term)))
+      // A–Z ignoring case (client request) — the server's order put every
+      // capitalised name ahead of a lowercase one.
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }));
   }, [companies, q, typeFilter]);
 
   // Client-side paging (the whole list is one query). The page in play is clamped,
@@ -216,7 +209,6 @@ export default function CustomerCompaniesPage({ createPage = false, editPage = f
     setForm({
       ...empty, name: editing.name, code: editing.code ?? '', contactEmail: editing.contactEmail ?? '',
       contactPerson: editing.contactPerson ?? '', contactNumber: editing.contactNumber ?? '', maxContacts: editing.maxContacts,
-      departments: editing.departments ?? [],
       clientType: editing.clientType ?? 'AMC',
     });
   }, [editing]);
@@ -238,7 +230,6 @@ export default function CustomerCompaniesPage({ createPage = false, editPage = f
         name: c.name, code: c.code || undefined, contactEmail: c.contactEmail || undefined,
         contactPerson: c.contactPerson || undefined, contactNumber: c.contactNumber || undefined,
         maxContacts: Number(c.maxContacts),
-        departments: c.departments,
       };
       if (editing) {
         // A confirmed type change goes first, on its own route — it is the half
@@ -481,8 +472,8 @@ export default function CustomerCompaniesPage({ createPage = false, editPage = f
           </div>
 
           <div className="space-y-5">
-            {/* Login, departments and people in one card, like the left side. */}
-            <FormSection icon={ShieldCheck} title="Client access" description="Who logs in for the client and what they can raise.">
+            {/* Login and people in one card, like the left side. */}
+            <FormSection icon={ShieldCheck} title="Client access" description="Who logs in for the client, and their team.">
               {/* The client's one customer admin: required on create; on edit, shown
                   with Unlink, or set here once if the client has none. */}
               <SubHeading icon={ShieldCheck} required={!editing}
@@ -492,18 +483,6 @@ export default function CustomerCompaniesPage({ createPage = false, editPage = f
               {editing
                 ? <CustomerAdminSection companyId={editing.id} />
                 : <CustomerAdminFields value={admin} onChange={setAdmin} />}
-
-              {/* Which departments this client's New Ticket form offers. Values come
-                  from the Department option list; none ticked = every department. */}
-              <SubHeading icon={Ticket}
-                description="Shown in the Department dropdown on this client's new tickets. Leave empty for all.">
-                Departments involved
-              </SubHeading>
-              <MultiCheckSelect listBelow
-                options={departmentOptions}
-                value={form.departments}
-                onChange={(departments) => setForm({ ...form, departments })}
-                emptyLabel="All departments" />
 
               {editing && (
                 <>
@@ -587,7 +566,15 @@ export default function CustomerCompaniesPage({ createPage = false, editPage = f
             </TableHeader>
             <TableBody>
               {paged.map((c) => (
-                <TableRow key={c.id}>
+                <TableRow
+                  key={c.id}
+                  // Clicking a row opens the Edit Client page (client request). Edit
+                  // is Admin-only, so other staff land on the client workspace —
+                  // the one place they can go from here.
+                  className="cursor-pointer"
+                  title={isAdmin ? `Edit ${c.name}` : `Open ${c.name}`}
+                  onClick={() => (isAdmin ? openEdit(c) : navigate(`/admin/clients/${c.id}`))}
+                >
                   {/* The wide text columns cap their own width and ellipsize, so a long
                       name or address can't push the table into a horizontal scroll. */}
                   <TableCell className="border-r font-medium">
@@ -635,7 +622,8 @@ export default function CustomerCompaniesPage({ createPage = false, editPage = f
                       {c.status}
                     </span>
                   </TableCell>
-                  <TableCell className="w-px text-right">
+                  <TableCell className="w-px text-right" onClick={(e) => e.stopPropagation()}>
+                    {/* The buttons do their own thing — a click here must not also open the row. */}
                     <div className="flex items-center justify-end gap-1">
                       {/* A consultant only reads a client, so the client workspace
                           is the one action they get. */}

@@ -27,6 +27,7 @@ import {
   wasRescheduled
 } from './clientVisitsMeta';
 import { staffLabel } from '@/lib/staffLabel';
+import { useDateFormat } from '@/lib/dateFormat';
 
 /**
  * A column heading: its icon, then its label. Muted and small, so the headings
@@ -43,6 +44,7 @@ function HeadLabel({ icon: Icon, children }: { icon: LucideIcon; children: React
 }
 
 export function ClientVisitsPage() {
+  const { fmtDate } = useDateFormat();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
@@ -256,7 +258,7 @@ export function ClientVisitsPage() {
                   </TableCell>
                   <TableCell className="border-r whitespace-nowrap">
                     <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
-                      {new Date(visit.visitDate).toLocaleDateString()}
+                      {fmtDate(visit.visitDate)}
                     </span>
                   </TableCell>
                   <TableCell className="border-r">

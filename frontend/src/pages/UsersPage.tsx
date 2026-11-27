@@ -253,7 +253,9 @@ export default function UsersPage() {
   const sortedUsers = useMemo(() => {
     const sorted = [...filteredUsers].sort((a, b) => {
       let cmp = 0;
-      if (sortField === 'username') cmp = a.username.localeCompare(b.username);
+      // The Name column sorts by the name it shows — full name, else username —
+      // A–Z ignoring case (client request); it used to sort by username.
+      if (sortField === 'username') cmp = (a.name?.trim() || a.username).localeCompare(b.name?.trim() || b.username, undefined, { sensitivity: 'base', numeric: true });
       else if (sortField === 'email') cmp = a.email.localeCompare(b.email);
       // By role set, then name, so each role reads as one alphabetised group.
       else if (sortField === 'role') cmp = roleKey(a).localeCompare(roleKey(b)) || a.username.localeCompare(b.username);

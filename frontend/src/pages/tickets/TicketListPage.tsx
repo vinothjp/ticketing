@@ -16,7 +16,7 @@ import {
   DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
-import { getPriorityMeta, getSlaMeta, isOverdueTicket, isTerminalStatus, isCreatedTodayTicket, getApprovalMeta, getReopenMeta, monthKey, monthLabel, dayKey, monthRange, type TicketSummary } from './ticketHelpers';
+import { getPriorityMeta, getSlaMeta, isOverdueTicket, isTerminalStatus, isCreatedTodayTicket, getApprovalMeta, getReopenMeta, monthKey, monthLabel, dayKey, monthRange, agentName, type TicketSummary } from './ticketHelpers';
 import { useDateFormat } from '@/lib/dateFormat';
 import { staffLabel } from '@/lib/staffLabel';
 
@@ -49,16 +49,15 @@ export default function TicketListPage() {
   const isAdmin = !!user?.roles.includes('Admin');
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Admins can reassign technicians inline from the list.
-  const { data: assignableUsers = [] } = useQuery<UserOption[]>({
-    queryKey: ['users'],
-    queryFn: async () => (await api.get('/api/users')).data,
-    enabled: isAdmin,
-  });
+  // Admins can reassign technicians inline from the list; each row's menu loads
+  // that ticket's own agents when opened (AssignedTo).
   const assignMutation = useMutation({
     mutationFn: ({ id, userIds }: { id: string; userIds: string[] }) =>
       api.put(`/api/tickets/${id}/technicians`, { userIds }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['tickets'] }),
+    onSuccess: (_r, { id }) => {
+      qc.invalidateQueries({ queryKey: ['tickets'] });
+      qc.invalidateQueries({ queryKey: ['ticket-assignable', id] });
+    },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error assigning'),
   });
 
@@ -548,7 +547,6 @@ export default function TicketListPage() {
                       <AssignedTo
                         ticket={t}
                         isAdmin={isAdmin}
-                        users={assignableUsers}
                         onAssign={(userIds) => assignMutation.mutate({ id: t.id, userIds })}
                       />
                       {sep}
@@ -622,16 +620,29 @@ function InlineEdit({
 function AssignedTo({
   ticket,
   isAdmin,
-  users,
   onAssign,
 }: {
   ticket: TicketSummary;
   isAdmin: boolean;
-  users: UserOption[];
   onAssign: (userIds: string[]) => void;
 }) {
   const assignedIds = ticket.technicians.map((x) => x.user.id);
-  const label = ticket.technicians.map((x) => x.user.username).join(', ') || 'Unassigned';
+  const label = ticket.technicians.map((x) => agentName(x.user)).join(', ') || 'Unassigned';
+  // Type to narrow the list (name or employee id); cleared each time it opens.
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  // Only this ticket's people — its module's agents (every issue type) plus the
+  // client's own consultants; all staff when it names no product (client
+  // request). Same list as the ticket screen, and the server refuses anyone
+  // else. Fetched when the menu opens, not for every row on the page.
+  const { data: assignable, isLoading } = useQuery<UserOption[]>({
+    queryKey: ['ticket-assignable', ticket.id],
+    queryFn: async () => (await api.get(`/api/tickets/${ticket.id}/assignable-agents`)).data,
+    enabled: isAdmin && open,
+  });
+  const agents = assignable ?? [];
+  const q = query.trim().toLowerCase();
+  const shown = q ? agents.filter((u) => staffLabel(u).toLowerCase().includes(q)) : agents;
 
   // Agents just see the assignee text.
   if (!isAdmin) {
@@ -647,7 +658,7 @@ function AssignedTo({
     // Stop row navigation when interacting with the assignee control.
     <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
       Assigned To :
-      <DropdownMenu>
+      <DropdownMenu onOpenChange={(o) => { setOpen(o); if (o) setQuery(''); }}>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
@@ -656,12 +667,32 @@ function AssignedTo({
             {label}
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="max-h-72 w-56 overflow-y-auto">
+        <DropdownMenuContent align="start" className="w-64">
           <DropdownMenuLabel>Assign to</DropdownMenuLabel>
+          {/* Search box (client request). Keys stay in the box — the menu's own
+              typeahead would otherwise swallow them to jump between items. */}
+          <div className="px-1 pb-1">
+            <Input
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.stopPropagation()}
+              placeholder="Search name or ID…"
+              className="h-8"
+            />
+          </div>
           <DropdownMenuSeparator />
-          {users.length === 0 && (
-            <div className="px-2 py-1.5 text-sm text-muted-foreground">No users available.</div>
+          {isLoading && (
+            <div className="px-2 py-1.5 text-sm text-muted-foreground">Loading agents…</div>
           )}
+          {!isLoading && agents.length === 0 && (
+            <div className="px-2 py-1.5 text-sm text-muted-foreground">No agents set up for this ticket's product/module.</div>
+          )}
+          {agents.length > 0 && q && shown.length === 0 && (
+            <div className="px-2 py-1.5 text-sm text-muted-foreground">No agent matches that.</div>
+          )}
+          {/* At most 5 rows show (2rem each), then it scrolls (client request). */}
+          <div className="max-h-40 overflow-y-auto">
           <DropdownMenuRadioGroup
             value={assignedIds[0] ?? UNASSIGNED}
             onValueChange={(v) => {
@@ -672,13 +703,14 @@ function AssignedTo({
               onAssign(next);
             }}
           >
-            <DropdownMenuRadioItem value={UNASSIGNED}>Unassigned</DropdownMenuRadioItem>
-            {users.map((u) => (
+            {!q && <DropdownMenuRadioItem value={UNASSIGNED}>Unassigned</DropdownMenuRadioItem>}
+            {shown.map((u) => (
               <DropdownMenuRadioItem key={u.id} value={u.id}>
                 {staffLabel(u)}
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>
+          </div>
         </DropdownMenuContent>
       </DropdownMenu>
     </span>

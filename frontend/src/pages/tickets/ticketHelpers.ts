@@ -1,6 +1,9 @@
 export interface TicketTechnicianRow {
-  user: { id: string; username: string };
+  user: { id: string; username: string; name?: string | null };
 }
+
+/** An agent as people read them: full name, else username (often an employee id). */
+export const agentName = (u: { username: string; name?: string | null }) => u.name?.trim() || u.username;
 
 export interface TicketSummary {
   id: string;
@@ -29,13 +32,16 @@ export interface TicketSummary {
 
 /**
  * Badge for the creation-approval gate. Returns null for NONE/APPROVED (no badge
- * needed). Both pending stages read the same, since a template that needs
- * approval is a change request; the Awaiting approval list mixes these with
+ * needed). PENDING_CUSTOMER is every ticket a client's employee raises, waiting
+ * on their company admin; PENDING is a template that needs the provider Admin's
+ * approval (a change request). The Awaiting approval list mixes these with
  * reopen requests, so the label says which kind it is.
  */
 export function getApprovalMeta(status?: string | null): { label: string; className: string } | null {
   const amber = 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30';
-  if (status === 'PENDING_CUSTOMER' || status === 'PENDING')
+  if (status === 'PENDING_CUSTOMER')
+    return { label: 'Company admin approval pending', className: amber };
+  if (status === 'PENDING')
     return { label: 'Change request approval pending', className: amber };
   if (status === 'REJECTED')
     return { label: 'Rejected', className: 'bg-destructive/15 text-destructive border-destructive/30' };

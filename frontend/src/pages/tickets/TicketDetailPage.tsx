@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Clock, Timer, Paperclip, FolderKanban, X, CheckCircle2, RotateCcw, XCircle } from 'lucide-react';
+import { ArrowLeft, Clock, Timer, Save, Paperclip, FolderKanban, X, CheckCircle2, RotateCcw, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { ticketSourceLabel } from '@/lib/ticketSource';
@@ -11,13 +11,16 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Combobox } from '@/components/ui/combobox';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
-import { getPriorityMeta, formatCountdown, getApprovalMeta, getReopenMeta, SLA_PANEL_CLASS, type TicketTechnicianRow } from './ticketHelpers';
+import { getPriorityMeta, formatCountdown, getApprovalMeta, getReopenMeta, SLA_PANEL_CLASS, agentName, type TicketTechnicianRow } from './ticketHelpers';
 import type { MergedTemplateField } from './DynamicTicketField';
 import HistoryTab from './detail/HistoryTab';
 import ResolutionTab from './detail/ResolutionTab';
+import { EMPTY_RESOLVE, type ResolveDraft } from './detail/resolveDraft';
+import { useWorklogInvalidate } from './detail/ticketQueries';
 import ReopenControl from './detail/ReopenControl';
 import TasksTab from './detail/TasksTab';
 import CommentsTab from './detail/CommentsTab';
@@ -104,7 +107,7 @@ interface TicketDetail {
   rejectedAt?: string | null;
   createdAt: string;
   customFields: Record<string, unknown>;
-  template: { id: string; name: string; category?: string | null };
+  template: { id: string; name: string; category?: string | null; requiresApproval?: boolean };
   technicians: TicketTechnicianRow[];
   attachments: { id: string; fileName: string; filePath: string }[];
 }
@@ -145,7 +148,7 @@ function optionLabel(f: MergedTemplateField, value: string): string {
 
 function fieldDisplayValue(f: MergedTemplateField, ticket: TicketDetail): string | null {
   if (f.fieldKey === 'technicians') {
-    return ticket.technicians.length ? ticket.technicians.map((t) => t.user.username).join(', ') : null;
+    return ticket.technicians.length ? ticket.technicians.map((t) => agentName(t.user)).join(', ') : null;
   }
   const raw = f.isCustom || f.storage === 'json'
     ? ticket.customFields?.[f.fieldKey]
@@ -159,6 +162,9 @@ function fieldDisplayValue(f: MergedTemplateField, ticket: TicketDetail): string
   if (f.dataType === 'SELECT' || f.dataType === 'RADIO') return optionLabel(f, String(raw));
   return String(raw);
 }
+
+/** The ticket fields edited on this screen, held until Save. */
+type TicketDraft = { ticketStatus?: string; priority?: string; agentId?: string; projectId?: string | null };
 
 export default function TicketDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -218,10 +224,13 @@ export default function TicketDetailPage() {
     queryKey: ['picklist-options', 'priority'],
     queryFn: async () => (await api.get('/api/picklist-options', { params: { listKey: 'priority' } })).data,
   });
-  const { data: users = [] } = useQuery<UserOption[]>({
-    queryKey: ['users'],
-    queryFn: async () => (await api.get('/api/users')).data,
-    enabled: isStaff, // customers never assign technicians, so don't fetch staff list
+  // The Assigned agent field's options: the agents set for this ticket's module
+  // (all tracks) plus the client's own consultants; all staff when the ticket
+  // names no product (client request). Already A–Z by name.
+  const { data: assignable = [] } = useQuery<UserOption[]>({
+    queryKey: ['ticket-assignable', id],
+    queryFn: async () => (await api.get(`/api/tickets/${id}/assignable-agents`)).data,
+    enabled: isStaff && !!id, // customers never assign agents
   });
   // Resolving or closing needs time on the ticket and no work left outstanding.
   // Both totals ride on the ticket itself rather than the staff-only worklog and
@@ -262,28 +271,129 @@ export default function TicketDetailPage() {
         ? 'Unlimited'
         : null;
 
-  const updateMutation = useMutation({
-    mutationFn: (data: Record<string, unknown>) => api.put(`/api/tickets/${id}`, data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['tickets', id] });
-      qc.invalidateQueries({ queryKey: ['tickets'] });
-    },
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error updating ticket'),
+  // Nothing on the ticket screen saves on change (client request). Status,
+  // priority, assigned agent and project are a draft here until the header's
+  // Save; a key is only present while it differs from what is stored.
+  const [draft, setDraft] = useState<TicketDraft>({});
+  // Another ticket opened in place (e.g. from search) starts with a clean draft.
+  // The resolution typed on the Resolution tab, and whether Resolve staged it —
+  // part of the same draft, so only Save resolves (client request).
+  const [resolveDraft, setResolveDraft] = useState<ResolveDraft>(EMPTY_RESOLVE);
+  const [draftFor, setDraftFor] = useState(id);
+  if (draftFor !== id) { setDraftFor(id); setDraft({}); setResolveDraft(EMPTY_RESOLVE); }
+  const invalidateWorklogs = useWorklogInvalidate(id ?? '');
+  const savedValues = (t: TicketDetail): Required<TicketDraft> => ({
+    ticketStatus: t.ticketStatus,
+    priority: t.priority ?? '',
+    agentId: t.technicians[0]?.user.id ?? 'none',
+    projectId: t.project?.id ?? null,
   });
+  const changes = ticket
+    ? (Object.keys(draft) as (keyof TicketDraft)[]).filter((k) => draft[k] !== savedValues(ticket)[k])
+    : [];
+  const changeCount = changes.length + (resolveDraft.staged ? 1 : 0);
+  const dirty = changeCount > 0;
+  const discardAll = () => { setDraft({}); setResolveDraft(EMPTY_RESOLVE); };
+  const setField = <K extends keyof TicketDraft>(k: K, v: TicketDraft[K]) =>
+    setDraft((d) => {
+      const next = { ...d, [k]: v };
+      if (ticket && savedValues(ticket)[k] === v) delete next[k];
+      return next;
+    });
+  // Leaving the page with unsaved changes asks first (browser close / reload).
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
+  // …and so does a click on an in-app link that leaves this ticket (sidebar,
+  // All tickets, header links). The app uses BrowserRouter, which has no
+  // `useBlocker`, so this catches the click itself, in the capture phase, before
+  // React Router's Link sees it — a prevented click is one Link ignores. Not
+  // covered: the browser's Back button and code that calls `navigate()` (e.g. a
+  // search result). Same-ticket links (its own ?tab=), new-tab and modifier
+  // clicks pass through.
+  useEffect(() => {
+    if (!dirty) return;
+    const guard = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+      if (!a || (a.target && a.target !== '_self') || a.hasAttribute('download')) return;
+      const to = new URL(a.href, window.location.href);
+      if (to.origin !== window.location.origin || to.pathname === window.location.pathname) return;
+      if (!window.confirm('You have unsaved changes on this ticket. Leave without saving?')) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    document.addEventListener('click', guard, true);
+    return () => document.removeEventListener('click', guard, true);
+  }, [dirty]);
 
-  const assignMutation = useMutation({
-    mutationFn: (userIds: string[]) => api.put(`/api/tickets/${id}/technicians`, { userIds }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['tickets', id] });
-      qc.invalidateQueries({ queryKey: ['tickets'] });
+  const saveMutation = useMutation({
+    // One button, several endpoints. The status goes last: resolving or closing
+    // is the step the others should not come after.
+    mutationFn: async () => {
+      const t = ticket!;
+      const saved = savedValues(t);
+      const has = (k: keyof TicketDraft) => k in draft && draft[k] !== saved[k];
+      const r = resolveDraft;
+      // A staged resolve is checked before anything is written.
+      const notes = r.notes.trim();
+      const hours = Number(r.hours);
+      if (r.staged === 'new' && (!notes || !(hours > 0))) {
+        throw new Error('Resolution notes and hours greater than 0 are needed to resolve');
+      }
+      if (has('agentId')) {
+        await api.put(`/api/tickets/${id}/technicians`, { userIds: draft.agentId === 'none' ? [] : [draft.agentId] });
+      }
+      if (has('projectId')) {
+        if (t.project) await api.delete(`/api/projects/${t.project.id}/tickets/${id}`);
+        if (draft.projectId) await api.post(`/api/projects/${draft.projectId}/tickets/${id}`);
+      }
+      const body: Record<string, unknown> = {};
+      if (has('priority')) body.priority = draft.priority;
+      // A staged resolve replaces any status pick: resolving is its own door.
+      if (has('ticketStatus') && !r.staged) body.ticketStatus = draft.ticketStatus;
+      if (Object.keys(body).length) await api.put(`/api/tickets/${id}`, body);
+      if (r.staged) {
+        let resolution = r.entryNote ?? notes;
+        if (r.staged === 'new') {
+          // Booked first, so these hours are what satisfy the resolve gate.
+          await api.post(`/api/tickets/${id}/worklogs`, { hours, note: notes });
+          // Booked now: should the resolve below be refused, a retry resolves
+          // on this entry instead of booking the hours twice.
+          setResolveDraft((d) => ({ ...d, staged: 'entry', entryNote: notes }));
+          resolution = notes;
+        }
+        await api.put(`/api/tickets/${id}/resolution`, { resolution });
+        return 'resolved' as const;
+      }
+      return body.ticketStatus && statusMeaningOf(body.ticketStatus as string) === 'resolved' ? 'resolved' as const : undefined;
     },
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error assigning agent'),
+    onSuccess: (outcome) => {
+      discardAll();
+      // On Resolved: land on the Resolution tab to confirm what the client
+      // will be asked to acknowledge.
+      if (outcome === 'resolved') {
+        setTab('resolution');
+        toast.success('Ticket resolved');
+      } else {
+        toast.success('Ticket saved');
+      }
+    },
+    // A step that failed leaves the earlier ones saved: the refetch below drops
+    // those from the draft (they now equal the stored values) and keeps the rest.
+    onError: (e: any) => toast.error(e.response?.data?.message || e.message || 'Error saving ticket'),
+    onSettled: () => { invalidateTicket(); invalidateWorklogs(); },
   });
 
   const invalidateTicket = () => {
     qc.invalidateQueries({ queryKey: ['tickets', id] });
     qc.invalidateQueries({ queryKey: ['tickets'] });
     qc.invalidateQueries({ queryKey: ['ticket-activity', id] });
+    qc.invalidateQueries({ queryKey: ['ticket-assignable', id] });
   };
   const approveMutation = useMutation({
     mutationFn: () => api.post(`/api/tickets/${id}/approve`),
@@ -355,16 +465,6 @@ export default function TicketDetailPage() {
     queryFn: async () => (await api.get('/api/projects')).data,
     enabled: isStaff,
   });
-  const linkProject = useMutation({
-    mutationFn: (pid: string) => api.post(`/api/projects/${pid}/tickets/${id}`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tickets', id] }); toast.success('Linked to project'); },
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error linking project'),
-  });
-  const unlinkProject = useMutation({
-    mutationFn: (pid: string) => api.delete(`/api/projects/${pid}/tickets/${id}`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tickets', id] }); toast.success('Unlinked from project'); },
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error unlinking project'),
-  });
 
   if (isLoading || !ticket) {
     return <p className="text-muted-foreground">Loading...</p>;
@@ -378,6 +478,7 @@ export default function TicketDetailPage() {
   const statusMeaningOf = (value: string) =>
     (statusOptions.find((o) => o.value === value)?.label ?? value).trim().toLowerCase();
   const statusMeaning = statusMeaningOf(ticket.ticketStatus);
+  const resolvedStatusValue = statusOptions.find((o) => statusMeaningOf(o.value) === 'resolved')?.value;
   const canAcknowledge =
     isCustomerSide && statusMeaning === 'resolved' && !ticket.acknowledgedAt && !ticket.closedDate;
   // The SLA countdown only means something while the ticket is still being
@@ -440,6 +541,12 @@ export default function TicketDetailPage() {
     .map((f) => ({ field: f, value: fieldDisplayValue(f, ticket) }))
     .filter((row) => row.value !== null);
 
+  // The project the Details tab shows: the draft's pick, else the stored link.
+  const draftProjectId = 'projectId' in draft ? draft.projectId : ticket.project?.id ?? null;
+  const shownProject = draftProjectId === (ticket.project?.id ?? null)
+    ? ticket.project
+    : projectOptions.find((p) => p.id === draftProjectId) ?? null;
+
   return (
     <div>
       <Button variant="ghost" size="sm" asChild className="mb-3 -ml-2">
@@ -489,7 +596,23 @@ export default function TicketDetailPage() {
                 <span className="text-muted-foreground">· {hrs(supportHours!.used)} spent</span>
               </div>
             )}
-            <Button onClick={() => setTab('conversation')}>Reply</Button>
+            {isStaff && dirty && (
+              <Button variant="ghost" className="shrink-0" onClick={discardAll} disabled={saveMutation.isPending}>
+                Discard
+              </Button>
+            )}
+            {isStaff && (
+              <Button
+                variant={dirty ? 'default' : 'outline'}
+                className="shrink-0"
+                disabled={!dirty || saveMutation.isPending}
+                title={dirty ? `Save ${changeCount} change${changeCount === 1 ? '' : 's'}` : 'No unsaved changes'}
+                onClick={() => saveMutation.mutate()}
+              >
+                <Save className="size-4" /> {saveMutation.isPending ? 'Saving…' : 'Save'}
+              </Button>
+            )}
+            <Button className="shrink-0" onClick={() => setTab('conversation')}>Reply</Button>
           </div>
         </div>
       </div>
@@ -501,7 +624,9 @@ export default function TicketDetailPage() {
             <div className="text-sm font-medium">{ticket.template?.name ?? 'Ticket'} awaiting your approval</div>
             <div className="text-xs">
               Raised by {ticket.raisedByName ?? 'a member of your team'} on {fmtDateTime(ticket.createdAt)}.
-              Approve to send it to your service provider for their approval, or reject it.
+              {ticket.template?.requiresApproval
+                ? 'Approve to send it to your service provider for their approval, or reject it.'
+                : 'Approve to send it to your service provider, or reject it.'}
             </div>
           </div>
           <div className="flex gap-2">
@@ -660,14 +785,16 @@ export default function TicketDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      {/* A client's employee whose change request waits on their own company admin. */}
+      {/* A client's employee whose ticket waits on their own company admin. */}
       {isCustomerSide && !isCustomerAdmin && ticket.approvalStatus === 'PENDING_CUSTOMER' && (
         <div className="mb-5 flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-amber-700 dark:text-amber-300">
           <Clock className="mt-0.5 size-4 shrink-0" />
           <div className="min-w-0 space-y-0.5">
             <div className="text-sm font-medium">Waiting for your company admin's approval</div>
             <div className="text-xs">
-              Once your company admin approves it, it goes to your service provider for their approval. You'll get an email at each step.
+              {ticket.template?.requiresApproval
+                ? "Once your company admin approves it, it goes to your service provider for their approval. You'll get an email at each step."
+                : "Once your company admin approves it, it goes to your service provider. You'll get an email at each step."}
             </div>
           </div>
         </div>
@@ -843,28 +970,28 @@ export default function TicketDetailPage() {
                       {isStaff ? (
                         // A ticket has at most one agent. Selecting a name (re)assigns; "Unassigned" clears it.
                         (() => {
-                          const assignedId = ticket.technicians[0]?.user.id ?? 'none';
+                          const assignedId = draft.agentId ?? ticket.technicians[0]?.user.id ?? 'none';
                           const pending = ticket.approvalStatus === 'PENDING' || ticket.approvalStatus === 'REJECTED';
                           if (pending) {
                             return <p className="text-sm text-muted-foreground">Assignable once the ticket is approved.</p>;
                           }
                           return (
-                            <Select
+                            // Typeable, 5 rows then scroll (client request). Still a
+                            // draft like every field here — Save writes it.
+                            <Combobox
                               value={assignedId}
-                              onValueChange={(v) => assignMutation.mutate(v === 'none' ? [] : [v])}
-                            >
-                              <SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="none">Unassigned</SelectItem>
-                                {users.map((u) => <SelectItem key={u.id} value={u.id}>{staffLabel(u)}</SelectItem>)}
-                              </SelectContent>
-                            </Select>
+                              options={[{ value: 'none', label: 'Unassigned' }, ...assignable.map((u) => ({ value: u.id, label: staffLabel(u) }))]}
+                              onChange={(v) => { if (v) setField('agentId', v); }}
+                              placeholder="Unassigned"
+                              emptyText="No agent matches that"
+                              maxRows={5}
+                            />
                           );
                         })()
                       ) : (
                         // Customers see who is handling their ticket, but cannot change it.
                         ticket.technicians.length > 0
-                          ? <div className="text-sm text-foreground">{ticket.technicians[0].user.username}</div>
+                          ? <div className="text-sm text-foreground">{agentName(ticket.technicians[0].user)}</div>
                           : <p className="text-sm text-muted-foreground">Not yet assigned.</p>
                       )}
                     </div>
@@ -886,19 +1013,19 @@ export default function TicketDetailPage() {
                       <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
                         <FolderKanban className="size-3.5" /> Project
                       </div>
-                      {ticket.project ? (
+                      {shownProject ? (
                         <div className="flex items-center justify-between gap-2 rounded-md border p-2">
-                          <Link to={`/projects/${ticket.project.id}`} className="min-w-0">
-                            <div className="truncate text-sm font-medium text-foreground hover:underline">{ticket.project.name}</div>
-                            <div className="text-xs text-muted-foreground">{ticket.project.projectNumber}</div>
+                          <Link to={`/projects/${shownProject.id}`} className="min-w-0">
+                            <div className="truncate text-sm font-medium text-foreground hover:underline">{shownProject.name}</div>
+                            <div className="text-xs text-muted-foreground">{shownProject.projectNumber}</div>
                           </Link>
                           <Button size="icon" variant="ghost" className="size-7 shrink-0"
-                            onClick={() => unlinkProject.mutate(ticket.project!.id)} title="Unlink">
+                            onClick={() => setField('projectId', null)} title="Unlink (saved with Save)">
                             <X className="size-4" />
                           </Button>
                         </div>
                       ) : (
-                        <Select value="" onValueChange={(v) => linkProject.mutate(v)}>
+                        <Select value="" onValueChange={(v) => { if (v) setField('projectId', v); }}>
                           <SelectTrigger className="w-full"><SelectValue placeholder="Associate a project… (optional)" /></SelectTrigger>
                           <SelectContent>
                             {projectOptions.filter((p) => p.isActive).map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
@@ -922,6 +1049,8 @@ export default function TicketDetailPage() {
                 openTasks={openTasks}
                 onViewTasks={sendToOpenTasks}
                 closed={statusMeaning === 'closed'}
+                draft={resolveDraft}
+                onDraft={setResolveDraft}
               />
             </TabsContent>
             <TabsContent value="tasks">
@@ -1013,8 +1142,15 @@ export default function TicketDetailPage() {
                       only a reopen brings it back, which moves the status itself. */}
                   {isStaff && statusMeaning !== 'closed' ? (
                     <Select
-                      value={ticket.ticketStatus}
+                      value={resolveDraft.staged && resolvedStatusValue ? resolvedStatusValue : draft.ticketStatus ?? ticket.ticketStatus}
                       onValueChange={(v) => {
+                        if (!v) return; // Radix's empty re-emit, never a real pick
+                        // A Resolve staged on the Resolution tab shows here as
+                        // Resolved; picking anything else takes it back.
+                        if (resolveDraft.staged) {
+                          if (v === resolvedStatusValue) return;
+                          setResolveDraft((d) => ({ ...d, staged: null }));
+                        }
                         // Mirrors of the backend rules, so the agent lands on the tab
                         // that fixes it instead of bouncing off a 400. Outstanding work
                         // is checked first — it is the one that needs doing, not just
@@ -1041,13 +1177,8 @@ export default function TicketDetailPage() {
                           setTab('resolution');
                           return;
                         }
-                        updateMutation.mutate({ ticketStatus: v });
-                        // On Resolved: jump to the Resolution tab to confirm what
-                        // the client will be asked to acknowledge.
-                        if (v.toLowerCase() === 'resolved') {
-                          setTab('resolution');
-                          toast.success('Ticket resolved');
-                        }
+                        // Held as a draft — the header's Save writes it.
+                        setField('ticketStatus', v);
                       }}
                     >
                       <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
@@ -1088,8 +1219,8 @@ export default function TicketDetailPage() {
                   <div className="mb-1 text-xs text-muted-foreground">Priority</div>
                   {isStaff ? (
                     <Select
-                      value={ticket.priority ?? undefined}
-                      onValueChange={(v) => updateMutation.mutate({ priority: v })}
+                      value={(draft.priority ?? ticket.priority) || undefined}
+                      onValueChange={(v) => { if (v) setField('priority', v); }}
                     >
                       <SelectTrigger className="w-full"><SelectValue placeholder="Select..." /></SelectTrigger>
                       <SelectContent>

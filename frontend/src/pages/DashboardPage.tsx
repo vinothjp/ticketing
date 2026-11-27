@@ -8,6 +8,7 @@ import { useDateFormat } from '../lib/dateFormat';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Combobox } from '@/components/ui/combobox';
 import { getPriorityMeta, formatDueStatus, isTerminalStatus, isOverdueTicket, isCreatedTodayTicket, type TicketSummary } from './tickets/ticketHelpers';
 import { staffLabel } from '@/lib/staffLabel';
 import { ticketSourceLabel, useProviderName } from '@/lib/ticketSource';
@@ -219,13 +220,20 @@ export default function DashboardPage() {
         <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
         <div className="flex flex-wrap items-center gap-2">
           {isAdmin && (
-            <Select value={agentId} onValueChange={setAgentId}>
-              <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All agents</SelectItem>
-                {agents.map((a) => <SelectItem key={a.id} value={a.id}>{staffLabel(a)}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            // Typeable, 5 rows then scroll (client request) — a tenant's agent
+            // list runs long, and an employee id is what people search by.
+            <Combobox
+              value={agentId}
+              // A–Z by the name shown (client request); All agents stays first.
+              options={[{ value: 'all', label: 'All agents' }, ...agents
+                .map((a) => ({ value: a.id, label: staffLabel(a) }))
+                .sort((x, y) => x.label.localeCompare(y.label, undefined, { sensitivity: 'base', numeric: true }))]}
+              onChange={(v) => { if (v) setAgentId(v); }}
+              placeholder="All agents"
+              emptyText="No agent matches that"
+              maxRows={5}
+              className="w-60"
+            />
           )}
           <Select value={month} onValueChange={setMonth}>
             <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>

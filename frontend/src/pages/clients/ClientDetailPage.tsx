@@ -22,6 +22,7 @@ import PurchaseOrderFields from '@/components/PurchaseOrderFields';
 import { useAuth } from '../../context/AuthContext';
 import CoverageMeter, { wholeHrs } from '@/components/CoverageMeter';
 import { cn } from '@/lib/utils';
+import { useDateFormat } from '@/lib/dateFormat';
 
 interface Pool { allocated: number | null; used: number; left: number | null }
 interface Cov { end: string | null; label: string; pct: number; active: boolean }
@@ -70,6 +71,8 @@ const productPill = (p: { status: string; activeForClient: boolean }) =>
     : { label: p.status.toLowerCase(), cls: statusCls(p.status), title: undefined };
 
 export default function ClientDetailPage() {
+  const { fmtDate } = useDateFormat();
+  const fmt = (d: string | null) => (d ? fmtDate(d) : '—');
   const { companyId } = useParams<{ companyId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -394,7 +397,7 @@ export default function ClientDetailPage() {
               {/* Client-level, so it saves on click rather than with the contract
                   below — see setAutoAssign. */}
               <AutoAssignChoice
-                value={client?.autoAssignTickets ?? true}
+                value={client?.autoAssignTickets ?? false}
                 disabled={!isAdmin || !client}
                 onChange={setAutoAssign} />
               {isAdmin && (
@@ -482,7 +485,7 @@ export default function ClientDetailPage() {
           <section className="flex h-full flex-col gap-3 rounded-lg border bg-card p-4">
             <h2 className="text-base font-semibold text-foreground">Ticket assignment</h2>
             <AutoAssignChoice
-              value={client?.autoAssignTickets ?? true}
+              value={client?.autoAssignTickets ?? false}
               disabled={!isAdmin || !client}
               onChange={setAutoAssign} />
           </section>
@@ -570,7 +573,6 @@ export default function ClientDetailPage() {
   );
 }
 
-const fmt = (d: string | null) => (d ? new Date(d).toLocaleDateString() : '—');
 
 /** Countdown for the contract's remaining term, in the per-product screen's "12 mo 4 d" shape. */
 function timeLeft(daysLeft: number | null): string {

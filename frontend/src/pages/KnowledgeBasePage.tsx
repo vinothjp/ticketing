@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useDateFormat } from '@/lib/dateFormat';
 
 export interface KbAttachment { id: string; fileName: string; filePath: string; }
 export interface KbUrlRef { label?: string; url: string; }
@@ -40,6 +41,7 @@ export interface KbArticle {
 }
 
 export default function KnowledgeBasePage() {
+  const { fmtDate } = useDateFormat();
   const { user } = useAuth();
   const isStaff = !!user?.roles.some((r) => r === 'Admin' || r === 'Viewer' || r === 'Manager');
   const [search, setSearch] = useState('');
@@ -118,7 +120,7 @@ export default function KnowledgeBasePage() {
               </div>
               <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{a.body}</p>
               <div className="mt-1 text-xs text-muted-foreground">
-                {a.documentNumber ? `${a.documentNumber} · ` : ''}Updated {new Date(a.updatedAt).toLocaleDateString()}
+                {a.documentNumber ? `${a.documentNumber} · ` : ''}Updated {fmtDate(a.updatedAt)}
               </div>
             </Link>
           ))}

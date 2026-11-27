@@ -22,7 +22,6 @@ interface TemplateSummary {
 interface TemplateData {
   id: string;
   name: string;
-  descriptionGuidance?: string | null;
   fields: MergedTemplateField[];
 }
 
@@ -77,14 +76,24 @@ function fieldSchema(f: MergedTemplateField) {
   }
 }
 
-function defaultValueFor(f: MergedTemplateField, descriptionGuidance?: string | null) {
-  if (f.fieldKey === 'description' && descriptionGuidance) return descriptionGuidance;
+// Every field starts empty — Description included: a template's old
+// "Description guidance" pre-fill was withdrawn (client request).
+function defaultValueFor(f: MergedTemplateField) {
   switch (f.dataType) {
     case 'BOOLEAN': return false;
     case 'MULTI_SELECT':
     case 'MULTI_SELECT_USER': return [] as string[];
     default: return '';
   }
+}
+
+/** A routing field with exactly one possible value: shown as read-only text, not a dropdown. */
+function FixedChoice({ text }: { text: string }) {
+  return (
+    <div title={text} className="flex h-9 w-full items-center truncate rounded-md border border-input bg-muted/40 px-3 text-sm text-foreground">
+      {text}
+    </div>
+  );
 }
 
 export default function CreateTicketPage() {
@@ -115,22 +124,6 @@ export default function CreateTicketPage() {
   // auto-assignment. The product list is scoped to one client — a customer's own
   // company, or the client staff tagged above. Staff who tag no client are raising
   // an internal ticket, and the API answers with the tenant's own catalogue.
-  // Departments this client is limited to (set on the client screen); null = all.
-  // Same scoping as the product list: staff name the client, a customer gets their own.
-  const { data: deptScope } = useQuery<{ departments: string[] | null }>({
-    queryKey: ['ticket-departments', isCustomerSide ? 'own' : selectedCompanyId],
-    queryFn: async () => (await api.get('/api/my-company/departments', {
-      params: isCustomerSide ? undefined : { customerCompanyId: selectedCompanyId || undefined },
-    })).data,
-  });
-  const allowedDepartments = deptScope?.departments ?? null;
-  // Switching to a client that doesn't offer the picked department clears it,
-  // rather than submitting a value their dropdown no longer shows.
-  useEffect(() => {
-    if (allowedDepartments && values.department && !allowedDepartments.includes(values.department)) {
-      setValues((prev) => ({ ...prev, department: '' }));
-    }
-  }, [JSON.stringify(allowedDepartments), values.department]); // eslint-disable-line react-hooks/exhaustive-deps
   const { data: sapProducts = [], isFetching: productsFetching } = useQuery<SapProduct[]>({
     queryKey: ['ticket-products', isCustomerSide ? 'mine' : selectedCompanyId || 'internal'],
     queryFn: async () =>
@@ -182,6 +175,14 @@ export default function CreateTicketPage() {
     setRouting((r) => ({ ...r, moduleId: mid, consultantType: trackFor(m) }));
     setModuleError(null); setTypeError(null);
   };
+  // A client with exactly one product has nothing to choose: it is picked for
+  // them and shown as plain text (client request) — for a customer, for staff
+  // who picked the client, and for an internal ticket alike. Waits for the list
+  // to settle, so a client switch never picks from the previous client's list.
+  const onlyProduct = !productsFetching && sapProducts.length === 1 ? sapProducts[0] : undefined;
+  useEffect(() => {
+    if (onlyProduct && routing.productId !== onlyProduct.id) chooseProduct(onlyProduct.id);
+  }, [onlyProduct?.id, routing.productId]); // eslint-disable-line react-hooks/exhaustive-deps
   // Staff who leave the client empty are raising an INTERNAL ticket — the
   // tenant's own, with no customer contract behind it.
   const isInternalTicket = !isCustomerSide && !selectedCompanyId;
@@ -268,7 +269,7 @@ export default function CreateTicketPage() {
   const resetForm = () => {
     const initial: Record<string, any> = {};
     for (const f of visibleFields) {
-      initial[f.fieldKey] = defaultValueFor(f, template?.descriptionGuidance);
+      initial[f.fieldKey] = defaultValueFor(f);
     }
     setValues(initial);
     setErrors({});
@@ -279,7 +280,7 @@ export default function CreateTicketPage() {
     if (!template) return;
     const initial: Record<string, any> = {};
     for (const f of visibleFields) {
-      initial[f.fieldKey] = defaultValueFor(f, template.descriptionGuidance);
+      initial[f.fieldKey] = defaultValueFor(f);
     }
     setValues(initial);
     setErrors({});
@@ -441,17 +442,28 @@ export default function CreateTicketPage() {
             <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-4">
               <div>
                 <div className="mb-1 text-sm text-muted-foreground">Product <span className="text-destructive">*</span></div>
-                <Select value={routing.productId || undefined} onValueChange={chooseProduct} disabled={!hasClient || sapProducts.length === 0}>
-                  <SelectTrigger className="w-full" aria-invalid={!!productError}>
-                    <SelectValue placeholder={productPlaceholder} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {sapProducts.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                {onlyProduct ? (
+                  <FixedChoice text={onlyProduct.name} />
+                ) : (
+                  <Select value={routing.productId || undefined} onValueChange={chooseProduct} disabled={!hasClient || sapProducts.length === 0}>
+                    <SelectTrigger className="w-full" aria-invalid={!!productError}>
+                      <SelectValue placeholder={productPlaceholder} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {sapProducts.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                )}
                 {productError && <p className="mt-1 text-xs text-destructive">{productError}</p>}
               </div>
-              {/* Module: needed for products with more than one module (S/4HANA). */}
+              {/* Module: a dropdown only when there is a choice; a product with a
+                  single module has it picked (chooseProduct) and shown as text. */}
+              {selProduct && selProduct.modules.length === 1 && (
+                <div>
+                  <div className="mb-1 text-sm text-muted-foreground">Module</div>
+                  <FixedChoice text={selProduct.modules[0].name} />
+                </div>
+              )}
               {selProduct && selProduct.modules.length > 1 && (
                 <div>
                   <div className="mb-1 text-sm text-muted-foreground">Module <span className="text-destructive">*</span></div>
@@ -479,8 +491,8 @@ export default function CreateTicketPage() {
                 </div>
               )}
               {/* Support hours: appears with the product, but always LAST in the row.
-                  Module and Issue type are each conditional (a single-module product
-                  hides Module, a single-track module hides Issue type), so anchoring
+                  Module and Issue type are each conditional (a product without modules
+                  has no Module, a single-track module hides Issue type), so anchoring
                   it to the end is the only spot that never splits the routing selects. */}
               {/* An internal ticket draws on no customer contract, so there is no
                   pool to show. */}
@@ -515,10 +527,7 @@ export default function CreateTicketPage() {
                         error={errors[f.fieldKey]}
                         options={f.picklistKey === 'subCategory'
                           ? (picklistData.subCategory ?? []).filter((o) => o.parentValue === values.ticketCategory)
-                          // A client may be limited to some departments (set on the client).
-                          : f.picklistKey === 'department' && allowedDepartments
-                            ? (picklistData.department ?? []).filter((o) => allowedDepartments.includes(o.value))
-                            : (f.picklistKey ? picklistData[f.picklistKey] : undefined)}
+                          : (f.picklistKey ? picklistData[f.picklistKey] : undefined)}
                         users={f.dataType === 'MULTI_SELECT_USER' ? users : undefined}
                         systemDisplayValue={f.dataType === 'SYSTEM' ? systemDisplayValue(f) : undefined}
                         files={f.fieldKey === 'attachments' ? attachmentFiles : undefined}

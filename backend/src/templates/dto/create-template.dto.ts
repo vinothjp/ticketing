@@ -95,10 +95,6 @@ export class CreateTemplateDto {
 
   @IsOptional()
   @IsString()
-  descriptionGuidance?: string;
-
-  @IsOptional()
-  @IsString()
   icon?: string;
 
   @IsOptional()

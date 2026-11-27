@@ -43,7 +43,6 @@ export default function TemplatesListPage() {
         name: `${full.name} (copy)`,
         category: full.category,
         description: full.description,
-        descriptionGuidance: full.descriptionGuidance,
         icon: full.icon,
         color: full.color,
         defaultPriority: full.defaultPriority,

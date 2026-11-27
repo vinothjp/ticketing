@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsEmail, IsInt, Min, Max } from 'class-validator';
+import { IsString, IsOptional, IsEmail, IsInt, Min, Max, IsBoolean, ValidateIf } from 'class-validator';
 
 export class UpdateMyClientDto {
   @IsOptional()
@@ -55,4 +55,16 @@ export class UpdateMyClientDto {
   @IsOptional()
   @IsString()
   currency?: string;
+
+  // Critical ticket admin: the address every Critical ticket is emailed to, and
+  // the switch for it. An empty string clears the address; switching on without
+  // one is refused by the service.
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== '' && v !== null)
+  @IsEmail({}, { message: 'Enter a valid critical ticket admin email' })
+  criticalTicketEmail?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  criticalTicketAlerts?: boolean;
 }

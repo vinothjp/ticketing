@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import type { ClientVisit } from './clientVisitsMeta';
 import { VISIT_STATUS_LABELS, statusVariant } from './clientVisitsMeta';
+import { useDateFormat } from '@/lib/dateFormat';
 
 interface Props {
   /** Server-side filter — any subset of customerCompanyId / productId / ticketId. */
@@ -22,6 +23,7 @@ interface Props {
  * belongs to lives. Admin-only API, so only render it for admins.
  */
 export function ClientVisitsPanel({ filter, title = 'Client visits', prefill, limit = 5 }: Props) {
+  const { fmtDate } = useDateFormat();
   const navigate = useNavigate();
   const params = new URLSearchParams();
   Object.entries(filter).forEach(([k, v]) => { if (v) params.append(k, v); });
@@ -78,7 +80,7 @@ export function ClientVisitsPanel({ filter, title = 'Client visits', prefill, li
                   className="cursor-pointer border-b last:border-0 hover:bg-muted/30"
                 >
                   <td className="px-3 py-2">{visit.visitNumber || '-'}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">{new Date(visit.visitDate).toLocaleDateString()}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{fmtDate(visit.visitDate)}</td>
                   <td className="px-3 py-2">{visit.consultantName}</td>
                   <td className="px-3 py-2">{visit.productName || '-'}</td>
                   <td className="px-3 py-2">{visit.hours}</td>

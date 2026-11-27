@@ -71,7 +71,7 @@ export default function ClientAssignProductPage() {
   // Auto assignment is a client-level switch (not this product's). On the product
   // screen it saves on click; here it waits for Assign, so Cancel leaves it alone.
   const [autoAssign, setAutoAssign] = useState<boolean | null>(null);
-  const autoAssignValue = autoAssign ?? client?.autoAssignTickets ?? true;
+  const autoAssignValue = autoAssign ?? client?.autoAssignTickets ?? false;
 
   // Consultant draft, pre-filled from the selected product's own module/product
   // consultants (a one-time snapshot the admin can edit before assigning).
@@ -156,7 +156,7 @@ export default function ClientAssignProductPage() {
           await api.post(`${base}/po-invoice`, fd).catch(() => followUps.push('PO invoice'));
         }
       }
-      if (autoAssign !== null && autoAssign !== (client?.autoAssignTickets ?? true)) {
+      if (autoAssign !== null && autoAssign !== (client?.autoAssignTickets ?? false)) {
         await api.patch(`/api/customer-companies/${companyId}`, { autoAssignTickets: autoAssign })
           .then(() => qc.invalidateQueries({ queryKey: ['client', companyId] }))
           .catch(() => followUps.push('auto assignment'));

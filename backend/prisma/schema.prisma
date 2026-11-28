@@ -109,6 +109,9 @@ model Client {
   // is stored config: nothing reads it yet.
   timeFormat String @default("HH:mm")
   currency   String @default("USD")
+  // IANA zone (`Asia/Kolkata`) the tenant's ticket emails print times in — the
+  // server runs on UTC, so without it a time would be hours off for the reader.
+  timeZone   String @default("Asia/Kolkata")
 }
 
 // A logged client visit against a customer, booked to their contract pool.

@@ -23,7 +23,7 @@ import { TICKET_COLUMNS, type TicketSheetRow } from './ticket-sheet';
 import {
   FREE_STATUS_LABELS, issueTypeLabel, offeredIssueTypes, pickLeastLoaded, routingIssueType, type AgentPicker,
 } from './auto-assign';
-import { formatTenantDate, renderTicketEmail, type TicketEmailContent, type TicketEmailFacts } from './ticket-email';
+import { formatTenantStamp, renderTicketEmail, type TicketEmailContent, type TicketEmailFacts } from './ticket-email';
 import { NotificationRulesService } from '../notification-rules/notification-rules.service';
 import type { NotificationEvent } from '../notification-rules/notification-vocab';
 import {
@@ -193,7 +193,7 @@ const MAIL = {
     linkLabel: 'Track Ticket',
   }),
   /** 11. SLA Breached — to the assigned agent, sent with the escalation. */
-  slaBreached: (breachedOn: string | null, delay: string, remarks: string | null, escalatedTo: string): TicketEmailContent => ({
+  slaBreached: (breachedOn: string | null, delay: string, remarks: string | null, escalatedTo: string | null): TicketEmailContent => ({
     intro: 'This is to notify you that the following support ticket assigned to you has breached its defined Service Level Agreement (SLA).\n' +
       'Immediate attention is required to review the delay and ensure appropriate action is taken.',
     fields: [
@@ -202,7 +202,8 @@ const MAIL = {
       'dueDate', ['SLA Breach Date', breachedOn], ['Delay Duration', delay],
     ],
     sections: [{ title: 'Current Ticket Remarks', body: remarks ?? 'No update has been recorded on the ticket yet.' }],
-    outro: `Please review the ticket and take the necessary corrective action. The ticket has also been escalated to ${escalatedTo}.`,
+    outro: 'Please review the ticket and take the necessary corrective action.' +
+      (escalatedTo ? ` The ticket has also been escalated to ${escalatedTo}.` : ''),
     linkLabel: 'View Breached Ticket',
   }),
   /** 12. Ticket Escalated (with 11. SLA Breached's timings) — to the project manager. */
@@ -316,14 +317,15 @@ export class TicketsService {
     // own ticket goes straight through. While it waits nobody is assigned and
     // its SLA clock does not run — both start in `approve()`.
     const needsProviderApproval = template.requiresApproval && !(viewer && isAdmin(viewer));
-    // Every ticket a customer's *employee* raises waits for their own company
-    // admin first (PENDING_CUSTOMER), whatever the template (client request).
-    // On approval it goes on to the provider's Admin if the template needs that
-    // too, and is otherwise opened and routed then. A customer admin's own
-    // ticket, and an agent's, skip this stage. A company with no active
-    // customer admin has nobody to ask, so its employees' tickets go straight on.
+    // On a template that needs approval, a customer's *employee* asks their own
+    // company admin first (PENDING_CUSTOMER), who forwards it to the provider's
+    // Admin (PENDING). Any other ticket an employee raises is live at once — the
+    // every-ticket company-admin approval was withdrawn (client request). A
+    // customer admin's own request, and an agent's, go straight to the Admin; a
+    // company with no active customer admin has nobody to ask, so it does too.
     const needsCustomerApproval =
-      !!viewer && isCustomerEmployee(viewer) && (await this.hasCustomerAdmin(clientId, viewer.customerCompanyId));
+      needsProviderApproval && !!viewer && isCustomerEmployee(viewer) &&
+      (await this.hasCustomerAdmin(clientId, viewer.customerCompanyId));
     // Held: no assignee, no routing and no deadline until the last approval.
     const needsApproval = needsProviderApproval || needsCustomerApproval;
     if (needsApproval) dto = { ...dto, technicianUserIds: [] };
@@ -1076,13 +1078,11 @@ export class TicketsService {
       }
       case 'PREVIOUS_AGENT':
         return []; // only a reassignment knows, and it passes them in
-      case 'PROJECT_MANAGER':
-      case 'SUPPORT_MANAGER': {
+      case 'PROJECT_MANAGER': {
+        // The client product's own project manager — never the Admins in their place.
         const pmId = await this.reopenApproverFor(clientId, t);
         const pm = pmId ? await this.prisma.user.findUnique({ where: { id: pmId }, select: pick }) : null;
-        if (pm) return [pm];
-        // The support manager is the client product's project manager, else the Admins.
-        return role === 'SUPPORT_MANAGER' ? this.tenantAdmins(clientId) : [];
+        return pm ? [pm] : [];
       }
       case 'TENANT_ADMINS':
         return this.tenantAdmins(clientId);
@@ -1121,7 +1121,7 @@ export class TicketsService {
             technicians: { select: { user: { select: { username: true, name: true } } } },
           },
         }),
-        this.prisma.client.findUnique({ where: { id: clientId }, select: { name: true, dateFormat: true } }),
+        this.prisma.client.findUnique({ where: { id: clientId }, select: { name: true, dateFormat: true, timeFormat: true, timeZone: true } }),
       ]);
       base.orgName = org?.name ?? null;
       if (!row) return base;
@@ -1136,7 +1136,7 @@ export class TicketsService {
       const agents = row.technicians.map((x) => displayName(x.user)).filter(Boolean).join(', ');
       const track = issueTypeLabel(row.consultantType);
       const priority = label('priority', row.priority);
-      const date = (d: Date | null | undefined) => formatTenantDate(d, org?.dateFormat);
+      const date = (d: Date | null | undefined) => formatTenantStamp(d, org);
       return {
         ...base,
         ticketNumber: row.ticketNumber,
@@ -1923,8 +1923,8 @@ export class TicketsService {
   }
 
   /**
-   * One escalation: History, then 12. Ticket Escalated (to the support manager,
-   * by default) and 11. SLA Breached (to the agent, by default) at the same
+   * One escalation: 12. Ticket Escalated (to the client product's project
+   * manager, by default), History naming who it reached, and 11. SLA Breached (to the agent, by default) at the same
    * moment — whoever the first reached is left out of the second. Who hears of
    * each is the Email Configuration. Never throws.
    */
@@ -1934,19 +1934,12 @@ export class TicketsService {
     now: Date,
   ) {
     try {
-      const pmId = await this.reopenApproverFor(clientId, t);
-      const pm = pmId ? await this.prisma.user.findUnique({ where: { id: pmId }, select: { username: true, name: true } }) : null;
-      const escalatedTo = pm ? displayName(pm) : 'the admins';
       const late = Math.max(0, now.getTime() - (t.dueDate?.getTime() ?? now.getTime()));
       const days = Math.floor(late / DAY_MS);
       const hours = Math.floor((late % DAY_MS) / 3_600_000);
       const delay = days ? `${days} day${days === 1 ? '' : 's'} ${hours} hour${hours === 1 ? '' : 's'}` : `${Math.max(hours, 1)} hour${hours > 1 ? 's' : ''}`;
-      const org = await this.prisma.client.findUnique({ where: { id: clientId }, select: { dateFormat: true } });
-      await this.activity.log({
-        ticketId: t.id, type: 'SLA_ESCALATED',
-        summary: `SLA breached — escalated to ${pm ? `${escalatedTo} (project manager)` : 'the admins'}`,
-      });
-      const breachedOn = formatTenantDate(t.dueDate, org?.dateFormat);
+      const org = await this.prisma.client.findUnique({ where: { id: clientId }, select: { dateFormat: true, timeFormat: true, timeZone: true } });
+      const breachedOn = formatTenantStamp(t.dueDate, org);
       const remarks = await this.latestStaffUpdate(t.id);
       const label = `${t.ticketNumber} — ${t.subject}`;
       const reached = await this.fireEvent(clientId, 'TICKET_ESCALATED', {
@@ -1960,6 +1953,16 @@ export class TicketsService {
         },
         detail: `${delay} past its SLA`,
       });
+      // Named from whoever the Email Configuration actually reached — the
+      // client product's project manager by default, nobody when it has none.
+      const told = reached.size
+        ? await this.prisma.user.findMany({ where: { id: { in: [...reached] } }, select: { username: true, name: true } })
+        : [];
+      const escalatedTo = told.map((u) => displayName(u)).filter(Boolean).join(', ') || null;
+      await this.activity.log({
+        ticketId: t.id, type: 'SLA_ESCALATED',
+        summary: escalatedTo ? `SLA breached — escalated to ${escalatedTo}` : 'SLA breached — nobody to escalate to',
+      });
       await this.fireEvent(clientId, 'SLA_BREACHED', {
         ticket: t,
         skipUserIds: [...reached],
@@ -1969,7 +1972,7 @@ export class TicketsService {
         bell: {
           agent: {
             type: 'TICKET_SLA_BREACHED', title: `SLA breached · ${t.ticketNumber}`,
-            body: `${label} is ${delay} past its SLA and has been escalated to ${escalatedTo}.`,
+            body: `${label} is ${delay} past its SLA${escalatedTo ? ` and has been escalated to ${escalatedTo}` : ''}.`,
           },
         },
         detail: `${delay} past its SLA`,

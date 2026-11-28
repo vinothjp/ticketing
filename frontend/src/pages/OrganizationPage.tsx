@@ -16,7 +16,35 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import type { Control } from 'react-hook-form';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Combobox } from '@/components/ui/combobox';
+import type { ComboboxOption } from '@/components/ui/combobox';
 import { DEFAULT_DATE_FORMAT, DEFAULT_TIME_FORMAT, formatWithPattern, useDateFormat } from '@/lib/dateFormat';
+
+/** The tenant's default zone, as the server's `Client.timeZone` default. */
+const DEFAULT_TIME_ZONE = 'Asia/Kolkata';
+
+/** "GMT+05:30" for a zone, read now (so daylight saving shows as it stands today). */
+const zoneOffset = (tz: string) => {
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longOffset' })
+      .formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value ?? '';
+  } catch {
+    return '';
+  }
+};
+
+let zoneCache: ComboboxOption[] | null = null;
+/** Every IANA zone the browser knows, typeable; a stored zone outside the list is still offered. */
+function timeZoneOptions(current?: string): ComboboxOption[] {
+  if (!zoneCache) {
+    const intl = Intl as unknown as { supportedValuesOf?: (key: string) => string[] };
+    const zones = intl.supportedValuesOf?.('timeZone') ?? [DEFAULT_TIME_ZONE, 'UTC'];
+    zoneCache = zones.map((z) => ({ value: z, label: z.replace(/_/g, ' '), hint: zoneOffset(z) }));
+  }
+  return current && !zoneCache.some((o) => o.value === current)
+    ? [{ value: current, label: current, hint: zoneOffset(current) }, ...zoneCache]
+    : zoneCache;
+}
 
 interface License {
   plan: string; maxUsers: number; expiryDate: string;
@@ -30,6 +58,7 @@ interface MyClientDetail {
   ticketMaxReopens: number;
   dateFormat?: string | null;
   timeFormat?: string | null;
+  timeZone?: string | null;
   currency?: string | null;
   criticalTicketEmail?: string | null;
   criticalTicketAlerts?: boolean;
@@ -67,6 +96,8 @@ const orgSchema = z.object({
   // list, which an admin may add to.
   dateFormat: z.string().min(1, 'Pick a date format'),
   timeFormat: z.string().min(1, 'Pick a time format'),
+  // IANA zone ticket emails print their times in (the server runs on UTC).
+  timeZone: z.string().min(1, 'Pick a time zone'),
   currency: z.string().min(1, 'Pick a currency'),
   // Critical ticket admin: CC'd on every email about a Critical ticket, and the switch.
   criticalTicketEmail: z.string().email('Enter a valid email').optional().or(z.literal('')),
@@ -109,7 +140,7 @@ export default function OrganizationPage() {
     defaultValues: {
       name: '', contactEmail: '', contactPhone: '',
       ticketReopenWindowDays: '30', ticketAutoCloseDays: '3', ticketMaxReopens: '3',
-      dateFormat: DEFAULT_DATE_FORMAT, timeFormat: DEFAULT_TIME_FORMAT, currency: 'USD',
+      dateFormat: DEFAULT_DATE_FORMAT, timeFormat: DEFAULT_TIME_FORMAT, timeZone: DEFAULT_TIME_ZONE, currency: 'USD',
       criticalTicketEmail: '', criticalTicketAlerts: false, helpdeskEmail: '',
       ticketMaxOpenPerAgent: '10', defaultIssueType: 'TECHNICAL',
     },
@@ -126,6 +157,7 @@ export default function OrganizationPage() {
       ticketMaxReopens: String(client.ticketMaxReopens ?? 3),
       dateFormat: client.dateFormat || DEFAULT_DATE_FORMAT,
       timeFormat: client.timeFormat || DEFAULT_TIME_FORMAT,
+      timeZone: client.timeZone || DEFAULT_TIME_ZONE,
       currency: client.currency || 'USD',
       criticalTicketEmail: client.criticalTicketEmail ?? '',
       criticalTicketAlerts: !!client.criticalTicketAlerts,
@@ -397,7 +429,7 @@ export default function OrganizationPage() {
 
               {/* The three Organization-module option lists. Same control
                   throughout — only the list and the preview differ. */}
-              <div className="grid gap-4 sm:grid-cols-3">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <OptionListField
                   control={form.control}
                   name="dateFormat"
@@ -417,6 +449,25 @@ export default function OrganizationPage() {
                   name="currency"
                   label="Currency"
                   listId={listId('CURRENCY')}
+                />
+                <FormField
+                  control={form.control}
+                  name="timeZone"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Time zone</FormLabel>
+                      <Combobox
+                        value={field.value}
+                        options={timeZoneOptions(field.value)}
+                        onChange={(v) => { if (v) field.onChange(v); }}
+                        placeholder="Pick a time zone"
+                        emptyText="No matching time zone"
+                        maxRows={8}
+                      />
+                      <p className="text-xs text-muted-foreground">Times in ticket emails are shown in this zone.</p>
+                      <FormMessage />
+                    </FormItem>
+                  )}
                 />
               </div>
 

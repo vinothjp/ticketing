@@ -100,34 +100,83 @@ const pad = (n: number) => String(n).padStart(2, '0');
 /** Longest-first, as `frontend/src/lib/dateFormat.ts` matches them. */
 const TOKEN = /yyyy|yy|MMMM|MMM|MM|M|dd|d|HH|hh|mm|ss|a/g;
 
+/** The wall-clock fields of an instant in an IANA time zone (`Asia/Kolkata`); an unknown zone reads as UTC. */
+function zonedParts(d: Date, timeZone?: string | null) {
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timeZone || 'UTC', hourCycle: 'h23',
+      year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric',
+    }).formatToParts(d);
+  } catch {
+    return zonedParts(d, 'UTC');
+  }
+  const n = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+  return { y: n('year'), M: n('month'), d: n('day'), H: n('hour') % 24, m: n('minute'), s: n('second') };
+}
+
 /**
- * A date in the tenant's own token pattern (`Client.dateFormat`), mirroring the
- * frontend renderer. Dates only: the server clock is UTC and a tenant has no
- * time zone setting, so a time printed here would be hours off for the reader.
+ * The zone's short name for a reader — `IST`, `GST`, `EST`, `GMT` — preferring
+ * a letter abbreviation over a bare offset, which one locale or the other gives.
  */
-export function formatTenantDate(value: Date | string | null | undefined, pattern?: string | null): string | null {
+export function timeZoneAbbr(d: Date, timeZone?: string | null): string {
+  const name = (locale: string) => {
+    try {
+      return new Intl.DateTimeFormat(locale, { timeZone: timeZone || 'UTC', timeZoneName: 'short' })
+        .formatToParts(d).find((p) => p.type === 'timeZoneName')?.value ?? '';
+    } catch {
+      return '';
+    }
+  };
+  const names = [name('en-US'), name('en-IN'), name('en-GB')].filter(Boolean);
+  return names.find((v) => !/^(GMT|UTC)[+-]/.test(v)) ?? names[0] ?? 'UTC';
+}
+
+/**
+ * An instant in the tenant's own token pattern (`Client.dateFormat`, plus
+ * `timeFormat` for a stamp), mirroring the frontend renderer — read on the
+ * tenant's wall clock (`Client.timeZone`), since the server runs on UTC.
+ */
+export function formatTenantDate(
+  value: Date | string | null | undefined,
+  pattern?: string | null,
+  timeZone?: string | null,
+): string | null {
   if (!value) return null;
-  const d = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(d.getTime())) return null;
-  const h12 = d.getHours() % 12 || 12;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const d = zonedParts(date, timeZone);
+  const h12 = d.H % 12 || 12;
   return (pattern?.trim() || 'dd/MM/yyyy').replace(TOKEN, (t) => {
     switch (t) {
-      case 'yyyy': return String(d.getFullYear());
-      case 'yy': return pad(d.getFullYear() % 100);
-      case 'MMMM': return MONTHS_LONG[d.getMonth()];
-      case 'MMM': return MONTHS_LONG[d.getMonth()].slice(0, 3);
-      case 'MM': return pad(d.getMonth() + 1);
-      case 'M': return String(d.getMonth() + 1);
-      case 'dd': return pad(d.getDate());
-      case 'd': return String(d.getDate());
-      case 'HH': return pad(d.getHours());
+      case 'yyyy': return String(d.y);
+      case 'yy': return pad(d.y % 100);
+      case 'MMMM': return MONTHS_LONG[d.M - 1];
+      case 'MMM': return MONTHS_LONG[d.M - 1].slice(0, 3);
+      case 'MM': return pad(d.M);
+      case 'M': return String(d.M);
+      case 'dd': return pad(d.d);
+      case 'd': return String(d.d);
+      case 'HH': return pad(d.H);
       case 'hh': return pad(h12);
-      case 'mm': return pad(d.getMinutes());
-      case 'ss': return pad(d.getSeconds());
-      case 'a': return d.getHours() < 12 ? 'am' : 'pm';
+      case 'mm': return pad(d.m);
+      case 'ss': return pad(d.s);
+      case 'a': return d.H < 12 ? 'am' : 'pm';
       default: return t;
     }
   });
+}
+
+/** A date-and-time stamp for an email: `28/11/2026 18:58 IST`, in the tenant's formats and zone. */
+export function formatTenantStamp(
+  value: Date | string | null | undefined,
+  org?: { dateFormat?: string | null; timeFormat?: string | null; timeZone?: string | null } | null,
+): string | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const pattern = `${org?.dateFormat?.trim() || 'dd/MM/yyyy'} ${org?.timeFormat?.trim() || 'HH:mm'}`;
+  return `${formatTenantDate(date, pattern, org?.timeZone)} ${timeZoneAbbr(date, org?.timeZone)}`;
 }
 
 /** Render one ticket email. `greetName` null greets "Team" — a shared address or a group of staff. */

@@ -158,6 +158,7 @@ export class ClientsService {
       ticketMaxReopens?: number;
       dateFormat?: string;
       timeFormat?: string;
+      timeZone?: string;
       currency?: string;
       criticalTicketEmail?: string | null;
       criticalTicketAlerts?: boolean;

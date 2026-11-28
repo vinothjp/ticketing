@@ -23,10 +23,9 @@ export const NOTIFICATION_RECIPIENTS: { value: string; label: string }[] = [
   { value: 'NEW_ASSIGNED_AGENT', label: 'New assigned agent' },
   { value: 'PREVIOUS_AGENT', label: 'Previous agent' },
   { value: 'HELPDESK_EMAIL', label: 'Helpdesk email' },
-  { value: 'SUPPORT_MANAGER', label: 'Support manager' },
-  { value: 'PROJECT_MANAGER', label: 'Project manager' },
+  { value: 'PROJECT_MANAGER', label: 'Project Manager' },
   { value: 'CLIENT_ADMIN', label: 'Client admin' },
-  { value: 'TENANT_ADMINS', label: 'Admins' },
+  { value: 'TENANT_ADMINS', label: 'Admin' },
 ];
 
 /** An address, not a user: it can be emailed but never belled. */
@@ -61,7 +60,7 @@ export const DEFAULT_RULES: NotificationRule[] = [
   row('TICKET_CLOSED', ['REQUESTOR', 'ASSIGNED_AGENT', 'HELPDESK_EMAIL'], true, true),
   row('TICKET_CLOSED', ['CLIENT_ADMIN', 'PROJECT_MANAGER'], false, true),
   row('SLA_BREACHED', ['ASSIGNED_AGENT', 'HELPDESK_EMAIL'], true, true),
-  row('TICKET_ESCALATED', ['SUPPORT_MANAGER', 'HELPDESK_EMAIL'], true, true),
+  row('TICKET_ESCALATED', ['PROJECT_MANAGER', 'HELPDESK_EMAIL'], true, true),
 ];
 
 export const recipientLabel = (v: string) => NOTIFICATION_RECIPIENTS.find((r) => r.value === v)?.label ?? v;

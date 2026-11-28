@@ -18,7 +18,6 @@ export const AUDIENCE: Record<PersonRole, Audience> = {
   ASSIGNED_AGENT: 'agent',
   NEW_ASSIGNED_AGENT: 'agent',
   PREVIOUS_AGENT: 'agent',
-  SUPPORT_MANAGER: 'staff',
   PROJECT_MANAGER: 'staff',
   TENANT_ADMINS: 'staff',
 };
@@ -29,7 +28,7 @@ export const AUDIENCE: Record<PersonRole, Audience> = {
  */
 const ROLE_PRIORITY: PersonRole[] = [
   'NEW_ASSIGNED_AGENT', 'PREVIOUS_AGENT', 'ASSIGNED_AGENT', 'REQUESTOR', 'CLIENT_ADMIN',
-  'SUPPORT_MANAGER', 'PROJECT_MANAGER', 'TENANT_ADMINS',
+  'PROJECT_MANAGER', 'TENANT_ADMINS',
 ];
 /** Client sends go first, so the helpdesk copy rides on the client's email, as it always did. */
 const AUDIENCE_ORDER: Audience[] = ['client', 'agent', 'staff'];

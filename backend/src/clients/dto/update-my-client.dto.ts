@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsEmail, IsInt, Min, Max, IsBoolean, IsIn, ValidateIf } from 'class-validator';
+import { IsString, IsOptional, IsEmail, IsInt, Min, Max, IsBoolean, IsIn, IsTimeZone, ValidateIf } from 'class-validator';
 import { ISSUE_TYPES } from '../../tickets/auto-assign';
 
 export class UpdateMyClientDto {
@@ -50,6 +50,11 @@ export class UpdateMyClientDto {
   @IsOptional()
   @IsString()
   timeFormat?: string;
+
+  // IANA time zone (`Asia/Kolkata`) ticket emails print their times in.
+  @IsOptional()
+  @IsTimeZone({ message: 'Pick a valid time zone' })
+  timeZone?: string;
 
   // The currency the organization trades in, from the CURRENCY option list.
   // Stored config — no screen reads it yet.

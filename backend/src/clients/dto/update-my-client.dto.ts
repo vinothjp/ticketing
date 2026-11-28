@@ -1,4 +1,5 @@
-import { IsString, IsOptional, IsEmail, IsInt, Min, Max, IsBoolean, ValidateIf } from 'class-validator';
+import { IsString, IsOptional, IsEmail, IsInt, Min, Max, IsBoolean, IsIn, ValidateIf } from 'class-validator';
+import { ISSUE_TYPES } from '../../tickets/auto-assign';
 
 export class UpdateMyClientDto {
   @IsOptional()
@@ -67,4 +68,24 @@ export class UpdateMyClientDto {
   @IsOptional()
   @IsBoolean()
   criticalTicketAlerts?: boolean;
+
+  // Ticket auto-assignment: open tickets an agent may hold before auto-routing
+  // treats them as busy. null = no limit.
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsInt({ message: 'Max open tickets per agent must be a whole number' })
+  @Min(1, { message: 'Max open tickets per agent must be at least 1' })
+  @Max(1000)
+  ticketMaxOpenPerAgent?: number | null;
+
+  // The issue type a ticket with none routes on.
+  @IsOptional()
+  @IsIn([...ISSUE_TYPES], { message: 'Default issue type must be Technical, Functional or Other' })
+  defaultIssueType?: string;
+
+  // Helpdesk email: CC'd on every ticket email. An empty string clears it.
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== '' && v !== null)
+  @IsEmail({}, { message: 'Enter a valid helpdesk email' })
+  helpdeskEmail?: string | null;
 }

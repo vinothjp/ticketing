@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { staffLabel, staffMatches } from '@/lib/staffLabel';
 
 type Track = 'TECHNICAL' | 'FUNCTIONAL' | 'OTHERS';
@@ -24,7 +25,7 @@ const inCol = (agents: Agent[], col: Track) =>
 interface StaffUser { id: string; username: string; name?: string | null }
 interface Agent { id: string; track: string; isPrimary: boolean; user: { id: string; username: string; name?: string | null } }
 interface Module { id: string; name: string; consultants: Agent[] }
-interface Product { id: string; name: string; code: string; description?: string | null; imageUrl?: string | null; consultants: Agent[]; modules: Module[] }
+interface Product { id: string; name: string; code: string; description?: string | null; imageUrl?: string | null; consultantMode?: 'PRODUCT' | 'MODULES'; consultants: Agent[]; modules: Module[] }
 
 interface DraftLink { track: string; userId: string }
 interface DraftModule { key: string; name: string; agents: DraftLink[] }
@@ -58,6 +59,9 @@ export default function ProductEditorPage() {
   const [newModule, setNewModule] = useState('');
   const [saving, setSaving] = useState(false);
   const [mode, setMode] = useState<'PRODUCT' | 'MODULES'>('PRODUCT');
+  // A switch on a saved product waits here for the admin to confirm it.
+  const [pendingMode, setPendingMode] = useState<'PRODUCT' | 'MODULES' | null>(null);
+  const [switching, setSwitching] = useState(false);
   const [dAgents, setDAgents] = useState<DraftLink[]>([]);
   const [dModules, setDModules] = useState<DraftModule[]>([]);
 
@@ -74,18 +78,40 @@ export default function ProductEditorPage() {
       setImageUrl(product.imageUrl ?? null);
     }
   }, [detailsKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The Whole product / Modules choice is derived once per product, then it is
-  // the admin's. Re-deriving it on each refetch snapped a product that has
-  // modules back to Modules the moment an agent was added under Whole product.
-  // (Product-level agents are still meaningful there: routing falls back to
-  // them when a ticket's module has no agent of its own.)
-  const modeFor = useRef<string | null>(null);
+  // The Whole product / Modules choice is stored on the product
+  // (`consultantMode`). Only that mode's consultants exist — switching a saved
+  // product clears the other mode's, here and on every client's product page
+  // (client request), so it is confirmed first (`pendingMode`).
   useEffect(() => {
-    if (product && modeFor.current !== product.id) {
-      modeFor.current = product.id;
-      setMode(product.modules.length > 0 ? 'MODULES' : 'PRODUCT');
+    if (product) setMode(product.consultantMode ?? (product.modules.length > 0 ? 'MODULES' : 'PRODUCT'));
+  }, [product?.id, product?.consultantMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pickMode = (v: string) => {
+    const next = v as 'PRODUCT' | 'MODULES';
+    if (next === mode) return; // the radio re-emits the current pick
+    if (isNew) { setMode(next); return; }
+    setPendingMode(next);
+  };
+  const confirmMode = async () => {
+    if (!pendingMode) return;
+    setSwitching(true);
+    try {
+      await api.put(`/api/products/${id}/consultant-mode`, { mode: pendingMode });
+      setMode(pendingMode);
+      refetch();
+      qc.invalidateQueries({ queryKey: ['products'] });
+      toast.success(pendingMode === 'MODULES' ? 'Now assigning consultants per module' : 'Now assigning consultants to the whole product');
+      setPendingMode(null);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Error');
+    } finally {
+      setSwitching(false);
     }
-  }, [product]);
+  };
+  // Who the switch removes from this screen — named in the confirmation.
+  const leaving = pendingMode === 'MODULES'
+    ? (product?.consultants ?? []).map((a) => staffLabel(a.user))
+    : (product?.modules ?? []).flatMap((m) => m.consultants.map((a) => staffLabel(a.user)));
+  const leavingNames = [...new Set(leaving)];
 
   const refetch = () => qc.invalidateQueries({ queryKey: ['product', id] });
   const call = async (p: Promise<unknown>, ok?: string) => { try { await p; if (!isNew) refetch(); if (ok) toast.success(ok); } catch (e: any) { toast.error(e.response?.data?.message || 'Error'); } };
@@ -105,7 +131,7 @@ export default function ProductEditorPage() {
     if (!details.name.trim() || !details.code.trim()) return;
     setSaving(true);
     try {
-      const res = await api.post('/api/products', { name: details.name.trim(), code: details.code.trim(), description: details.description.trim() || undefined, imageUrl: imageUrl || undefined });
+      const res = await api.post('/api/products', { name: details.name.trim(), code: details.code.trim(), description: details.description.trim() || undefined, imageUrl: imageUrl || undefined, consultantMode: mode });
       const pid = res.data.id as string;
       if (mode === 'PRODUCT') {
         for (const a of dAgents) await api.post(`/api/products/${pid}/consultants`, { track: a.track, userId: a.userId });
@@ -187,7 +213,7 @@ export default function ProductEditorPage() {
           <>
             <div className="space-y-2">
               <label className="text-sm font-medium">Assign consultants</label>
-              <RadioGroup value={mode} onValueChange={(v) => setMode(v as 'PRODUCT' | 'MODULES')} className="flex flex-wrap gap-6">
+              <RadioGroup value={mode} onValueChange={pickMode} className="flex flex-wrap gap-6">
                 <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="PRODUCT" /> Whole product</label>
                 <label className="flex items-center gap-2 text-sm"><RadioGroupItem value="MODULES" /> Modules</label>
               </RadioGroup>
@@ -225,6 +251,32 @@ export default function ProductEditorPage() {
           </>
         )}
       </div>
+
+      <Dialog open={!!pendingMode} onOpenChange={(o) => { if (!o && !switching) setPendingMode(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{pendingMode === 'MODULES' ? 'Assign consultants per module?' : 'Assign consultants to the whole product?'}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <p>
+              {pendingMode === 'MODULES'
+                ? 'The whole-product consultants are removed'
+                : "Every module's consultants are removed"}
+              {leavingNames.length > 0 ? <> ({leavingNames.join(', ')})</> : ' (there are none)'}, and so are the
+              consultants each client set for this product the {pendingMode === 'MODULES' ? 'whole-product' : 'per-module'} way
+              on their product page.
+            </p>
+            <p>
+              You then assign consultants {pendingMode === 'MODULES' ? 'module by module' : 'for the whole product'} — the
+              same people can be picked again. Tickets already assigned keep their agent.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={switching} onClick={() => setPendingMode(null)}>Cancel</Button>
+            <Button disabled={switching} onClick={confirmMode}>{switching ? 'Switching…' : 'Switch'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

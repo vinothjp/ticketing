@@ -63,7 +63,7 @@ interface AdminInput { mode: 'new' | 'link'; username: string; email: string; pa
 const emptyAdmin: AdminInput = { mode: 'new', username: '', email: '', password: '', userId: '' };
 
 const adminValid = (a: AdminInput) =>
-  a.mode === 'link' ? !!a.userId : !!(a.username.trim() && a.email.trim() && a.password.length >= 6);
+  a.password.length >= 6 && (a.mode === 'link' ? !!a.userId : !!(a.username.trim() && a.email.trim()));
 
 const displayName = (u: { name?: string | null; username: string }) => u.name?.trim() || u.username;
 
@@ -242,7 +242,7 @@ export default function CustomerCompaniesPage({ createPage = false, editPage = f
       }
       body.clientType = c.clientType;
       // The customer admin rides on the create — linked or new, never neither.
-      if (admin.mode === 'link') body.adminUserId = admin.userId;
+      if (admin.mode === 'link') Object.assign(body, { adminUserId: admin.userId, adminPassword: admin.password });
       else Object.assign(body, { adminUsername: admin.username.trim(), adminEmail: admin.email.trim(), adminPassword: admin.password });
       const created = await api.post('/api/customer-companies', body);
       // The logo needs the new id, so it goes up right after the company lands.
@@ -784,15 +784,21 @@ function CustomerAdminFields({ value, onChange }: { value: AdminInput; onChange:
           No unlinked customer admins. Create one on the Users screen with the CustomerAdmin role, or create a new admin here.
         </p>
       ) : (
-        // Radix emits '' when the value isn't among the loaded items — never a real pick, so it is ignored.
-        <Select value={value.userId} onValueChange={(v) => { if (v) set({ userId: v }); }}>
-          <SelectTrigger className="w-full"><SelectValue placeholder="Pick a customer admin" /></SelectTrigger>
-          <SelectContent>
-            {available.map((u) => (
-              <SelectItem key={u.id} value={u.id}>{displayName(u)} · {u.email}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <div className="space-y-3">
+          {/* Radix emits '' when the value isn't among the loaded items — never a real pick, so it is ignored. */}
+          <Select value={value.userId} onValueChange={(v) => { if (v) set({ userId: v }); }}>
+            <SelectTrigger className="w-full"><SelectValue placeholder="Pick a customer admin" /></SelectTrigger>
+            <SelectContent>
+              {available.map((u) => (
+                <SelectItem key={u.id} value={u.id}>{displayName(u)} · {u.email}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {/* Linking sets this as the user's new password — it is what the welcome email carries. */}
+          <Field label="Temporary password" hint="Becomes this user's new password and is emailed to them. At least 6 characters.">
+            <Input type="text" value={value.password} onChange={(e) => set({ password: e.target.value })} />
+          </Field>
+        </div>
       )}
     </div>
   );
@@ -821,7 +827,7 @@ function CustomerAdminSection({ companyId }: { companyId: string }) {
   };
   const setMut = useMutation({
     mutationFn: () => api.post(`/api/customer-companies/${companyId}/admin`, admin.mode === 'link'
-      ? { userId: admin.userId }
+      ? { userId: admin.userId, password: admin.password }
       : { username: admin.username.trim(), email: admin.email.trim(), password: admin.password }),
     onSuccess: () => { refresh(); setAdmin(emptyAdmin); toast.success('Customer admin set'); },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Could not set the customer admin'),

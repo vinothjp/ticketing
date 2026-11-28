@@ -52,6 +52,7 @@ model Client {
   tickets      Ticket[]
   customerCompanies CustomerCompany[]
   smtpConfig   SmtpConfig?
+  notificationRules NotificationRule[]
   kbArticles   KbArticle[]
   projects     Project[]
   resourceCategories ResourceCategory[]
@@ -87,6 +88,17 @@ model Client {
   // address. Off by default; switching it on needs an address.
   criticalTicketEmail  String?
   criticalTicketAlerts Boolean @default(false)
+  // Ticket auto-assignment (Organization screen). An agent holding this many
+  // open tickets is busy and is skipped by auto-routing; null = no limit.
+  // Manual assignment is never limited by it.
+  ticketMaxOpenPerAgent Int? @default(10)
+  // The issue type a ticket routes on when it carries none — its template has
+  // no Issue type field, or the field was left blank. TECHNICAL | FUNCTIONAL |
+  // OTHERS. Routing only: it is never written onto the ticket.
+  defaultIssueType String @default("TECHNICAL")
+  // Helpdesk email (Organization screen): CC'd on every ticket email — one copy
+  // per email event, never once per recipient. Null = no CC.
+  helpdeskEmail        String?
   // How dates are rendered on this tenant's ticket screens. A token pattern
   // (`dd/MM/yyyy`, `MMM dd, yyyy`, …) chosen on the Organization screen from the
   // DATE_FORMAT option list, so an admin can add a pattern without a deploy.
@@ -509,6 +521,11 @@ model Product {
   autoAssign Boolean  @default(true)             // kept for ticket routing; not shown in the product admin
   // Product-level tracks (used when the product has no modules). TECHNICAL | FUNCTIONAL | OTHERS.
   tracks     String[] @default([])
+  // The Products screen's "Assign consultants" choice: PRODUCT (one whole-
+  // product list, ProductConsultant) or MODULES (a list per module,
+  // ModuleConsultant). Only that mode's consultants exist — switching clears
+  // the other mode's, on the client screens too (client request).
+  consultantMode String @default("PRODUCT")
   sortOrder  Int      @default(0)
   isActive   Boolean  @default(true)
   createdAt  DateTime @default(now())
@@ -749,6 +766,9 @@ model Template {
   // Tickets an agent or customer raises on this template start PENDING and wait
   // for a tenant Admin to approve them; an Admin's own tickets go straight through.
   requiresApproval    Boolean        @default(false)
+  // The template the New Ticket form opens on. At most one per tenant — the
+  // service clears the others when one is switched on.
+  isDefault           Boolean        @default(false)
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
   createdBy           String?
@@ -900,6 +920,14 @@ model Ticket {
   subCategory           String?
   notifyEmails          String[]     @default([])
   dueDate               DateTime?
+  // The dueDate the SLA escalation email was sent for (TicketsService.escalateBreachedSla):
+  // once per breach, and a new due date (a priority change) arms it again.
+  slaEscalatedFor       DateTime?
+  // SLA pause while the ticket waits on the client ("Awaiting End-user Response"):
+  // when the current pause began (null = running), and the seconds already paused,
+  // which a priority change adds back when it re-derives dueDate.
+  slaPausedAt           DateTime?
+  slaPausedSeconds      Int       @default(0)
   expectedResolutionDate DateTime?
   slaHours              Int?
   firstResponseAt       DateTime?
@@ -2067,4 +2095,23 @@ model AnnouncementSuggestion {
 
   @@unique([clientId, sourceKey])
   @@index([clientId, status])
+}
+
+// Email Configuration screen: per ticket event, who is notified and how (email
+// and/or bell). STORED CONFIG ONLY — nothing in the ticket mail/bell paths reads
+// it yet; it waits on the client's final requirement document. Vocabulary in
+// `notification-rules/notification-vocab.ts`.
+model NotificationRule {
+  id         String   @id @default(uuid())
+  clientId   String
+  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  event      String
+  recipients String[]
+  email      Boolean  @default(true)
+  bell       Boolean  @default(false)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([clientId])
 }

@@ -247,11 +247,21 @@ export class ChannelService {
       path: join(process.cwd(), 'uploads/messages', f.filename),
     }));
 
+    // A client answering a ticket that waits on them sends it back to In
+    // Progress. On the chat its "Requestor Responded" email to the agent stands
+    // in for the plain chat email below; on the email channel the agent already
+    // gets the client's reply itself, so only the status moves.
+    const answeredRequest = viewerIsCustomerSide
+      ? await this.tickets.requesterResponded(ticket.id, clientId, input.body, { email: internal, actorUserId: actor.id })
+      : false;
+
     if (internal) {
       // The chat is shared with the client, so both sides hear about it: the
       // provider side always (assigned agents + tenant admins, minus the author),
       // and the client's own people whenever staff posted.
-      await this.notifyAssignedTechnicians(ticket.id, subject, input.body, author, attachments, ticket.clientId);
+      if (!answeredRequest) {
+        await this.notifyAssignedTechnicians(ticket.id, subject, input.body, author, attachments, ticket.clientId);
+      }
       await this.notifyProviderSideOfChat(ticket, input.body, { id: actor.id, username: authorName });
       if (!viewerIsCustomerSide) {
         await this.notifyCustomerSideOfChat(ticket, input.body, authorName);
@@ -408,6 +418,15 @@ export class ChannelService {
       type: 'MESSAGE_RECEIVED',
       summary: `Email received from ${input.from}`,
     });
+    // An emailed answer from the client side (not from a member of staff
+    // replying to a notification) counts as the client responding.
+    const fromStaff = await this.prisma.user.findFirst({
+      where: { clientId: ticket.clientId, customerCompanyId: null, email: { equals: input.from.trim(), mode: 'insensitive' } },
+      select: { id: true },
+    });
+    if (!fromStaff) {
+      await this.tickets.requesterResponded(ticket.id, ticket.clientId, input.body, { email: true });
+    }
     return message;
   }
 }

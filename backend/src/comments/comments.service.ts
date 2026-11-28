@@ -80,6 +80,11 @@ export class CommentsService {
       summary: dto.taskId ? 'Commented on a task' : 'Commented on the ticket',
       meta: { taskId: dto.taskId ?? null, commentId: comment.id },
     });
+    // A client answering a ticket that waits on them sends it back to In
+    // Progress and emails the agent their response.
+    if (!dto.taskId && isCustomerSide(viewer)) {
+      await this.tickets.requesterResponded(ticketId, clientId, comment.body, { email: true, actorUserId: actorId });
+    }
     return comment;
   }
 

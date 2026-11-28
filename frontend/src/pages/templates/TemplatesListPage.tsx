@@ -16,6 +16,7 @@ interface TemplateSummary {
   icon: string | null;
   color: string | null;
   isActive: boolean;
+  isDefault?: boolean;
   fieldCount: number;
   ticketCount: number;
 }
@@ -122,6 +123,7 @@ export default function TemplatesListPage() {
                       {t.name}
                     </Link>
                     {t.category && <Badge variant="secondary">{t.category}</Badge>}
+                    {t.isDefault && <Badge>Default</Badge>}
                   </div>
                   <div className="truncate text-xs text-muted-foreground">
                     {t.fieldCount} field{t.fieldCount === 1 ? '' : 's'}{t.description ? ` · ${t.description}` : ''}

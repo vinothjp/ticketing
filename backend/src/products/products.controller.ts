@@ -3,7 +3,7 @@ import {
 } from '@nestjs/common';
 import { ProductsService } from './products.service';
 import {
-  CreateProductDto, UpdateProductDto, CreateModuleDto, UpdateModuleDto, AddConsultantDto,
+  CreateProductDto, UpdateProductDto, CreateModuleDto, UpdateModuleDto, AddConsultantDto, SetConsultantModeDto,
 } from './dto/product.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../auth/tenant.guard';
@@ -52,6 +52,12 @@ export class ProductsController {
   @Roles('Admin')
   setProductPrimary(@Param('id') id: string, @Param('consultantId') consultantId: string, @Request() req: AuthedRequest) {
     return this.service.setProductPrimary(id, consultantId, req.user.clientId);
+  }
+
+  @Put(':id/consultant-mode')
+  @Roles('Admin')
+  setConsultantMode(@Param('id') id: string, @Body() dto: SetConsultantModeDto, @Request() req: AuthedRequest) {
+    return this.service.setConsultantMode(id, dto.mode, req.user.clientId);
   }
 
   @Patch(':id')

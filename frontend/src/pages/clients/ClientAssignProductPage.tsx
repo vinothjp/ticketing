@@ -18,7 +18,7 @@ import { servicesForm, servicesPayload, type ContractServicesValue } from '@/com
 
 interface CatAgent { track: string; isPrimary?: boolean; user: { id: string; username: string; name?: string | null } }
 interface CatModule { id: string; name: string; consultants: CatAgent[] }
-interface CatProduct { id: string; name: string; imageUrl?: string | null; modules: CatModule[]; consultants: CatAgent[] }
+interface CatProduct { id: string; name: string; imageUrl?: string | null; consultantMode?: 'PRODUCT' | 'MODULES'; modules: CatModule[]; consultants: CatAgent[] }
 interface Purchased { productId: string }
 interface Client { id: string; name: string; clientType?: string; contractScope?: 'PRODUCT' | 'CUSTOMER'; autoAssignTickets?: boolean }
 interface StaffUser { id: string; username: string; name?: string | null }
@@ -281,7 +281,7 @@ export default function ClientAssignProductPage() {
           <div className="space-y-2">
             <div className="flex items-center gap-1.5 text-sm font-medium"><Users className="size-4" /> Consultants for {assignProduct.name}</div>
             <p className="text-xs text-muted-foreground">Assign consultants per module and track — the dropdown offers only this product's agents. Saved when you assign the product.</p>
-            <ConsultantGrid modules={assignProduct.modules ?? []} consultants={draftC} staff={productAgents} onAdd={addConsultant} onRemove={removeDraftConsultant} onPrimary={setPrimaryDraft} />
+            <ConsultantGrid modules={assignProduct.consultantMode === 'PRODUCT' ? [] : assignProduct.modules ?? []} consultants={draftC} staff={productAgents} onAdd={addConsultant} onRemove={removeDraftConsultant} onPrimary={setPrimaryDraft} />
           </div>
         )}
 

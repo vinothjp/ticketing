@@ -17,6 +17,7 @@ interface TemplateSummary {
   name: string;
   category?: string | null;
   isActive: boolean;
+  isDefault?: boolean;
 }
 
 interface TemplateData {
@@ -28,8 +29,24 @@ interface TemplateData {
 interface PicklistOption { value: string; label: string; parentValue?: string | null; }
 interface UserOption { id: string; username: string; name?: string | null; }
 interface CompanyOption { id: string; name: string; }
-type Track = 'TECHNICAL' | 'FUNCTIONAL';
-interface SapProduct { id: string; name: string; code: string; autoAssign: boolean; modules: { id: string; name: string; tracks: Track[] }[]; }
+type Track = 'TECHNICAL' | 'FUNCTIONAL' | 'OTHERS';
+interface SapProduct {
+  id: string; name: string; code: string; autoAssign: boolean;
+  /** Whole product (PRODUCT) or per module (MODULES) — whose issue types the form offers. */
+  consultantMode?: 'PRODUCT' | 'MODULES';
+  tracks?: string[];
+  modules: { id: string; name: string; tracks: string[] }[];
+}
+/** Issue types in display order; a product or module with none set offers the first two. */
+const ISSUE_TYPES: { value: Track; label: string }[] = [
+  { value: 'TECHNICAL', label: 'Technical' },
+  { value: 'FUNCTIONAL', label: 'Functional' },
+  { value: 'OTHERS', label: 'Other' },
+];
+const offeredIssueTypes = (tracks: string[] = []) => {
+  const own = ISSUE_TYPES.filter((t) => tracks.includes(t.value));
+  return own.length ? own : ISSUE_TYPES.slice(0, 2);
+};
 interface SlaPolicy { id: string; priority: string; resolutionHours: number; responseHours?: number | null; isActive: boolean; }
 // Read-only support-hours pool for the picked product (or the client's shared contract).
 interface SupportHours {
@@ -145,35 +162,32 @@ export default function CreateTicketPage() {
     enabled: !!routing.productId && (isCustomerSide || !!selectedCompanyId),
   });
   const [productError, setProductError] = useState<string | null>(null);
-  // Module and Issue type are mandatory whenever they are shown (a product split
-  // into modules / a module routed on more than one track); when hidden they are
-  // filled in automatically, so there is nothing to ask.
+  // Module is mandatory whenever it is shown (a product split into modules).
+  // Issue type appears only when the template carries it (see `issueTypeField`).
   const [moduleError, setModuleError] = useState<string | null>(null);
-  const [typeError, setTypeError] = useState<string | null>(null);
+  const [issueTypeError, setIssueTypeError] = useState<string | null>(null);
   const selProduct = sapProducts.find((p) => p.id === routing.productId);
   const selModule = selProduct?.modules.find((m) => m.id === routing.moduleId);
-  // A module with a single track needs no issue-type choice — auto-select it.
-  const trackFor = (m?: { tracks: Track[] }) => (m && m.tracks.length === 1 ? m.tracks[0] : '');
   const chooseProduct = (pid: string) => {
     // Radix re-emits '' when the mounted options no longer contain the value; a
     // real pick is never empty, so ignore those.
     if (!pid) return;
     const p = sapProducts.find((x) => x.id === pid);
     const mod = p && p.modules.length === 1 ? p.modules[0] : undefined;
-    setRouting({ productId: pid, moduleId: mod?.id ?? '', consultantType: trackFor(mod) });
-    setProductError(null); setModuleError(null); setTypeError(null);
+    setRouting({ productId: pid, moduleId: mod?.id ?? '', consultantType: '' });
+    setProductError(null); setModuleError(null); setIssueTypeError(null);
   };
   // The product list belongs to the client, so switching client invalidates the pick.
   const chooseCompany = (companyId: string) => {
     setSelectedCompanyId(companyId);
     setRouting({ productId: '', moduleId: '', consultantType: '' });
-    setProductError(null); setModuleError(null); setTypeError(null);
+    setProductError(null); setModuleError(null); setIssueTypeError(null);
   };
   const chooseModule = (mid: string) => {
-    const m = selProduct?.modules.find((x) => x.id === mid);
     if (!mid) return; // Radix's empty re-emit, never a real pick
-    setRouting((r) => ({ ...r, moduleId: mid, consultantType: trackFor(m) }));
-    setModuleError(null); setTypeError(null);
+    // The issue types follow the module, so a new module starts unpicked.
+    setRouting((r) => ({ ...r, moduleId: mid, consultantType: r.moduleId === mid ? r.consultantType : '' }));
+    setModuleError(null); setIssueTypeError(null);
   };
   // A client with exactly one product has nothing to choose: it is picked for
   // them and shown as plain text (client request) — for a customer, for staff
@@ -216,7 +230,9 @@ export default function CreateTicketPage() {
 
   useEffect(() => {
     if (selectedTemplateId || activeTemplates.length === 0) return;
-    setSelectedTemplateId(activeTemplates[0].id);
+    // Open on the admin's Default template; without one (or if it was
+    // deactivated), the first active template as before.
+    setSelectedTemplateId((activeTemplates.find((t) => t.isDefault) ?? activeTemplates[0]).id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTemplates.length]);
 
@@ -226,10 +242,24 @@ export default function CreateTicketPage() {
     enabled: !!selectedTemplateId,
   });
 
+  // Issue type is a template field, but it renders in the product row (it
+  // depends on the product / module) rather than among the template's fields.
   const visibleFields = useMemo(
-    () => (template?.fields ?? []).filter((f) => f.visibility === 'VISIBLE').sort((a, b) => a.sortOrder - b.sortOrder),
+    () => (template?.fields ?? []).filter((f) => f.visibility === 'VISIBLE' && f.fieldKey !== 'consultantType').sort((a, b) => a.sortOrder - b.sortOrder),
     [template],
   );
+  const issueTypeField = template?.fields.find((f) => f.fieldKey === 'consultantType' && f.visibility === 'VISIBLE');
+  // Shown once the product — and, for a product assigned per module, the module
+  // — is chosen, with that product's / module's own issue types. No auto-pick:
+  // left on "Select issue type", the ticket carries none and is routed on the
+  // organization's default issue type (client request).
+  const issueTypeOptions = !selProduct
+    ? []
+    : selProduct.consultantMode === 'MODULES' && selProduct.modules.length > 0
+      ? selModule ? offeredIssueTypes(selModule.tracks) : []
+      : offeredIssueTypes(selProduct.tracks);
+  const showIssueType = !!issueTypeField && issueTypeOptions.length > 0;
+  const issueTypeRequired = issueTypeField?.requirement === 'MANDATORY';
 
   // Sections follow the order the admin arranged in the Template Designer, not a fixed
   // Info -> Detail -> Root Cause sequence.
@@ -266,15 +296,6 @@ export default function CreateTicketPage() {
     queryFn: async () => (await api.get('/api/sla-policies')).data,
   });
 
-  const resetForm = () => {
-    const initial: Record<string, any> = {};
-    for (const f of visibleFields) {
-      initial[f.fieldKey] = defaultValueFor(f);
-    }
-    setValues(initial);
-    setErrors({});
-    setAttachmentFiles([]);
-  };
 
   useEffect(() => {
     if (!template) return;
@@ -296,12 +317,12 @@ export default function CreateTicketPage() {
   );
 
   const createMutation = useMutation({
-    mutationFn: async (_mode: 'submit' | 'saveAndNew') => {
+    mutationFn: async () => {
       const payload: Record<string, any> = { templateId: selectedTemplateId };
       if (selectedCompanyId) payload.customerCompanyId = selectedCompanyId;
       if (routing.productId) payload.productId = routing.productId;
       if (routing.moduleId) payload.moduleId = routing.moduleId;
-      if (routing.consultantType) payload.consultantType = routing.consultantType;
+      if (showIssueType && routing.consultantType) payload.consultantType = routing.consultantType;
       const customFields: Record<string, any> = {};
       for (const f of visibleFields) {
         if (f.dataType === 'SYSTEM' || f.dataType === 'FILE') continue;
@@ -342,16 +363,15 @@ export default function CreateTicketPage() {
 
       return ticket;
     },
-    onSuccess: (ticket, mode) => {
+    onSuccess: (ticket) => {
       toast.success(`Ticket ${ticket.ticketNumber} created${projectId ? ' and linked to the project' : ''}`);
-      if (mode === 'saveAndNew') resetForm();
-      else if (projectId) navigate(`/projects/${projectId}?tab=tickets`);
+      if (projectId) navigate(`/projects/${projectId}?tab=tickets`);
       else navigate('/dashboard');
     },
     onError: (e: any) => toast.error(e.response?.data?.message || 'Error creating ticket'),
   });
 
-  const handleSubmit = (mode: 'submit' | 'saveAndNew') => {
+  const handleSubmit = () => {
     const result = schema.safeParse(values);
     const fieldErrors: Record<string, string> = {};
     if (!result.success) {
@@ -366,13 +386,13 @@ export default function CreateTicketPage() {
     setProductError(productMissing ? 'Product is required' : null);
     const moduleMissing = !!selProduct && selProduct.modules.length > 1 && !routing.moduleId;
     setModuleError(moduleMissing ? 'Module is required' : null);
-    const typeMissing = !!selModule && selModule.tracks.length > 1 && !routing.consultantType;
-    setTypeError(typeMissing ? 'Issue type is required' : null);
-    if (productMissing || moduleMissing || typeMissing || !result.success) {
+    const issueTypeMissing = !!issueTypeField && issueTypeRequired && !productMissing && !moduleMissing && !routing.consultantType;
+    setIssueTypeError(issueTypeMissing ? 'Issue type is required' : null);
+    if (productMissing || moduleMissing || issueTypeMissing || !result.success) {
       toast.error('Please fix the highlighted fields');
       return;
     }
-    createMutation.mutate(mode);
+    createMutation.mutate();
   };
 
   const slaText = (): string => {
@@ -476,18 +496,24 @@ export default function CreateTicketPage() {
                   {moduleError && <p className="mt-1 text-xs text-destructive">{moduleError}</p>}
                 </div>
               )}
-              {/* Type: only when the chosen module routes on more than one track. */}
-              {selModule && selModule.tracks.length > 1 && (
+              {/* Issue type: only when the template carries the field, once the
+                  product (and module) is chosen. Never auto-picked — left blank,
+                  the ticket shows no issue type and routes on the default. */}
+              {showIssueType && (
                 <div>
-                  <div className="mb-1 text-sm text-muted-foreground">Issue type <span className="text-destructive">*</span></div>
-                  <Select value={routing.consultantType || undefined} onValueChange={(v) => { if (!v) return; setRouting((r) => ({ ...r, consultantType: v })); setTypeError(null); }}>
-                    <SelectTrigger className="w-full" aria-invalid={!!typeError}><SelectValue placeholder="Technical / Functional" /></SelectTrigger>
+                  <div className="mb-1 text-sm text-muted-foreground">
+                    Issue type{issueTypeRequired && <span className="text-destructive"> *</span>}
+                  </div>
+                  <Select
+                    value={routing.consultantType || undefined}
+                    onValueChange={(v) => { if (!v) return; setRouting((r) => ({ ...r, consultantType: v })); setIssueTypeError(null); }}
+                  >
+                    <SelectTrigger className="w-full" aria-invalid={!!issueTypeError}><SelectValue placeholder="Select issue type" /></SelectTrigger>
                     <SelectContent>
-                      {selModule.tracks.includes('FUNCTIONAL') && <SelectItem value="FUNCTIONAL">Functional</SelectItem>}
-                      {selModule.tracks.includes('TECHNICAL') && <SelectItem value="TECHNICAL">Technical</SelectItem>}
+                      {issueTypeOptions.map((t) => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
-                  {typeError && <p className="mt-1 text-xs text-destructive">{typeError}</p>}
+                  {issueTypeError && <p className="mt-1 text-xs text-destructive">{issueTypeError}</p>}
                 </div>
               )}
               {/* Support hours: appears with the product, but always LAST in the row.
@@ -542,11 +568,8 @@ export default function CreateTicketPage() {
 
           <div className="flex justify-end gap-2 border-t pt-5">
             <Button variant="outline" onClick={() => navigate('/tickets')}>Cancel</Button>
-            <Button variant="outline" onClick={() => handleSubmit('saveAndNew')} disabled={createMutation.isPending}>
-              Save &amp; New
-            </Button>
-            <Button onClick={() => handleSubmit('submit')} disabled={createMutation.isPending}>
-              {createMutation.isPending ? 'Submitting...' : 'Submit Ticket'}
+            <Button onClick={handleSubmit} disabled={createMutation.isPending}>
+              {createMutation.isPending ? 'Saving...' : 'Save'}
             </Button>
           </div>
         </>

@@ -52,7 +52,7 @@ interface Purchased {
 interface Consultant { id: string; userId: string; username: string | null; name?: string | null; productId: string | null; moduleId: string | null; track: string | null; isPrimary?: boolean }
 interface CatAgent { user: { id: string; username: string; name?: string | null } }
 interface CatModule { id: string; name: string; tracks: string[]; consultants: CatAgent[] }
-interface CatProduct { id: string; name: string; imageUrl?: string | null; modules: CatModule[]; consultants: CatAgent[] }
+interface CatProduct { id: string; name: string; imageUrl?: string | null; consultantMode?: 'PRODUCT' | 'MODULES'; modules: CatModule[]; consultants: CatAgent[] }
 interface StaffUser { id: string; username: string; name?: string | null; isActive?: boolean }
 
 const statusCls = (s: string) =>
@@ -368,7 +368,9 @@ export default function ClientProductPage() {
       <section className={customerScoped ? 'space-y-3' : 'mt-8 space-y-3'}>
         <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground"><Users className="size-4" /> Consultants for this product</h2>
         <p className="text-sm text-muted-foreground">Route this client's tickets per module and track. Type a name to assign. Empty cells fall back to the module's default routing. The switch beside a module makes it active or inactive for this client — an inactive module can't be picked on their new tickets.</p>
-        <ConsultantGrid modules={cat?.modules ?? []} consultants={productConsultants} staff={productAgents} onAdd={addConsultant} onRemove={removeConsultant} onPrimary={setPrimaryConsultant} readOnly={!isAdmin}
+        {/* Rows follow the product's "Assign consultants" mode: one per module, or a
+            single whole-product row (client request — never both). */}
+        <ConsultantGrid modules={cat?.consultantMode === 'PRODUCT' ? [] : cat?.modules ?? []} consultants={productConsultants} staff={productAgents} onAdd={addConsultant} onRemove={removeConsultant} onPrimary={setPrimaryConsultant} readOnly={!isAdmin}
           inactiveModuleIds={cp.inactiveModuleIds} onToggleModule={setModuleActive} />
       </section>
 

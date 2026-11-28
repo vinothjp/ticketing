@@ -114,6 +114,10 @@ export class CreateTemplateDto {
   requiresApproval?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  isDefault?: boolean;
+
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => TemplateFieldInputDto)

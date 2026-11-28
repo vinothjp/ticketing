@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateProductDto, UpdateProductDto, CreateModuleDto, UpdateModuleDto, AddConsultantDto,
 } from './dto/product.dto';
+import { type AgentPicker, type IssueType } from '../tickets/auto-assign';
 
 const PRODUCT_INCLUDE = {
   consultants: { include: { user: { select: { id: true, username: true, name: true } } } },
@@ -12,6 +13,10 @@ const PRODUCT_INCLUDE = {
     include: { consultants: { include: { user: { select: { id: true, username: true, name: true } } } } },
   },
 } satisfies Prisma.ProductInclude;
+
+/** The Others column holds every track that is neither Technical nor Functional. */
+const trackWhere = (track: IssueType) =>
+  track === 'OTHERS' ? { notIn: ['TECHNICAL', 'FUNCTIONAL'] } : track;
 
 @Injectable()
 export class ProductsService {
@@ -52,6 +57,7 @@ export class ProductsService {
         description: dto.description?.trim() || null,
         imageUrl: dto.imageUrl || null,
         tracks: dto.tracks ?? [], sortOrder: count,
+        consultantMode: dto.consultantMode ?? 'PRODUCT',
       },
     });
   }
@@ -113,6 +119,7 @@ export class ProductsService {
 
   async addConsultant(moduleId: string, dto: AddConsultantDto, clientId: string) {
     const mod = await this.ownedModule(moduleId, clientId);
+    this.assertMode(await this.ownedProduct(mod.productId, clientId), 'MODULES');
     const staff = await this.prisma.user.findFirst({ where: { id: dto.userId, clientId } });
     if (!staff) throw new NotFoundException('User not found');
     const existing = await this.prisma.moduleConsultant.findMany({ where: { moduleId, track: dto.track } });
@@ -155,6 +162,7 @@ export class ProductsService {
 
   async addProductConsultant(productId: string, dto: AddConsultantDto, clientId: string) {
     const product = await this.ownedProduct(productId, clientId);
+    this.assertMode(product, 'PRODUCT');
     const staff = await this.prisma.user.findFirst({ where: { id: dto.userId, clientId } });
     if (!staff) throw new NotFoundException('User not found');
     const existing = await this.prisma.productConsultant.findMany({ where: { productId, track: dto.track } });
@@ -193,45 +201,58 @@ export class ProductsService {
   }
 
   /**
-   * Pick the consultant to auto-assign for a module + track (ticket routing).
-   * The query's `isPrimary desc, sortOrder asc` order IS the walk order — the
-   * primary leads, and the first candidate the caller accepts takes the ticket.
+   * Auto-routing's Products-screen step for a module + issue type. The query's
+   * `isPrimary desc, sortOrder asc` order is the priority order `pick` breaks
+   * ties on; `pick` (built once per routing pass in `TicketsService`) chooses the
+   * least-loaded agent below the organization's max.
    */
-  async resolveConsultant(clientId: string, moduleId: string, track: 'TECHNICAL' | 'FUNCTIONAL' | null, isEligible: (userId: string) => boolean): Promise<string | null> {
+  async resolveConsultant(clientId: string, moduleId: string, track: IssueType, pick: AgentPicker): Promise<string | null> {
     const agents = await this.prisma.moduleConsultant.findMany({
-      // No track on the ticket (single-track or unsplit module) — any agent will do.
-      where: { moduleId, ...(track ? { track } : {}), module: { product: { clientId } } },
+      where: { moduleId, track: trackWhere(track), module: { product: { clientId } } },
       orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }],
     });
-    return this.firstAvailable(agents, isEligible);
+    return pick(agents.map((a) => a.userId));
   }
 
-  /**
-   * Product-screen consultants for a product that isn't split into modules
-   * (or whose module carries no list). Same primary-then-list-order walk.
-   */
-  async resolveProductConsultant(clientId: string, productId: string, track: 'TECHNICAL' | 'FUNCTIONAL' | null, isEligible: (userId: string) => boolean): Promise<string | null> {
+  /** The same step for a product assigned as a whole (`consultantMode` PRODUCT). */
+  async resolveProductConsultant(clientId: string, productId: string, track: IssueType, pick: AgentPicker): Promise<string | null> {
     const agents = await this.prisma.productConsultant.findMany({
-      where: { productId, ...(track ? { track } : {}), product: { clientId } },
+      where: { productId, track: trackWhere(track), product: { clientId } },
       orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }],
     });
-    return this.firstAvailable(agents, isEligible);
+    return pick(agents.map((a) => a.userId));
   }
 
   /**
-   * The first agent in the caller's order the caller will accept. The order is
-   * the primary first, since every query sorts `isPrimary desc, sortOrder asc`;
-   * `isEligible` is the availability test — an active staff user holding no open
-   * ticket — computed once per routing pass in `TicketsService.create()` and
-   * threaded down, so a five-tier walk never issues a per-candidate count.
-   *
-   * Routing IS balanced by availability: a consultant already holding an open
-   * ticket is skipped and the next name in the list takes it. A tier is left
-   * only when every candidate in it is busy or inactive, and when no tier has
-   * anyone free the ticket stays unassigned — there is deliberately no fallback
-   * to the primary.
+   * The "Assign consultants" switch (Whole product ⇄ Modules). Only one mode's
+   * consultants may exist (client request), so switching deletes the other
+   * mode's — on the Products screen and on every client's product page — and
+   * those people are free to be picked again in the new layout. Re-picking the
+   * current mode changes nothing.
    */
-  private firstAvailable(agents: { userId: string }[], isEligible: (userId: string) => boolean): string | null {
-    return agents.find((a) => isEligible(a.userId))?.userId ?? null;
+  async setConsultantMode(id: string, mode: 'PRODUCT' | 'MODULES', clientId: string) {
+    const product = await this.ownedProduct(id, clientId);
+    if (product.consultantMode === mode) return { mode, removed: { product: 0, clients: 0 } };
+    const [productRows, clientRows] = await this.prisma.$transaction(async (tx) => {
+      const own = mode === 'MODULES'
+        ? await tx.productConsultant.deleteMany({ where: { productId: id } })
+        : await tx.moduleConsultant.deleteMany({ where: { module: { productId: id } } });
+      const clients = await tx.customerConsultant.deleteMany({
+        where: { clientId, productId: id, moduleId: mode === 'MODULES' ? null : { not: null } },
+      });
+      await tx.product.update({ where: { id }, data: { consultantMode: mode } });
+      return [own.count, clients.count];
+    });
+    return { mode, removed: { product: productRows, clients: clientRows } };
+  }
+
+  private assertMode(product: { consultantMode: string }, mode: 'PRODUCT' | 'MODULES') {
+    if (product.consultantMode !== mode) {
+      throw new BadRequestException(
+        mode === 'MODULES'
+          ? 'This product assigns consultants to the whole product — switch it to Modules first'
+          : 'This product assigns consultants per module — switch it to Whole product first',
+      );
+    }
   }
 }

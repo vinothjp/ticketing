@@ -30,7 +30,7 @@ export class CreateTicketDto {
   @IsNotEmpty()
   productId: string;
   @IsOptional() @IsString() moduleId?: string;
-  @IsOptional() @IsIn(['TECHNICAL', 'FUNCTIONAL']) consultantType?: 'TECHNICAL' | 'FUNCTIONAL';
+  @IsOptional() @IsIn(['TECHNICAL', 'FUNCTIONAL', 'OTHERS']) consultantType?: 'TECHNICAL' | 'FUNCTIONAL' | 'OTHERS';
 
   @IsOptional()
   @IsArray()

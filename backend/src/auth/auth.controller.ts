@@ -54,8 +54,8 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Get('me/client')
-  getMyClient(@Request() req: { user: { clientId: string | null } }) {
-    return this.authService.getMyClient(req.user.clientId);
+  getMyClient(@Request() req: { user: { clientId: string | null; customerCompanyId?: string | null } }) {
+    return this.authService.getMyClient(req.user.clientId, req.user.customerCompanyId);
   }
 
   @UseGuards(JwtAuthGuard)

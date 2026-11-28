@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsBoolean, IsNotEmpty, IsArray } from 'class-validator';
+import { IsString, IsOptional, IsBoolean, IsNotEmpty, IsArray, IsIn } from 'class-validator';
 
 // Tracks are free-form: TECHNICAL and FUNCTIONAL are reserved conventions; any
 // other value is a custom "Others" track the admin named.
@@ -10,6 +10,13 @@ export class CreateProductDto {
   @IsOptional() @IsString() imageUrl?: string;
   @IsOptional() @IsBoolean() autoAssign?: boolean;
   @IsOptional() @IsArray() @IsString({ each: true }) tracks?: string[];
+  // The "Assign consultants" choice it is created with.
+  @IsOptional() @IsIn(['PRODUCT', 'MODULES']) consultantMode?: 'PRODUCT' | 'MODULES';
+}
+
+// Switching Whole product ⇄ Modules clears the other mode's consultants.
+export class SetConsultantModeDto {
+  @IsIn(['PRODUCT', 'MODULES']) mode!: 'PRODUCT' | 'MODULES';
 }
 
 export class UpdateProductDto {

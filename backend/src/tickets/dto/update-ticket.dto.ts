@@ -3,6 +3,7 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  MaxLength,
 } from 'class-validator';
 
 export class UpdateTicketDto {
@@ -14,4 +15,11 @@ export class UpdateTicketDto {
   @IsOptional() @IsDateString() expectedResolutionDate?: string;
 
   @IsOptional() @IsObject() customFields?: Record<string, unknown>;
+
+  /**
+   * What the client is asked for when a client ticket moves to "Awaiting
+   * End-user Response" — required then; emailed to them (Additional Information
+   * Requested) and posted into the ticket's chat.
+   */
+  @IsOptional() @IsString() @MaxLength(4000) requestedInformation?: string;
 }

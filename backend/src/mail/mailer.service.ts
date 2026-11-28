@@ -2,6 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import { PrismaService } from '../prisma/prisma.service';
 import { decrypt } from '../lib/encryption';
+import { renderLetter } from '../lib/letter-email';
 
 @Injectable()
 export class MailerService {
@@ -37,6 +38,7 @@ export class MailerService {
 
   async sendMail(options: {
     to: string;
+    cc?: string;
     subject: string;
     html: string;
     text?: string;
@@ -50,6 +52,7 @@ export class MailerService {
     const info = await transporter.sendMail({
       from: config?.fromAddress || config?.username || undefined,
       to: options.to,
+      ...(options.cc ? { cc: options.cc } : {}),
       subject: options.subject,
       html: options.html,
       text: options.text,
@@ -72,21 +75,18 @@ export class MailerService {
   }
 
   async sendPasswordResetEmail(to: string, username: string, resetUrl: string, clientId?: string | null) {
-    const html = `
-      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 480px; margin: 0 auto;">
-        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 32px; border-radius: 12px 12px 0 0; text-align: center;">
-          <h1 style="color: #fff; margin: 0; font-size: 20px;">Password Reset Request</h1>
-        </div>
-        <div style="background: #fff; padding: 32px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px;">
-          <p style="color: #374151; font-size: 14px;">Hi <strong>${username}</strong>,</p>
-          <p style="color: #374151; font-size: 14px;">We received a request to reset your password. Click the button below to choose a new one. This link expires in 1 hour.</p>
-          <div style="text-align: center; margin: 28px 0;">
-            <a href="${resetUrl}" style="background: #4F46E5; color: #fff; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 14px;">Reset Password</a>
-          </div>
-          <p style="color: #6b7280; font-size: 12px;">If you didn't request this, you can safely ignore this email.</p>
-        </div>
-      </div>
-    `;
-    await this.sendMail({ to, subject: 'Reset your password', html, text: `Reset your password: ${resetUrl}` }, clientId);
+    const org = clientId
+      ? await this.prisma.client.findUnique({ where: { id: clientId }, select: { name: true } }).catch(() => null)
+      : null;
+    const { html, text } = renderLetter({
+      greetName: username,
+      intro: 'We have received a request to reset the password for your support portal account.\n' +
+        'Please use the link below to choose a new password. For your security, the link expires in 1 hour.',
+      table: { heading: 'Account Details', rows: [['Username', username], ['Email', to]] },
+      outro: 'If you did not request a password reset, please ignore this email — your password will remain unchanged.',
+      link: { label: 'Reset Password', url: resetUrl },
+      orgName: org?.name,
+    });
+    await this.sendMail({ to, subject: '[Password Reset] - Support Portal', html, text }, clientId);
   }
 }

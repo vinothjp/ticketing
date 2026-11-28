@@ -160,6 +160,16 @@ export const FIELD_CATALOG: FieldCatalogEntry[] = [
     defaultHelperText: 'More specific classification within the category.',
   },
   {
+    // Ticket.consultantType. Offered after the product (and module) is chosen,
+    // with that product's / module's issue types; left blank — or absent from
+    // the template — the ticket routes on the organization's default issue type.
+    key: 'consultantType',
+    label: 'Issue type',
+    group: 'ticket_info',
+    dataType: 'SELECT',
+    defaultHelperText: 'Technical, Functional or Other — decides which consultants the ticket is routed to.',
+  },
+  {
     key: 'technicians',
     label: 'Technicians',
     group: 'ticket_info',

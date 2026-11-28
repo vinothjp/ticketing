@@ -22,6 +22,12 @@ import {
 
 type Group = 'ticket_info' | 'ticket_detail' | 'root_cause';
 
+const ISSUE_TYPE_PREVIEW: FieldOption[] = [
+  { value: 'TECHNICAL', label: 'Technical' },
+  { value: 'FUNCTIONAL', label: 'Functional' },
+  { value: 'OTHERS', label: 'Other' },
+];
+
 interface CatalogField {
   key: string;
   label: string;
@@ -76,6 +82,7 @@ export default function TemplateDesignerPage() {
   const [color, setColor] = useState(TEMPLATE_COLORS[6]);
   const [isActive, setIsActive] = useState(true);
   const [requiresApproval, setRequiresApproval] = useState(false);
+  const [isDefault, setIsDefault] = useState(false);
   const [fields, setFields] = useState<DesignerField[]>([]);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [previewValues, setPreviewValues] = useState<Record<string, any>>({});
@@ -100,6 +107,7 @@ export default function TemplateDesignerPage() {
     setColor(template.color ?? TEMPLATE_COLORS[6]);
     setIsActive(template.isActive ?? true);
     setRequiresApproval(template.requiresApproval ?? false);
+    setIsDefault(template.isDefault ?? false);
     setFields(
       (template.fields ?? [])
         .filter((f: any) => f.visibility === 'VISIBLE')
@@ -270,6 +278,7 @@ export default function TemplateDesignerPage() {
         color,
         isActive,
         requiresApproval,
+        isDefault,
       };
       if (isNew) {
         return (await api.post('/api/templates', { ...meta, fields: buildFieldsPayload() })).data;
@@ -386,6 +395,15 @@ export default function TemplateDesignerPage() {
                 </div>
                 <Switch checked={requiresApproval} onCheckedChange={setRequiresApproval} />
               </div>
+              <div className="flex items-start justify-between gap-6 sm:col-span-2">
+                <div className="space-y-1">
+                  <span className="text-sm font-medium">Default</span>
+                  <p className="text-xs text-muted-foreground">
+                    The New Ticket form opens on this template. Only one template can be the default — switching it on here switches it off on the others.
+                  </p>
+                </div>
+                <Switch checked={isDefault} onCheckedChange={setIsDefault} />
+              </div>
             </div>
           </section>
 
@@ -462,7 +480,9 @@ export default function TemplateDesignerPage() {
                         field={toMerged(f)}
                         value={previewValues[f.key]}
                         onChange={(v) => setPreviewValues((prev) => ({ ...prev, [f.key]: v }))}
-                        options={f.picklistKey ? picklistData[f.picklistKey] : undefined}
+                        // Issue type's real choices follow the ticket's product /
+                        // module; the preview shows the full set.
+                        options={f.key === 'consultantType' ? ISSUE_TYPE_PREVIEW : f.picklistKey ? picklistData[f.picklistKey] : undefined}
                       />
                     ))}
                   </div>

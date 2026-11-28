@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MailerService } from '../mail/mailer.service';
 import { UpsertSmtpConfigDto } from './dto/upsert-smtp-config.dto';
 import { encrypt } from '../lib/encryption';
+import { renderLetter } from '../lib/letter-email';
 
 @Injectable()
 export class SmtpService {
@@ -70,23 +71,31 @@ export class SmtpService {
       return { success: true, message: 'Connection successful (no From address to send a test email to)' };
     }
     const when = new Date().toUTCString();
+    const org = clientId
+      ? await this.prisma.client.findUnique({ where: { id: clientId }, select: { name: true } }).catch(() => null)
+      : null;
+    const { html, text } = renderLetter({
+      fallbackGreeting: 'Administrator',
+      intro: 'This is a test email from the ticketing system to confirm that your mail settings are working.\n' +
+        'As you have received it, ticket notifications and other system emails will be delivered successfully.',
+      table: {
+        heading: 'Connection Details',
+        rows: [
+          ['Mail Server', host ?? 'Your mail server'],
+          ['Sent To', address],
+          ['Sent At', when],
+          ['Settings', clientId ? 'Organization email settings' : 'Platform (global) email settings'],
+        ],
+      },
+      outro: 'No action is required. If you did not run this test, please review the email configuration in the portal.',
+      orgName: org?.name,
+    });
     try {
       await this.mailer.sendMail({
         to: address,
-        subject: 'Test email — your mail settings are working',
-        html:
-          `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:480px;margin:0 auto">` +
-          `<div style="background:#047857;padding:20px;border-radius:12px 12px 0 0;text-align:center">` +
-          `<h1 style="color:#fff;margin:0;font-size:18px">Your mail settings are working</h1></div>` +
-          `<div style="background:#fff;padding:24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;color:#374151;font-size:14px">` +
-          `<p>This test email was sent from the ticketing system through <strong>${host ?? 'your mail server'}</strong>.</p>` +
-          `<p>If you can read this, ticket emails will be delivered.</p>` +
-          `<p style="color:#6b7280;font-size:12px">Sent ${when}</p></div></div>`,
-        text: `Your mail settings are working.
-
-This test email was sent from the ticketing system through ${host ?? 'your mail server'}. If you can read this, ticket emails will be delivered.
-
-Sent ${when}`,
+        subject: '[Test Email] - Mail settings are working',
+        html,
+        text,
       }, clientId);
       return { success: true, message: `Connection successful — a test email was sent to ${address}` };
     } catch (err) {

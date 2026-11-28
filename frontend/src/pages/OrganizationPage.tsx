@@ -33,6 +33,9 @@ interface MyClientDetail {
   currency?: string | null;
   criticalTicketEmail?: string | null;
   criticalTicketAlerts?: boolean;
+  helpdeskEmail?: string | null;
+  ticketMaxOpenPerAgent?: number | null;
+  defaultIssueType?: string | null;
   license: License | null; _count: { users: number };
 }
 
@@ -65,9 +68,18 @@ const orgSchema = z.object({
   dateFormat: z.string().min(1, 'Pick a date format'),
   timeFormat: z.string().min(1, 'Pick a time format'),
   currency: z.string().min(1, 'Pick a currency'),
-  // Critical ticket admin: who every Critical ticket is emailed to, and the switch.
+  // Critical ticket admin: CC'd on every email about a Critical ticket, and the switch.
   criticalTicketEmail: z.string().email('Enter a valid email').optional().or(z.literal('')),
   criticalTicketAlerts: z.boolean(),
+  // CC'd on every ticket email.
+  helpdeskEmail: z.string().email('Enter a valid email').optional().or(z.literal('')),
+  // Ticket auto-assignment: open tickets an agent may hold before they count as
+  // busy. Blank = no limit.
+  ticketMaxOpenPerAgent: z
+    .string()
+    .refine((v) => v.trim() === '' || (Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 1000), 'Enter 1 to 1000, or leave blank for no limit'),
+  // The issue type a ticket with none is routed on.
+  defaultIssueType: z.enum(['TECHNICAL', 'FUNCTIONAL', 'OTHERS']),
 }).refine((v) => !v.criticalTicketAlerts || !!v.criticalTicketEmail?.trim(), {
   message: 'Enter the email that critical tickets go to',
   path: ['criticalTicketEmail'],
@@ -98,7 +110,8 @@ export default function OrganizationPage() {
       name: '', contactEmail: '', contactPhone: '',
       ticketReopenWindowDays: '30', ticketAutoCloseDays: '3', ticketMaxReopens: '3',
       dateFormat: DEFAULT_DATE_FORMAT, timeFormat: DEFAULT_TIME_FORMAT, currency: 'USD',
-      criticalTicketEmail: '', criticalTicketAlerts: false,
+      criticalTicketEmail: '', criticalTicketAlerts: false, helpdeskEmail: '',
+      ticketMaxOpenPerAgent: '10', defaultIssueType: 'TECHNICAL',
     },
   });
 
@@ -116,6 +129,9 @@ export default function OrganizationPage() {
       currency: client.currency || 'USD',
       criticalTicketEmail: client.criticalTicketEmail ?? '',
       criticalTicketAlerts: !!client.criticalTicketAlerts,
+      helpdeskEmail: client.helpdeskEmail ?? '',
+      ticketMaxOpenPerAgent: client.ticketMaxOpenPerAgent == null ? '' : String(client.ticketMaxOpenPerAgent),
+      defaultIssueType: (['TECHNICAL', 'FUNCTIONAL', 'OTHERS'] as const).find((t) => t === client.defaultIssueType) ?? 'TECHNICAL',
     });
   }, [client, form]);
 
@@ -141,6 +157,9 @@ export default function OrganizationPage() {
         ticketMaxReopens: Number(values.ticketMaxReopens),
         // Empty clears it on the server.
         criticalTicketEmail: values.criticalTicketEmail?.trim() ?? '',
+        helpdeskEmail: values.helpdeskEmail?.trim() ?? '',
+        // Blank = no limit.
+        ticketMaxOpenPerAgent: values.ticketMaxOpenPerAgent.trim() === '' ? null : Number(values.ticketMaxOpenPerAgent),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['my-client-detail'] });
@@ -416,7 +435,7 @@ export default function OrganizationPage() {
                           name="criticalTicketAlerts"
                           render={({ field: alerts }) => (
                             <div className="flex items-center gap-1.5">
-                              <Switch checked={alerts.value} onCheckedChange={alerts.onChange} aria-label="Email critical tickets" />
+                              <Switch checked={alerts.value} onCheckedChange={alerts.onChange} aria-label="CC critical ticket emails" />
                               <span className="text-xs text-muted-foreground">{alerts.value ? 'On' : 'Off'}</span>
                             </div>
                           )}
@@ -426,8 +445,71 @@ export default function OrganizationPage() {
                         <Input type="email" placeholder="e.g. support-lead@yourcompany.com" {...field} />
                       </FormControl>
                       <p className="text-xs text-muted-foreground">
-                        Every Critical ticket is emailed to this address — when it is raised, and when a
-                        ticket is raised to Critical later.
+                        This address is CC'd on every email about a Critical ticket — a copy of the
+                        ticket email itself, not a separate alert.
+                      </p>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="helpdeskEmail"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Helpdesk email</FormLabel>
+                      <FormControl>
+                        <Input type="email" placeholder="e.g. helpdesk@yourcompany.com" {...field} />
+                      </FormControl>
+                      <p className="text-xs text-muted-foreground">
+                        CC'd on every ticket email — creation, assignment, approvals, resolution, closing and
+                        reopening. Leave blank for none.
+                      </p>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              {/* Ticket auto-assignment, for clients that have it switched on. */}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="ticketMaxOpenPerAgent"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Max open tickets per agent</FormLabel>
+                      <FormControl>
+                        <Input type="number" min={1} max={1000} step={1} placeholder="No limit" {...field} />
+                      </FormControl>
+                      <p className="text-xs text-muted-foreground">
+                        Auto-assignment skips an agent holding this many open tickets (On Hold, Awaiting and
+                        Approval Pending don't count) and gives the ticket to the agent with the fewest.
+                        Leave blank for no limit. Manual assignment is never limited.
+                      </p>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="defaultIssueType"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Default issue type</FormLabel>
+                      <Select value={field.value} onValueChange={(v) => { if (v) field.onChange(v); }}>
+                        <FormControl>
+                          <SelectTrigger className="w-full"><SelectValue placeholder="Pick an issue type" /></SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="TECHNICAL">Technical</SelectItem>
+                          <SelectItem value="FUNCTIONAL">Functional</SelectItem>
+                          <SelectItem value="OTHERS">Other</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        A ticket is auto-assigned on this issue type when its template has no Issue type field,
+                        or the field was left blank.
                       </p>
                       <FormMessage />
                     </FormItem>

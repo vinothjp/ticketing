@@ -209,6 +209,7 @@ export class TemplatesService {
       icon: t.icon,
       color: t.color,
       isActive: t.isActive,
+      isDefault: t.isDefault,
       sortOrder: t.sortOrder,
       fieldCount: t._count.fields,
       ticketCount: t._count.tickets,
@@ -244,23 +245,30 @@ export class TemplatesService {
       select: { sortOrder: true },
     });
 
-    return this.prisma.template.create({
-      data: {
-        clientId,
-        name,
-        category: dto.category,
-        description: dto.description,
-        icon: dto.icon,
-        color: dto.color,
-        defaultPriority: dto.defaultPriority,
-        isActive: dto.isActive ?? true,
-        requiresApproval: dto.requiresApproval ?? false,
-        sortOrder: (last?.sortOrder ?? -1) + 1,
-        createdBy: actorId,
-        updatedBy: actorId,
-        fields: { create: fields },
-      },
-      include: { fields: true },
+    return this.prisma.$transaction(async (tx) => {
+      // One default per tenant: switching it on here switches it off elsewhere.
+      if (dto.isDefault) {
+        await tx.template.updateMany({ where: { clientId, isDefault: true }, data: { isDefault: false } });
+      }
+      return tx.template.create({
+        data: {
+          clientId,
+          name,
+          category: dto.category,
+          description: dto.description,
+          icon: dto.icon,
+          color: dto.color,
+          defaultPriority: dto.defaultPriority,
+          isActive: dto.isActive ?? true,
+          requiresApproval: dto.requiresApproval ?? false,
+          isDefault: dto.isDefault ?? false,
+          sortOrder: (last?.sortOrder ?? -1) + 1,
+          createdBy: actorId,
+          updatedBy: actorId,
+          fields: { create: fields },
+        },
+        include: { fields: true },
+      });
     });
   }
 
@@ -279,22 +287,32 @@ export class TemplatesService {
       if (clash) throw new ConflictException('A template with this name already exists');
     }
 
-    return this.prisma.template.update({
-      where: { id: templateId },
-      data: {
-        ...(dto.name !== undefined && { name: dto.name.trim() }),
-        ...(dto.category !== undefined && { category: dto.category }),
-        ...(dto.description !== undefined && { description: dto.description }),
-        ...(dto.icon !== undefined && { icon: dto.icon }),
-        ...(dto.color !== undefined && { color: dto.color }),
-        ...(dto.defaultPriority !== undefined && {
-          defaultPriority: dto.defaultPriority,
-        }),
-        ...(dto.sortOrder !== undefined && { sortOrder: dto.sortOrder }),
-        ...(dto.isActive !== undefined && { isActive: dto.isActive }),
-        ...(dto.requiresApproval !== undefined && { requiresApproval: dto.requiresApproval }),
-        updatedBy: actorId,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      // One default per tenant: switching it on here switches it off elsewhere.
+      if (dto.isDefault) {
+        await tx.template.updateMany({
+          where: { clientId, isDefault: true, id: { not: templateId } },
+          data: { isDefault: false },
+        });
+      }
+      return tx.template.update({
+        where: { id: templateId },
+        data: {
+          ...(dto.name !== undefined && { name: dto.name.trim() }),
+          ...(dto.category !== undefined && { category: dto.category }),
+          ...(dto.description !== undefined && { description: dto.description }),
+          ...(dto.icon !== undefined && { icon: dto.icon }),
+          ...(dto.color !== undefined && { color: dto.color }),
+          ...(dto.defaultPriority !== undefined && {
+            defaultPriority: dto.defaultPriority,
+          }),
+          ...(dto.sortOrder !== undefined && { sortOrder: dto.sortOrder }),
+          ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+          ...(dto.requiresApproval !== undefined && { requiresApproval: dto.requiresApproval }),
+          ...(dto.isDefault !== undefined && { isDefault: dto.isDefault }),
+          updatedBy: actorId,
+        },
+      });
     });
   }
 

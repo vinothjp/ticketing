@@ -5,6 +5,7 @@ import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailerService } from '../mail/mailer.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { portalLink, renderLetter } from '../lib/letter-email';
 import {
   AssignProductDto, UpdateProductTermsDto, RenewAmcDto, CreateProductRequestDto, GrantRequestDto, SetContractDto,
   RenewContractDto, AddCustomerConsultantDto, SetClientServicesDto,
@@ -12,6 +13,7 @@ import {
 import { productOffForClient } from './module-switch';
 import { assertAssignableManager, managerName, MANAGER_SELECT } from './client-managers';
 import { isServicesOnly, CLIENT_TYPE_LABELS, type ClientType } from './client-type';
+import { type AgentPicker, type IssueType } from '../tickets/auto-assign';
 
 const DAY = 86_400_000;
 /**
@@ -1535,27 +1537,34 @@ export class CustomerProductsService {
           ...(accountManagerId ? [{ id: accountManagerId }] : []),
         ],
       },
-      select: { id: true, email: true },
+      select: { id: true, email: true, name: true, username: true },
     });
     if (!people.length) return;
     await this.notifications.notifyMany(people.map((p) => p.id), { clientId, ...n });
     if (!(await this.mailer.isConfigured(clientId))) return;
-    const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
-    const html = `
-      <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;max-width:520px;margin:0 auto;">
-        <div style="background:#4f46e5;padding:24px;border-radius:12px 12px 0 0;text-align:center;">
-          <h1 style="color:#fff;margin:0;font-size:18px;">${esc(n.title)}</h1>
-        </div>
-        <div style="background:#fff;padding:28px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
-          <p style="color:#374151;font-size:14px;">${esc(n.body)}</p>
-          <p style="color:#6b7280;font-size:12px;">Open Product Requests in the app to grant or decline it.</p>
-        </div>
-      </div>`;
-    for (const email of new Set(people.map((p) => p.email).filter(Boolean))) {
+    const orgName = await this.orgName(clientId);
+    const seen = new Set<string>();
+    for (const p of people) {
+      const email = p.email?.trim();
+      if (!email || seen.has(email.toLowerCase())) continue;
+      seen.add(email.toLowerCase());
+      const { html, text } = renderLetter({
+        greetName: p.name || p.username,
+        intro: `${n.body}\nThe request needs a decision from you or another administrator.`,
+        outro: 'Please open Product Requests in the portal to grant or decline it.',
+        link: { label: 'View Product Requests', url: portalLink(n.link) },
+        orgName,
+      });
       try {
-        await this.mailer.sendMail({ to: email, subject: n.title, html, text: n.body }, clientId);
+        await this.mailer.sendMail({ to: email, subject: `[Product Request] - ${n.title}`, html, text }, clientId);
       } catch { /* best-effort */ }
     }
+  }
+
+  /** The tenant's name, for an email's "<name> Support Team" sign-off. */
+  private async orgName(clientId: string) {
+    const c = await this.prisma.client.findUnique({ where: { id: clientId }, select: { name: true } }).catch(() => null);
+    return c?.name ?? null;
   }
 
   async listMyRequests(companyId: string, clientId: string) {
@@ -1655,6 +1664,18 @@ export class CustomerProductsService {
     const user = await this.prisma.user.findFirst({ where: { id: dto.userId, clientId } });
     if (!user) throw new NotFoundException('User not found');
     if (dto.moduleId && !dto.productId) throw new BadRequestException('A module needs its product');
+    // A product's consultants follow its "Assign consultants" mode: per module,
+    // or one whole-product row — never both (client request).
+    if (dto.productId) {
+      const product = await this.prisma.product.findFirst({ where: { id: dto.productId, clientId }, select: { consultantMode: true } });
+      if (!product) throw new NotFoundException('Product not found');
+      if (product.consultantMode === 'MODULES' && !dto.moduleId) {
+        throw new BadRequestException('This product assigns consultants per module — pick the module');
+      }
+      if (product.consultantMode === 'PRODUCT' && dto.moduleId) {
+        throw new BadRequestException('This product assigns consultants to the whole product, not per module');
+      }
+    }
     // A "cell" is a (product, module, track) group; one agent is primary per cell.
     const group = { customerCompanyId: companyId, productId: dto.productId ?? null, moduleId: dto.moduleId ?? null, track: dto.track ?? null };
     const existing = await this.prisma.customerConsultant.findMany({ where: group });
@@ -1707,64 +1728,34 @@ export class CustomerProductsService {
   }
 
   /**
-   * Pick a customer-level consultant override for a ticket, most specific first:
-   * product+module(+track) → product-wide → the customer's default. Within each
-   * tier the ordered candidates are walked and the FIRST one the caller accepts
-   * wins; a tier is left only when every candidate in it is rejected. Null means
-   * "try the product's own routing" — or, once that is exhausted too, leave the
-   * ticket unassigned.
-   *
-   * `isEligible` is the caller's availability test (an active staff user holding
-   * no open ticket) — see `TicketsService.create()`. It is deliberately not
-   * computed here: one query serves every tier instead of one per candidate.
+   * Auto-routing's two client steps (client request), in order: (1) the
+   * client's own consultants for this product — the module's row when the
+   * product is assigned per module (`moduleId` given), the whole-product row
+   * when it is assigned as a whole (`moduleId` null) — then (2) the client's
+   * default consultants. Each step offers only the ticket's issue type (Others =
+   * every track that is neither Technical nor Functional) in priority order —
+   * primary first, then the order they were added — and `pick` takes the
+   * least-loaded agent below the organization's max. Null means "go on to the
+   * Products screen".
    */
   async resolveCustomerConsultant(
     clientId: string, customerCompanyId: string | null,
-    productId: string | null, moduleId: string | null, track: 'TECHNICAL' | 'FUNCTIONAL' | null,
-    isEligible: (userId: string) => boolean,
+    productId: string | null, moduleId: string | null, track: IssueType,
+    pick: AgentPicker,
   ): Promise<string | null> {
     if (!customerCompanyId) return null;
-    const rows = await this.prisma.customerConsultant.findMany({ where: { clientId, customerCompanyId } });
+    const rows = await this.prisma.customerConsultant.findMany({
+      where: { clientId, customerCompanyId },
+      orderBy: { createdAt: 'asc' },
+    });
     if (!rows.length) return null;
-
-    // Tier 1 — the customer's own consultants for this product. Rows set against
-    // the exact module win, but a product-level row (moduleId null, e.g. an
-    // unsplit product) must still match a ticket that names a module.
-    const forProduct = rows.filter((r) => r.productId && r.productId === productId);
-    const scoped = forProduct.filter((r) => r.moduleId === moduleId);
-    const productWide = forProduct.filter((r) => !r.moduleId);
-    // Tier 2 — contract-level common consultants (no product/module) handle every
-    // covered product; match the ticket's track first, then a track-less catch-all.
-    const contract = rows.filter((r) => !r.productId && !r.moduleId);
-    // Within a matching cell, the primary agent leads the walk — but the first
-    // one who is actually free takes the ticket.
-    const byPrimary = (a: typeof rows[number], b: typeof rows[number]) => Number(b.isPrimary) - Number(a.isPrimary);
-    // A row only serves the ticket's track. A track-less row is the grid's
-    // "Others" column, so it answers a ticket that names no track — it must NOT
-    // absorb a FUNCTIONAL ticket just because the client set someone under Others.
-    const forTrack = (list: typeof rows) =>
-      track
-        ? list.filter((r) => r.track === track).sort(byPrimary)
-        : [...list.filter((r) => !r.track).sort(byPrimary), ...[...list].sort(byPrimary)];
-    // `forTrack`'s no-track branch deliberately concatenates the track-less rows
-    // with the whole list (track-less first, then anyone). Taking [0] hid the
-    // overlap; walking the list does not, so collapse repeats by userId — the
-    // earlier position is the stronger claim. `isEligible` also carries the
-    // active-user test the old trailing lookup did, so an inactive consultant is
-    // now stepped over rather than aborting the walk.
-    const walk = (list: typeof rows) => {
-      const seen = new Set<string>();
-      for (const r of forTrack(list)) {
-        if (seen.has(r.userId)) continue;
-        seen.add(r.userId);
-        if (isEligible(r.userId)) return r.userId;
-      }
-      return null;
-    };
+    const inTrack = (r: typeof rows[number]) =>
+      track === 'OTHERS' ? r.track !== 'TECHNICAL' && r.track !== 'FUNCTIONAL' : r.track === track;
+    const step = (list: typeof rows) =>
+      pick(list.filter(inTrack).sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary)).map((r) => r.userId));
     return (
-      walk(scoped)          // 1) client-level, this product + module
-      ?? walk(productWide)  // 1) client-level, this product (any module)
-      ?? walk(contract)     // 2) the client's default consultants
+      (productId ? step(rows.filter((r) => r.productId === productId && r.moduleId === moduleId)) : null)
+      ?? step(rows.filter((r) => !r.productId && !r.moduleId))
     );
   }
 
@@ -1998,18 +1989,16 @@ export class CustomerProductsService {
     await this.notifications.notifyMany(admins.map((a) => a.id), { clientId, ...n });
     const to = [...new Set(admins.map((a) => a.email).filter(Boolean))].join(', ');
     if (!to || !(await this.mailer.isConfigured(clientId))) return;
-    const html = `
-      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:520px;margin:0 auto;">
-        <div style="background:${phase === 'expired' ? '#dc2626' : '#f59e0b'};padding:24px;border-radius:12px 12px 0 0;text-align:center;">
-          <h1 style="color:#fff;margin:0;font-size:18px;">${n.title}</h1>
-        </div>
-        <div style="background:#fff;padding:28px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
-          <p style="color:#374151;font-size:14px;">${n.body}</p>
-          <p style="color:#6b7280;font-size:12px;">Open the client in the app to renew or extend their coverage.</p>
-        </div>
-      </div>`;
+    const { html, text } = renderLetter({
+      intro: `${n.body}\n` + (phase === 'expired'
+        ? 'Please follow up with the client on renewing their coverage.'
+        : 'Please follow up with the client on the renewal before the coverage ends.'),
+      outro: 'You can renew or extend the coverage from the client\'s screen in the portal.',
+      link: { label: 'View Client', url: portalLink(n.link) },
+      orgName: await this.orgName(clientId),
+    });
     try {
-      await this.mailer.sendMail({ to, subject: n.title, html, text: n.body }, clientId);
+      await this.mailer.sendMail({ to, subject: `[${phase === 'expired' ? 'Coverage Ended' : 'Renewal Due'}] - ${n.title}`, html, text }, clientId);
     } catch { /* best-effort */ }
   }
 
@@ -2026,19 +2015,21 @@ export class CustomerProductsService {
   ) {
     if (!company.contactEmail) return;
     if (!(await this.mailer.isConfigured(company.clientId))) return;
-    const html = `
-      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:520px;margin:0 auto;">
-        <div style="background:${phase === 'expired' ? '#dc2626' : '#f59e0b'};padding:24px;border-radius:12px 12px 0 0;text-align:center;">
-          <h1 style="color:#fff;margin:0;font-size:18px;">${subject}</h1>
-        </div>
-        <div style="background:#fff;padding:28px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
-          <p style="color:#374151;font-size:14px;">Hi ${company.name},</p>
-          <p style="color:#374151;font-size:14px;">${body}</p>
-          <p style="color:#6b7280;font-size:12px;">Contact your provider to renew or extend your service.</p>
-        </div>
-      </div>`;
+    const { html, text } = renderLetter({
+      greetName: company.name,
+      intro: `${body}\n` + (phase === 'expired'
+        ? 'To continue receiving support without interruption, please renew your service with us.'
+        : 'To continue receiving support without interruption, please renew your service before it ends.'),
+      outro: 'Please contact us to renew or extend your service. Your coverage details are available under My Products in the support portal.',
+      link: { label: 'View My Products', url: portalLink('/my-products') },
+      thanks: 'Thank you for choosing our support services.',
+      orgName: await this.orgName(company.clientId),
+    });
     try {
-      await this.mailer.sendMail({ to: company.contactEmail, subject, html, text: body }, company.clientId);
+      await this.mailer.sendMail(
+        { to: company.contactEmail, subject: `[${phase === 'expired' ? 'Coverage Ended' : 'Renewal Reminder'}] - ${subject}`, html, text },
+        company.clientId,
+      );
     } catch { /* best-effort */ }
   }
 

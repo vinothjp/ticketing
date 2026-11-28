@@ -15,6 +15,7 @@ import ItsmDashboardTwo from './pages/dashboards/ItsmDashboardTwo';
 import UsersPage from './pages/UsersPage';
 import RolesPage from './pages/RolesPage';
 import OrganizationPage from './pages/OrganizationPage';
+import EmailConfigurationPage from './pages/EmailConfigurationPage';
 import CustomerCompaniesPage from './pages/CustomerCompaniesPage';
 import TenantSmtpConfigPage from './pages/SmtpConfigPage';
 import ClientsPage from './pages/super-admin/ClientsPage';
@@ -158,6 +159,7 @@ export default function App() {
                           <Route path="/admin/clients/:companyId/products/:cpId" element={<RoleGate allow={isStaff} redirectTo="/tickets"><ClientProductPage /></RoleGate>} />
                           <Route path="/roles" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><RolesPage /></RoleGate>} />
                           <Route path="/organization" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><OrganizationPage /></RoleGate>} />
+                          <Route path="/admin/email-configuration" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><EmailConfigurationPage /></RoleGate>} />
                           <Route path="/admin/templates" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><TemplatesListPage /></RoleGate>} />
                           <Route path="/admin/templates/new" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><TemplateDesignerPage /></RoleGate>} />
                           <Route path="/admin/templates/:id" element={<RoleGate allow={isTenantAdmin} redirectTo="/tickets"><TemplateDesignerPage /></RoleGate>} />

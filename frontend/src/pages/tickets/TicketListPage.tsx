@@ -16,7 +16,7 @@ import {
   DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
-import { getPriorityMeta, getSlaMeta, isOverdueTicket, isTerminalStatus, isCreatedTodayTicket, getApprovalMeta, getReopenMeta, monthKey, monthLabel, dayKey, monthRange, agentName, type TicketSummary } from './ticketHelpers';
+import { getPriorityMeta, getSlaMeta, isOverdueTicket, isTerminalStatus, isCreatedTodayTicket, REOPENED_STATUS, isReopenedTicket, getApprovalMeta, getReopenMeta, monthKey, monthLabel, dayKey, monthRange, agentName, type TicketSummary } from './ticketHelpers';
 import { useDateFormat } from '@/lib/dateFormat';
 import { staffLabel } from '@/lib/staffLabel';
 
@@ -160,8 +160,9 @@ export default function TicketListPage() {
     () => Array.from(new Set(tickets.map((t) => t.ticketCategory).filter((c): c is string => !!c))),
     [tickets],
   );
+  // Reopened is always offered, even before any ticket has it (client request).
   const statuses = useMemo(
-    () => Array.from(new Set(tickets.map((t) => t.ticketStatus).filter((s): s is string => !!s))),
+    () => Array.from(new Set([...tickets.map((t) => t.ticketStatus).filter((s): s is string => !!s), REOPENED_STATUS])),
     [tickets],
   );
 
@@ -215,6 +216,7 @@ export default function TicketListPage() {
     if (categoryFilter !== 'all') list = list.filter((t) => t.ticketCategory === categoryFilter);
     if (statusFilter === OPEN_STATUSES) list = list.filter((t) => !isTerminalStatus(t.ticketStatus));
     else if (statusFilter === SETTLED_STATUSES) list = list.filter((t) => isTerminalStatus(t.ticketStatus));
+    else if (statusFilter === REOPENED_STATUS) list = list.filter(isReopenedTicket); // + pending reopen requests
     else if (statusFilter !== 'all') list = list.filter((t) => t.ticketStatus === statusFilter);
     if (companyFilter !== 'all') list = list.filter((t) => t.customerCompany?.id === companyFilter);
     return list;
@@ -546,7 +548,8 @@ export default function TicketListPage() {
                       {t.ticketCategory && (<><span>Category : <span className="text-foreground">{t.ticketCategory}</span></span>{sep}</>)}
                       <AssignedTo
                         ticket={t}
-                        isAdmin={isAdmin}
+                        // The client product's project manager assigns its tickets too.
+                        isAdmin={isAdmin || !!t.managedByMe}
                         onAssign={(userIds) => assignMutation.mutate({ id: t.id, userIds })}
                       />
                       {sep}
@@ -631,8 +634,8 @@ function AssignedTo({
   // Type to narrow the list (name or employee id); cleared each time it opens.
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
-  // Only this ticket's people — its module's agents (every issue type) plus the
-  // client's own consultants; all staff when it names no product (client
+  // Only this ticket's people, in priority order — the client's consultants for
+  // the product, its default consultants, then the project manager (client
   // request). Same list as the ticket screen, and the server refuses anyone
   // else. Fetched when the menu opens, not for every row on the page.
   const { data: assignable, isLoading } = useQuery<UserOption[]>({

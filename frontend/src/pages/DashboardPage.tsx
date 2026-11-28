@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Combobox } from '@/components/ui/combobox';
-import { getPriorityMeta, formatDueStatus, isTerminalStatus, isOverdueTicket, isCreatedTodayTicket, type TicketSummary } from './tickets/ticketHelpers';
+import { getPriorityMeta, formatDueStatus, isTerminalStatus, isOverdueTicket, isCreatedTodayTicket, REOPENED_STATUS, isReopenedTicket, type TicketSummary } from './tickets/ticketHelpers';
 import { staffLabel } from '@/lib/staffLabel';
 import { ticketSourceLabel, useProviderName } from '@/lib/ticketSource';
 
@@ -152,8 +152,9 @@ export default function DashboardPage() {
     for (const t of scoped) counts[t.ticketStatus] = (counts[t.ticketStatus] ?? 0) + 1;
     const base = ['Open', 'Resolved', 'Closed'];
     // 'Approval Pending' is surfaced as a small "needs approval" flag by the
-    // heading instead of a full status card.
-    const hidden = new Set(['New', 'Approval Pending']);
+    // heading instead of a full status card; Reopened has its own tile in the
+    // top row, so it isn't counted twice.
+    const hidden = new Set(['New', 'Approval Pending', REOPENED_STATUS]);
     const extras = [
       ...STATUS_ORDER.filter((s) => counts[s] && !base.includes(s) && !hidden.has(s)),
       ...Object.keys(counts).filter((s) => !STATUS_ORDER.includes(s) && !base.includes(s) && !hidden.has(s)),
@@ -187,7 +188,10 @@ export default function DashboardPage() {
         / resolved.length / (1000 * 60 * 60)
       : null;
 
-    return { open, dueToday, slaAtRisk, avgResolutionHrs };
+    // Reopened, plus reopen requests still awaiting a decision — same rule as the list's filter.
+    const reopened = scoped.filter(isReopenedTicket);
+
+    return { open, dueToday, slaAtRisk, avgResolutionHrs, reopened };
   }, [scoped]);
 
   // Incoming order — newest arrivals lead, matching the ticket list default. Sorting by due
@@ -244,10 +248,15 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className={`mb-8 grid grid-cols-2 gap-4 ${isCustomer ? 'lg:grid-cols-4' : 'lg:grid-cols-5'}`}>
+      <div className={`mb-8 grid grid-cols-2 gap-4 ${isCustomer ? 'lg:grid-cols-5' : 'lg:grid-cols-6'}`}>
         <Link to="/tickets" className="rounded-lg bg-muted/50 p-4 transition-colors hover:bg-muted">
           <div className="text-sm text-muted-foreground">Unresolved</div>
           <div className="mt-1 text-3xl font-bold text-foreground">{isLoading ? '—' : stats.open.length}</div>
+        </Link>
+        {/* Tickets sitting in the Reopened status (client request) — opens the list filtered to it. */}
+        <Link to={`/tickets?status=${encodeURIComponent(REOPENED_STATUS)}`} className="rounded-lg bg-muted/50 p-4 transition-colors hover:bg-muted">
+          <div className="text-sm text-muted-foreground">Reopened</div>
+          <div className="mt-1 text-3xl font-bold text-foreground">{isLoading ? '—' : stats.reopened.length}</div>
         </Link>
         {!isCustomer && (
           <Link to="/tickets?view=tasks" className="rounded-lg bg-muted/50 p-4 transition-colors hover:bg-muted">

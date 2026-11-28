@@ -7,6 +7,8 @@ import type { MailerService } from '../mail/mailer.service';
 import type { ProductsService } from '../products/products.service';
 import type { NotificationsService } from '../notifications/notifications.service';
 import type { CustomerProductsService } from '../customer-companies/customer-products.service';
+import type { NotificationRulesService } from '../notification-rules/notification-rules.service';
+import { DEFAULT_RULES } from '../notification-rules/notification-vocab';
 
 const CLIENT_ID = 'tenant-1';
 const COMPANY_ID = 'company-1';
@@ -78,6 +80,7 @@ function build(
           statusOptions.find((o) => o.value === where.value) ?? null,
         ),
       findMany: jest.fn().mockResolvedValue(statusOptions),
+      create: jest.fn().mockResolvedValue({}),
     },
     // The assignable-agents gate: a module's agents, the client's own consultants.
     moduleConsultant: { findMany: jest.fn().mockResolvedValue([]) },
@@ -89,10 +92,21 @@ function build(
       createMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     user: {
-      findMany: jest.fn().mockResolvedValue([{ id: 'company-admin-1' }]),
+      // A lookup by ids answers with those users; anything else with the company admin.
+      findMany: jest
+        .fn()
+        .mockImplementation(({ where }: { where?: { id?: { in?: string[] } } } = {}) =>
+          where?.id?.in
+            ? where.id.in.map((id) => ({ id, username: id, name: null, email: null }))
+            : [{ id: 'company-admin-1' }],
+        ),
       findUnique: jest
         .fn()
-        .mockImplementation(({ where }: { where: { id: string } }) => ({ id: where.id, username: where.id, name: null, email: null })),
+        .mockImplementation(({ where }: { where: { id: string } }) => ({ id: where.id, username: where.id, name: null, email: null, isActive: true })),
+      // "Is the actor staff?" — every id in these tests but a client contact's.
+      findFirst: jest
+        .fn()
+        .mockImplementation(({ where }: { where: { id: string } }) => (String(where.id).startsWith('contact') ? null : { id: where.id })),
       count: jest.fn().mockResolvedValue(0),
     },
     customerCompany: { findUnique: jest.fn().mockResolvedValue({ name: 'Acme' }) },
@@ -107,6 +121,10 @@ function build(
     notifyMany: jest.fn().mockResolvedValue(undefined),
   };
   const mailer = { isConfigured: jest.fn().mockResolvedValue(false), sendMail: jest.fn() };
+  // The Email Configuration matrix: a tenant on the seeded defaults.
+  const notificationRules = {
+    forEvent: jest.fn().mockImplementation(async (_c: string, event: string) => DEFAULT_RULES.filter((r) => r.event === event)),
+  };
 
   const service = new TicketsService(
     prisma as unknown as PrismaService,
@@ -116,9 +134,19 @@ function build(
     {} as ProductsService,
     notifications as unknown as NotificationsService,
     {} as CustomerProductsService,
+    notificationRules as unknown as NotificationRulesService,
   );
-  return { service, prisma, activity, notifications, mailer };
+  return { service, prisma, activity, notifications, mailer, notificationRules };
 }
+
+/** Who got a bell of this type (`fireEvent` bells one person at a time). */
+function belled(notifications: ReturnType<typeof build>['notifications'], type: string) {
+  return notifications.notify.mock.calls
+    .map((c) => c[0] as { userId: string; type: string; title: string; body: string })
+    .filter((n) => n.type === type);
+}
+const belledIds = (notifications: ReturnType<typeof build>['notifications'], type: string) =>
+  belled(notifications, type).map((n) => n.userId);
 
 // The company's own admin — allowed to acknowledge any of their company's tickets.
 const contact: TicketViewer = { id: 'contact-1', roles: ['CustomerAdmin'], customerCompanyId: COMPANY_ID };
@@ -156,10 +184,7 @@ describe('TicketsService — client acknowledgement', () => {
     const types = activity.log.mock.calls.map((c) => (c[0] as { type: string }).type);
     expect(types).toEqual(['ACKNOWLEDGED', 'CLOSED']);
     // The agents who worked it are told the client signed off.
-    expect(notifications.notifyMany).toHaveBeenCalledWith(
-      expect.arrayContaining(['agent-1']),
-      expect.objectContaining({ type: 'TICKET_ACKNOWLEDGED', clientId: CLIENT_ID }),
-    );
+    expect(belledIds(notifications, 'TICKET_ACKNOWLEDGED')).toContain('agent-1');
   });
 
   it('uses the tenant own Closed status value rather than the literal "Closed"', async () => {
@@ -387,7 +412,7 @@ describe('TicketsService — deciding a reopen request', () => {
     const data = prisma.ticket.update.mock.calls[0][0].data as Record<string, unknown>;
     expect(data.reopenRequestStatus).toBe('APPROVED');
     expect(data.reopenDecidedById).toBe('pm-1');
-    expect(data.ticketStatus).toBe('Open');
+    expect(data.ticketStatus).toBe('Reopened');
     expect(data.resolvedAt).toBeNull();
     expect(data.reopenReason).toBe(REASON);
     expect(data.reopenedById).toBe('contact-1');
@@ -481,9 +506,10 @@ describe('TicketsService — only the client may ask to reopen', () => {
     expect(data.reopenReason).toBe(REASON);
     expect(data.reopenedById).toBe(admin.id);
     // The agents are told it is back, with the reason — but never the one who did it.
-    const [recipients, payload] = notifications.notifyMany.mock.calls.at(-1)!;
-    expect(recipients).not.toContain(admin.id);
-    expect((payload as { body: string }).body).toContain(REASON);
+    const bells = belled(notifications, 'TICKET_REOPENED');
+    expect(bells.map((b) => b.userId)).toContain('agent-1');
+    expect(bells.map((b) => b.userId)).not.toContain(admin.id);
+    expect(bells[0].body).toContain(REASON);
   });
 
   it('refuses an agent reopening an internal ticket directly — an Admin must approve', async () => {
@@ -543,10 +569,7 @@ describe('TicketsService — resolution notifies the client', () => {
     // The status dropdown stamps the same fields the Resolution tab does.
     expect(data.resolvedAt).toBeInstanceOf(Date);
     expect(data.resolvedById).toBe('agent-1');
-    expect(notifications.notifyMany).toHaveBeenCalledWith(
-      expect.arrayContaining(['contact-1', 'company-admin-1']),
-      expect.objectContaining({ type: 'TICKET_RESOLVED', ticketId: 'ticket-1', clientId: CLIENT_ID }),
-    );
+    expect(belledIds(notifications, 'TICKET_RESOLVED')).toEqual(expect.arrayContaining(['contact-1', 'company-admin-1']));
   });
 
   it('does not re-notify when an already-resolved ticket changes status again', async () => {
@@ -554,7 +577,7 @@ describe('TicketsService — resolution notifies the client', () => {
 
     await service.update('ticket-1', CLIENT_ID, { ticketStatus: 'Open' }, agent.id, agent);
 
-    expect(notifications.notifyMany).not.toHaveBeenCalled();
+    expect(belled(notifications, 'TICKET_RESOLVED')).toEqual([]);
   });
 
   it('does not re-notify when the resolution notes are edited', async () => {
@@ -562,7 +585,7 @@ describe('TicketsService — resolution notifies the client', () => {
 
     await service.setResolution('ticket-1', CLIENT_ID, { resolution: 'Updated note' }, agent.id, agent);
 
-    expect(notifications.notifyMany).not.toHaveBeenCalled();
+    expect(belled(notifications, 'TICKET_RESOLVED')).toEqual([]);
   });
 
   it('notifies on the first resolution saved from the Resolution tab', async () => {
@@ -572,10 +595,7 @@ describe('TicketsService — resolution notifies the client', () => {
 
     await service.setResolution('ticket-1', CLIENT_ID, { resolution: 'Fixed' }, agent.id, agent);
 
-    expect(notifications.notifyMany).toHaveBeenCalledWith(
-      expect.arrayContaining(['contact-1']),
-      expect.objectContaining({ type: 'TICKET_RESOLVED' }),
-    );
+    expect(belledIds(notifications, 'TICKET_RESOLVED')).toContain('contact-1');
   });
 });
 
@@ -747,10 +767,7 @@ describe('TicketsService — auto-close of unacknowledged resolutions', () => {
     expect(data.acknowledgedAt).toBeUndefined();
     expect(activity.log.mock.calls.map((c) => (c[0] as { type: string }).type)).toEqual(['CLOSED']);
     // Both sides hear about it — the client's people and the agents who worked it.
-    expect(notifications.notifyMany).toHaveBeenCalledWith(
-      expect.arrayContaining(['contact-1', 'agent-1']),
-      expect.objectContaining({ type: 'TICKET_CLOSED', clientId: CLIENT_ID }),
-    );
+    expect(belledIds(notifications, 'TICKET_CLOSED')).toEqual(expect.arrayContaining(['contact-1', 'agent-1']));
   });
 
   it('only ever looks at client tickets that are still awaiting a sign-off', async () => {
@@ -873,22 +890,30 @@ describe('TicketsService — reassignment tells everyone waiting on the ticket',
       .mockResolvedValueOnce(incoming)
       // then the CustomerAdmins, then the tenant Admins
       .mockResolvedValueOnce([{ id: 'company-admin-1', email: 'ada@acme.test' }])
-      .mockResolvedValueOnce([{ id: 'admin-1', email: 'pm@provider.test' }]);
+      // admin-1 is also the actor; admin-2 is the other tenant Admin.
+      .mockResolvedValueOnce([
+        { id: 'admin-1', email: 'pm@provider.test' },
+        { id: 'admin-2', email: 'lead@provider.test' },
+      ]);
   }
 
-  it("refuses an agent who is not set up for the ticket's module", async () => {
+  it("refuses a Products-screen agent who is not one of the client's people", async () => {
     const { service, prisma } = build({ ...openTicket(), productId: 'product-1', moduleId: 'module-mm' });
     prisma.ticketTechnician.findMany.mockResolvedValue([]);
     prisma.user.count.mockResolvedValue(1);
-    // MM's agents (any track) are agent-1 only; the client adds nobody.
-    prisma.moduleConsultant.findMany.mockResolvedValue([{ userId: 'agent-1' }]);
+    // agent-2 is on MM's list on the Products screen — that no longer counts for
+    // a client's ticket; the client's own consultant is agent-1 only.
+    prisma.moduleConsultant.findMany.mockResolvedValue([{ userId: 'agent-2' }]);
+    prisma.customerConsultant.findMany.mockResolvedValue([
+      { userId: 'agent-1', productId: 'product-1', moduleId: 'module-mm', isPrimary: true },
+    ]);
     prisma.user.findMany
       .mockResolvedValueOnce([{ id: 'agent-1', username: 'agent1', name: 'Ada One' }]) // the assignable list
       .mockResolvedValueOnce([{ username: 'agent2', name: 'Bo Two' }]); // who was refused, for the message
 
     await expect(
       service.assignTechnicians('ticket-1', CLIENT_ID, ['agent-2'], admin.id, admin),
-    ).rejects.toThrow("Bo Two is not set up for this ticket's product/module");
+    ).rejects.toThrow("Bo Two is not one of this client's consultants");
     expect(prisma.ticketTechnician.createMany).not.toHaveBeenCalled();
   });
 
@@ -902,18 +927,13 @@ describe('TicketsService — reassignment tells everyone waiting on the ticket',
     await service.assignTechnicians('ticket-1', CLIENT_ID, ['agent-2'], admin.id, admin);
 
     // The agent who now owns it.
-    expect(notifications.notify).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'agent-2', type: 'TICKET_ASSIGNED', ticketId: 'ticket-1' }),
-    );
+    expect(belledIds(notifications, 'TICKET_ASSIGNED')).toEqual(['agent-2']);
     // The agent it left.
-    expect(notifications.notify).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'agent-1', type: 'TICKET_UNASSIGNED' }),
-    );
-    // The requestor, the client's own admin and the provider's PM.
-    const [recipients, payload] = notifications.notifyMany.mock.calls[0];
-    expect(recipients).toEqual(expect.arrayContaining(['contact-1', 'company-admin-1']));
-    expect(payload).toEqual(expect.objectContaining({ type: 'TICKET_REASSIGNED' }));
-    expect(payload.body).toMatch(/has moved from agent1 to agent2/);
+    expect(belledIds(notifications, 'TICKET_UNASSIGNED')).toEqual(['agent-1']);
+    // The requestor, the client's own admin and the other tenant Admin.
+    const watchers = belled(notifications, 'TICKET_REASSIGNED');
+    expect(watchers.map((w) => w.userId)).toEqual(expect.arrayContaining(['contact-1', 'company-admin-1', 'admin-2']));
+    expect(watchers[0].body).toMatch(/has moved from agent1 to agent2/);
   });
 
   it('never pings the person who performed the change', async () => {
@@ -923,8 +943,9 @@ describe('TicketsService — reassignment tells everyone waiting on the ticket',
     await service.assignTechnicians('ticket-1', CLIENT_ID, ['agent-2'], admin.id, admin);
 
     // admin-1 is a tenant Admin *and* the actor.
-    const [recipients] = notifications.notifyMany.mock.calls[0];
-    expect(recipients).not.toContain('admin-1');
+    const told = notifications.notify.mock.calls.map((c) => (c[0] as { userId: string }).userId);
+    expect(told).not.toContain('admin-1');
+    expect(told).toContain('admin-2');
   });
 
   it('stays silent when the same agent is re-assigned', async () => {
@@ -943,9 +964,12 @@ describe('TicketsService — reassignment tells everyone waiting on the ticket',
 
     await service.assignTechnicians('ticket-1', CLIENT_ID, ['agent-1'], admin.id, admin);
 
-    const [, payload] = notifications.notifyMany.mock.calls[0];
-    expect(payload.body).toMatch(/has been assigned to agent1/);
-    expect(payload.body).not.toMatch(/moved from/);
+    // 2. Assigned to the agent, 4. Accepted to the client — never a "handover".
+    expect(belledIds(notifications, 'TICKET_ASSIGNED')).toContain('agent-1');
+    const accepted = belled(notifications, 'TICKET_ACCEPTED');
+    expect(accepted.map((a) => a.userId)).toContain('contact-1');
+    expect(accepted[0].body).toMatch(/has been assigned to agent1/);
+    expect(belled(notifications, 'TICKET_REASSIGNED')).toEqual([]);
   });
 
   it('reads an empty assignment as an unassignment', async () => {
@@ -954,11 +978,8 @@ describe('TicketsService — reassignment tells everyone waiting on the ticket',
 
     await service.assignTechnicians('ticket-1', CLIENT_ID, [], admin.id, admin);
 
-    expect(notifications.notify).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'agent-1', type: 'TICKET_UNASSIGNED' }),
-    );
-    const [, payload] = notifications.notifyMany.mock.calls[0];
-    expect(payload.title).toBe('Ticket unassigned');
+    expect(belledIds(notifications, 'TICKET_UNASSIGNED')).toEqual(['agent-1']);
+    expect(belled(notifications, 'TICKET_REASSIGNED')[0].title).toBe('Ticket unassigned');
   });
 
   it('still completes the assignment when SMTP is down', async () => {
@@ -978,17 +999,18 @@ describe('TicketsService — reassignment tells everyone waiting on the ticket',
     wireAssignment(prisma, [AGENT_1], [AGENT_2]);
     mailer.isConfigured.mockResolvedValue(true);
     let release!: () => void;
-    // A slow mail server: the send hangs until released.
-    mailer.sendMail.mockImplementation(() => new Promise((r) => { release = () => r({}); }));
+    // A slow mail server: the first send hangs until released.
+    mailer.sendMail
+      .mockImplementationOnce(() => new Promise((r) => { release = () => r({}); }))
+      .mockResolvedValue({});
 
     await service.assignTechnicians('ticket-1', CLIENT_ID, ['agent-2'], admin.id, admin);
     // The assignment came back while the first email was still in flight.
     expect(mailer.sendMail).toHaveBeenCalledTimes(1);
     release();
-    await new Promise((r) => setImmediate(r));
-    release();
     await service.flushMail();
-    expect(mailer.sendMail).toHaveBeenCalledTimes(2);
+    // Requestor, client admin, incoming agent, the other tenant Admin.
+    expect(mailer.sendMail).toHaveBeenCalledTimes(4);
   });
 
   it('logs a failed email and keeps sending the next one', async () => {
@@ -999,10 +1021,10 @@ describe('TicketsService — reassignment tells everyone waiting on the ticket',
 
     await service.assignTechnicians('ticket-1', CLIENT_ID, ['agent-2'], admin.id, admin);
     await service.flushMail();
-    expect(mailer.sendMail).toHaveBeenCalledTimes(2);
+    expect(mailer.sendMail).toHaveBeenCalledTimes(4);
   });
 
-  it('sends the client and the provider separate emails', async () => {
+  it('emails each person separately, as the Email Configuration says', async () => {
     const { service, prisma, mailer } = build(openTicket());
     wireAssignment(prisma, [AGENT_1], [AGENT_2]);
     mailer.isConfigured.mockResolvedValue(true);
@@ -1012,11 +1034,18 @@ describe('TicketsService — reassignment tells everyone waiting on the ticket',
     // Emails are queued and sent after the call returns; nothing goes out before.
     await service.flushMail();
 
-    const recipients = mailer.sendMail.mock.calls.map((c) => (c[0] as { to: string }).to);
-    expect(recipients).toHaveLength(2);
-    // The customer's addresses and the provider's are never in one To: header.
-    expect(recipients[0]).toBe('contact@acme.test, ada@acme.test');
-    expect(recipients[1]).toBe('pm@provider.test, a2@provider.test');
+    const sent = mailer.sendMail.mock.calls.map((c) => c[0] as { to: string; subject: string });
+    expect(sent.map((m) => m.to)).toEqual([
+      // One email per person, client side first.
+      'contact@acme.test',
+      'ada@acme.test',
+      // The incoming agent gets the team lead's "Ticket Reassigned" email…
+      'a2@provider.test',
+      // …and the other Admin the admins' one (the acting Admin is never mailed).
+      'lead@provider.test',
+    ]);
+    expect(sent[2].subject).toBe('[Ticket Reassigned] – T-000001 assigned to you');
+    expect(sent[3].subject).toBe('[Ticket Reassigned] - T-000001 assigned to agent2');
   });
 });
 
@@ -1070,47 +1099,51 @@ describe('TicketsService — a Closed ticket\'s status is frozen until a reopen'
   });
 });
 
-describe('TicketsService — Critical tickets are mailed to the critical ticket admin', () => {
-  type Alerting = { alertCriticalTicket(c: string, id: string, how: 'raised' | 'raised to Critical'): Promise<void> };
-  const arm = (
-    prisma: ReturnType<typeof build>['prisma'],
-    mailer: ReturnType<typeof build>['mailer'],
-    org: { criticalTicketAlerts: boolean; criticalTicketEmail: string | null },
-    priority: string,
-  ) => {
-    (prisma.client.findUnique as jest.Mock).mockResolvedValueOnce({ name: 'Acme', ...org });
+describe('TicketsService — a Critical ticket\'s emails are CC\'d to the critical ticket admin', () => {
+  // The critical ticket admin gets a copy of the ticket email itself — there is
+  // no separate alert email any more (team lead's request).
+  type Mailing = {
+    mailEach(
+      clientId: string, ticket: { id: string; ticketNumber: string; subject: string },
+      recipients: { email: string | null; name?: string | null }[], subject: string,
+      content: { intro: string; fields: string[] }, context: string,
+    ): Promise<void>;
+  };
+  const send = async (org: { criticalTicketAlerts: boolean; criticalTicketEmail: string | null }, priorityLabel: string) => {
+    const { service, prisma, mailer } = build(ticketRow());
+    // One client row serves both the email's facts and its CC line.
+    (prisma.client.findUnique as jest.Mock).mockResolvedValue({ name: 'Acme', dateFormat: 'dd/MM/yyyy', helpdeskEmail: null, ...org });
     (prisma.ticket as unknown as { findUnique: jest.Mock }).findUnique = jest.fn().mockResolvedValue({
-      ticketNumber: 'T-000009', subject: 'Payroll down', priority, ticketStatus: 'Open', createdBy: null,
-      customerName: null, productId: null, moduleId: null, customerCompany: { name: 'Globex' },
+      ticketNumber: 'T-000009', subject: 'Payroll down', description: 'Payroll run fails', priority: 'P1', ticketStatus: 'Open',
+      createdAt: new Date('2026-11-28T09:00:00Z'), technicians: [], customerCompany: { name: 'Globex' },
     });
+    (prisma.picklistOption.findMany as jest.Mock).mockResolvedValue([{ listKey: 'priority', value: 'P1', label: priorityLabel }]);
     mailer.isConfigured.mockResolvedValue(true);
     mailer.sendMail.mockResolvedValue({});
+    await (service as unknown as Mailing).mailEach(
+      CLIENT_ID, { id: 'ticket-1', ticketNumber: 'T-000009', subject: 'Payroll down' },
+      [{ email: 'raiser@globex.test', name: 'Ria' }, { email: 'boss@globex.test', name: 'Bo' }],
+      'T-000009 - Created', { intro: 'Registered.', fields: ['number', 'subject', 'priority'] }, 'test',
+    );
+    await service.flushMail();
+    return mailer.sendMail.mock.calls.map((c) => c[0] as { to: string; cc?: string; html: string });
   };
 
-  it('emails a Critical ticket to the configured address', async () => {
-    const { service, prisma, mailer } = build(ticketRow());
-    arm(prisma, mailer, { criticalTicketAlerts: true, criticalTicketEmail: 'lead@acme.test' }, 'critical');
-    await (service as unknown as Alerting).alertCriticalTicket(CLIENT_ID, 'ticket-1', 'raised');
-    await service.flushMail();
-    expect(mailer.sendMail).toHaveBeenCalledTimes(1);
-    const [msg] = mailer.sendMail.mock.calls[0] as [{ to: string; subject: string }];
-    expect(msg.to).toBe('lead@acme.test');
-    expect(msg.subject).toBe('[T-000009] Critical ticket: Payroll down');
+  it('CCs the critical ticket admin on a Critical ticket\'s email, once per event, and sends nothing else', async () => {
+    const sent = await send({ criticalTicketAlerts: true, criticalTicketEmail: 'lead@acme.test' }, 'Critical');
+    expect(sent.map((m) => m.to)).toEqual(['raiser@globex.test', 'boss@globex.test']);
+    expect(sent[0].cc).toBe('lead@acme.test');
+    expect(sent[1].cc).toBeUndefined();
+    expect(sent[0].html).toContain('Ticket Details');
   });
 
-  it('sends nothing while the switch is off', async () => {
-    const { service, prisma, mailer } = build(ticketRow());
-    arm(prisma, mailer, { criticalTicketAlerts: false, criticalTicketEmail: 'lead@acme.test' }, 'critical');
-    await (service as unknown as Alerting).alertCriticalTicket(CLIENT_ID, 'ticket-1', 'raised');
-    await service.flushMail();
-    expect(mailer.sendMail).not.toHaveBeenCalled();
+  it('adds no CC while the switch is off', async () => {
+    const sent = await send({ criticalTicketAlerts: false, criticalTicketEmail: 'lead@acme.test' }, 'Critical');
+    expect(sent.every((m) => !m.cc)).toBe(true);
   });
 
-  it('sends nothing for a ticket that is not Critical', async () => {
-    const { service, prisma, mailer } = build(ticketRow());
-    arm(prisma, mailer, { criticalTicketAlerts: true, criticalTicketEmail: 'lead@acme.test' }, 'high');
-    await (service as unknown as Alerting).alertCriticalTicket(CLIENT_ID, 'ticket-1', 'raised');
-    await service.flushMail();
-    expect(mailer.sendMail).not.toHaveBeenCalled();
+  it('adds no CC for a ticket that is not Critical', async () => {
+    const sent = await send({ criticalTicketAlerts: true, criticalTicketEmail: 'lead@acme.test' }, 'High');
+    expect(sent.every((m) => !m.cc)).toBe(true);
   });
 });

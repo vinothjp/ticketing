@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TicketsService, TicketViewer } from '../tickets/tickets.service';
 import { ActivityService } from '../activity/activity.service';
 import { MailerService } from '../mail/mailer.service';
+import { portalLink, renderLetter } from '../lib/letter-email';
 import { AssetAllocationsService } from '../assets/asset-allocations.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RequestApprovalDto, DecideApprovalDto, UpdateApprovalDto } from './dto/approval.dto';
@@ -107,17 +108,35 @@ export class ApprovalsService {
 
     // Best-effort email notification — fire-and-forget so a slow SMTP send never
     // blocks the response (which would freeze the "Request asset" dialog).
-    void this.mailer
-      .sendMail({
+    void (async () => {
+      if (!approver.email) return;
+      const org = await this.prisma.client.findUnique({ where: { id: clientId }, select: { name: true } }).catch(() => null);
+      const { html, text } = renderLetter({
+        greetName: approver.name || approver.username,
+        intro: `${approval.requestedByName ?? 'A colleague'} has requested your approval ${asset ? 'for an asset ' : ''}on the following support ticket.\n` +
+          'Please review the request and approve or reject it.',
+        table: {
+          heading: asset ? 'Asset Request Details' : 'Approval Request Details',
+          rows: [
+            ['Ticket Number', ticket.ticketNumber],
+            ['Subject', ticket.subject],
+            ['Requested By', approval.requestedByName],
+            ['Asset', asset ? `${asset.assetId} — ${asset.assetName}` : null],
+            ['Asset Type', approval.assetType],
+          ],
+        },
+        sections: [{ title: 'Remarks', body: dto.comment }],
+        outro: 'You can approve or reject the request from the Approvals tab of the ticket.',
+        link: { label: 'Review Request', url: portalLink(`/tickets/${ticketId}?tab=approvals`) },
+        orgName: org?.name,
+      });
+      await this.mailer.sendMail({
         to: approver.email,
-        subject: `[${ticket.ticketNumber}] ${subject}`,
-        html:
-          `<p>You have ${asset ? 'an asset request' : 'an approval request'} on ticket <b>${ticket.ticketNumber}</b> — ${ticket.subject}.</p>` +
-          (asset ? `<p><b>Asset:</b> ${asset.assetId} — ${asset.assetName}</p>` : '') +
-          (dto.comment ? `<p>${dto.comment}</p>` : '') +
-          '<p>Open the ticket to approve or reject.</p>',
-      }, clientId)
-      .catch(() => { /* notification is best-effort */ });
+        subject: `[${asset ? 'Asset Request' : 'Approval Required'}] - ${ticket.ticketNumber} · ${subject}`,
+        html,
+        text,
+      }, clientId);
+    })().catch(() => { /* notification is best-effort */ });
 
     return approval;
   }

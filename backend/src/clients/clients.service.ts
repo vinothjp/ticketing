@@ -161,6 +161,9 @@ export class ClientsService {
       currency?: string;
       criticalTicketEmail?: string | null;
       criticalTicketAlerts?: boolean;
+      helpdeskEmail?: string | null;
+      ticketMaxOpenPerAgent?: number | null;
+      defaultIssueType?: string;
     },
     actorId: string,
   ) {
@@ -169,6 +172,9 @@ export class ClientsService {
     // cannot be on without one — they would silently go nowhere.
     if (dto.criticalTicketEmail !== undefined) {
       dto = { ...dto, criticalTicketEmail: dto.criticalTicketEmail?.trim().toLowerCase() || null };
+    }
+    if (dto.helpdeskEmail !== undefined) {
+      dto = { ...dto, helpdeskEmail: dto.helpdeskEmail?.trim().toLowerCase() || null };
     }
     const alertsOn = dto.criticalTicketAlerts ?? current.criticalTicketAlerts;
     const alertEmail = dto.criticalTicketEmail !== undefined ? dto.criticalTicketEmail : current.criticalTicketEmail;

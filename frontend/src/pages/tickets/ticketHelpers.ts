@@ -22,12 +22,16 @@ export interface TicketSummary {
   department?: string | null;
   ticketCategory?: string | null;
   dueDate?: string | null;
+  /** Set while the SLA clock is paused (the ticket waits on the client). */
+  slaPausedAt?: string | null;
   slaHours?: number | null;
   closedDate?: string | null;
   createdAt: string;
   template: { id: string; name: string; category?: string | null };
   technicians: TicketTechnicianRow[];
   customerCompany?: { id: string; name: string } | null;
+  /** The viewer is the project manager of this ticket's client product — they may assign it. */
+  managedByMe?: boolean;
 }
 
 /**
@@ -67,6 +71,18 @@ const PRIORITY_META: Record<string, { label: string; code: string; barClass: str
 export function getPriorityMeta(priority?: string | null) {
   if (!priority) return { label: '—', code: '', barClass: 'bg-muted', textClass: 'text-muted-foreground', badgeClass: NEUTRAL_BADGE };
   return PRIORITY_META[priority.toLowerCase()] ?? { label: priority, code: '', barClass: 'bg-muted', textClass: 'text-muted-foreground', badgeClass: NEUTRAL_BADGE };
+}
+
+/** The status every reopen writes (backend `REOPENED_STATUS`). It counts as open. */
+export const REOPENED_STATUS = 'Reopened';
+
+/**
+ * What the Reopened filter and dashboard tile count (client request): tickets in
+ * the Reopened status, plus those whose reopen request is still waiting for a
+ * decision — those stay Closed until approved, but they are coming back.
+ */
+export function isReopenedTicket(t: Pick<TicketSummary, 'ticketStatus' | 'reopenRequestStatus'>) {
+  return t.ticketStatus === REOPENED_STATUS || t.reopenRequestStatus === 'PENDING';
 }
 
 export function isTerminalStatus(statusLabel?: string | null) {
@@ -183,8 +199,19 @@ export const SLA_PANEL_CLASS: Record<SlaTone, { box: string; label: string; valu
   },
 };
 
-export function formatCountdown(dueDate?: string | null, slaHours?: number | null): { label: string; overdue: boolean; fraction: number; tone: SlaTone } {
+export function formatCountdown(
+  dueDate?: string | null,
+  slaHours?: number | null,
+  /** Set while the ticket waits on the client: the clock is stopped (`Ticket.slaPausedAt`). */
+  pausedAt?: string | null,
+): { label: string; overdue: boolean; fraction: number; tone: SlaTone } {
   if (!dueDate) return { label: 'No due date set', overdue: false, fraction: 0, tone: 'none' };
+  if (pausedAt) {
+    // Frozen where it stood when the pause began; the due date moves on resume.
+    const left = new Date(dueDate).getTime() - new Date(pausedAt).getTime();
+    const windowMs = (slaHours && slaHours > 0 ? slaHours : 48) * 60 * 60 * 1000;
+    return { label: 'Paused — waiting on the client', overdue: false, fraction: Math.max(0, Math.min(1, left / windowMs)), tone: 'none' };
+  }
   const due = new Date(dueDate).getTime();
   const now = Date.now();
   const diffMs = due - now;
@@ -209,11 +236,12 @@ export function formatCountdown(dueDate?: string | null, slaHours?: number | nul
  * cut-off, so a 4h critical and a 72h low both turn amber at the same point in
  * their life (falls back to 48h for a ticket with no policy behind it).
  */
-export function getSlaMeta(t: Pick<TicketSummary, 'dueDate' | 'slaHours' | 'ticketStatus'>): { label: string; className: string; title: string } {
+export function getSlaMeta(t: Pick<TicketSummary, 'dueDate' | 'slaHours' | 'ticketStatus'> & { slaPausedAt?: string | null }): { label: string; className: string; title: string } {
   // The clock stops on resolve/close. Read that off the live status, not
   // `closedDate` — a ticket moved back out of Closed needs its countdown back.
   if (isTerminalStatus(t.ticketStatus)) return { label: '—', className: SLA_BADGE_CLASS.none, title: 'SLA clock stopped' };
   if (!t.dueDate) return { label: '—', className: SLA_BADGE_CLASS.none, title: 'No due date set' };
+  if (t.slaPausedAt) return { label: 'Paused', className: SLA_BADGE_CLASS.none, title: 'SLA paused — waiting on the client' };
 
   const diffMs = new Date(t.dueDate).getTime() - Date.now();
   const abs = Math.abs(diffMs);

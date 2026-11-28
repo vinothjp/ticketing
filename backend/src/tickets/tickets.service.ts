@@ -20,6 +20,16 @@ import { SETTLED_TASK_STATUSES } from '../tasks/task-status';
 import { productOffForClient } from '../customer-companies/module-switch';
 import { exportSheet as buildSheet, tenantDateFormat } from '../lib/spreadsheet';
 import { TICKET_COLUMNS, type TicketSheetRow } from './ticket-sheet';
+import {
+  FREE_STATUS_LABELS, issueTypeLabel, offeredIssueTypes, pickLeastLoaded, routingIssueType, type AgentPicker,
+} from './auto-assign';
+import { formatTenantDate, renderTicketEmail, type TicketEmailContent, type TicketEmailFacts } from './ticket-email';
+import { NotificationRulesService } from '../notification-rules/notification-rules.service';
+import type { NotificationEvent } from '../notification-rules/notification-vocab';
+import {
+  fallbackBell, fallbackMail, planDelivery, rolesNamed,
+  type Audience, type Delivery, type EventBell, type EventMail, type NotifyPerson, type PersonRole,
+} from './ticket-notify';
 
 const FIELD_KEY_TO_DTO_PROP: Record<string, keyof CreateTicketDto> = {
   requestorName: 'requestorName',
@@ -29,6 +39,7 @@ const FIELD_KEY_TO_DTO_PROP: Record<string, keyof CreateTicketDto> = {
   priority: 'priority',
   ticketCategory: 'ticketCategory',
   subCategory: 'subCategory',
+  consultantType: 'consultantType',
   technicians: 'technicianUserIds',
   notifyEmails: 'notifyEmails',
   dueDate: 'dueDate',
@@ -43,6 +54,18 @@ const DEFAULT_REOPEN_WINDOW_DAYS = 30;
 const DEFAULT_MAX_REOPENS = 3;
 /** Fallback auto-close window for a tenant whose row predates the setting. */
 const DEFAULT_AUTO_CLOSE_DAYS = 3;
+/** The Ticket Status value every reopen writes (client request); see `reopenedStatus`. */
+const REOPENED_STATUS = 'Reopened';
+/*
+ * Statuses the status emails and the SLA escalation key off — by the tenant's
+ * *label*, lower-cased (`statusLabel`), so a renamed value still counts.
+ */
+/** Waiting on the client: asks them for information (template 5), and pauses escalation. */
+const AWAITING_CLIENT_STATUS = 'awaiting end-user response';
+/** Waiting on someone else: pauses escalation too. */
+const ON_HOLD_STATUS = 'on hold';
+/** Being worked on: tells the client so (template 7); where a client's response returns it. */
+const IN_PROGRESS_STATUS = 'in progress';
 
 function isEmpty(value: unknown) {
   return (
@@ -61,38 +84,150 @@ type WorklogTicket = { id: string; customerCompanyId: string | null; productId: 
 type Agent = { id: string; username: string; name?: string | null; email: string | null };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-/** Usable, de-duped addresses as one `To:` header — empty string when there are none. */
-function joinEmails(addresses: (string | null | undefined)[]): string {
-  return [...new Set(addresses.filter((a): a is string => !!a && EMAIL_RE.test(a)))].join(', ');
-}
-
-/** Typed text made safe to drop into an email's HTML. */
-const esc = (s: string | null | undefined) =>
-  (s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
-/** The plain-text twin of an email body built for `reassignmentHtml`. */
-const htmlToText = (html: string) =>
-  html.replace(/<br\s*\/?>/g, '\n').replace(/<[^>]+>/g, '')
-    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
-
 /** A person as other people read them: their full name, else their login. */
 const displayName = (u: { name?: string | null; username?: string | null }) =>
   u.name?.trim() || u.username || '';
 
-/** House-style email body: 480px wrapper, coloured header bar, white card. */
-function reassignmentHtml(heading: string, greetName: string | null, bodyHtml: string): string {
-  return `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 480px; margin: 0 auto;">
-      <div style="background:#4F46E5; padding:24px; border-radius:12px 12px 0 0; text-align:center;">
-        <h1 style="color:#fff; margin:0; font-size:18px;">${heading}</h1>
-      </div>
-      <div style="background:#fff; padding:28px; border:1px solid #e5e7eb; border-top:none; border-radius:0 0 12px 12px;">
-        ${greetName !== null ? `<p style="color:#374151; font-size:14px;">Hi ${greetName ?? 'there'},</p>` : ''}
-        <p style="color:#374151; font-size:14px;">${bodyHtml}</p>
-        <p style="color:#6b7280; font-size:12px; margin-top:20px;">Sign in to view the ticket and its latest updates.</p>
-      </div>
-    </div>`;
-}
+/** What every ticket email needs to load its facts (`ticketEmailFacts`). */
+type EmailTicket = { id: string; ticketNumber: string; subject: string };
+/** A ticket as `fireEvent` reads it: who it is for, and the people around it. */
+type NotifyTicket = EmailTicket & {
+  customerCompanyId: string | null;
+  productId: string | null;
+  requestorUserId: string | null;
+  requestorEmail: string | null;
+  requestorName: string | null;
+  resolvedById?: string | null;
+};
+/** What one ticket event says, per recipient role or audience; anything unset falls back to a plain notice. */
+type EventContext = {
+  ticket: NotifyTicket;
+  /** Whoever caused it. Staff are never told of their own action; a client is (it is their receipt). */
+  actorId?: string | null;
+  /** People a role names that the ticket row can't tell (e.g. the agents either side of a reassignment). */
+  people?: Partial<Record<PersonRole, NotifyPerson[]>>;
+  mail?: Partial<Record<PersonRole | Audience, EventMail>>;
+  bell?: Partial<Record<PersonRole | Audience, EventBell>>;
+  /** Appended to a fallback bell's body. */
+  detail?: string | null;
+  /** Roles this one occurrence leaves out because they are told another way. */
+  skipRoles?: PersonRole[];
+  skipUserIds?: (string | null | undefined)[];
+  /** Bells only this time (a client's emailed reply has already reached the agent). */
+  emailOff?: boolean;
+};
+
+/*
+ * The team lead's email templates, one per event (wording theirs; the rows of
+ * each "Ticket Details" table are the template's own). Kept together so two
+ * events sending the same template — e.g. Created on raising and on a company
+ * admin's approval — can't drift apart.
+ */
+const MAIL = {
+  /** 1. Ticket Created — to the requester. */
+  created: (lead: string): TicketEmailContent => ({
+    intro: `${lead}\nOur support team will review your request and take the necessary action.`,
+    fields: ['number', 'subject', 'category', 'priority', 'status', 'createdDate', 'department'],
+    description: true,
+    outro: 'You can track the status of your request and add additional comments through the ticketing portal.',
+    thanks: 'Thank you for contacting the Support Team.',
+    signOff: 'Regards',
+  }),
+  /** 2. Ticket Assigned — to the agent. */
+  assigned: (): TicketEmailContent => ({
+    intro: 'A support ticket has been assigned to you.\nPlease review the ticket details and take the necessary action within the defined SLA.',
+    fields: ['number', 'subject', 'requestedBy', 'client', 'department', 'category', 'priority', 'assignedTeam', 'dueDate'],
+    description: true,
+    outro: 'Please acknowledge and begin working on the ticket.',
+    linkLabel: 'View Assigned Ticket',
+  }),
+  /** 3. Ticket Reassigned — to the new agent. */
+  reassigned: (previous: string, next: string): TicketEmailContent => ({
+    intro: 'The following support ticket has been reassigned to you.\nPlease review the ticket history, previous comments and actions before proceeding.',
+    fields: [
+      'number', 'subject', 'requestedBy', 'client', 'category', 'priority',
+      ['Previous Assigned Agent', previous], ['New Assigned Agent', next], 'assignedTeam', 'dueDate',
+    ],
+    outro: 'Please take ownership and proceed with the necessary action.',
+  }),
+  /** 4. Ticket Accepted — to the requester, once an agent has it. */
+  accepted: (): TicketEmailContent => ({
+    intro: 'Your support request has been reviewed and accepted by our support team.\nThe ticket is now assigned to the responsible support personnel for further action.',
+    fields: ['number', 'subject', 'category', 'priority', 'status', 'assignedTeam', 'assignedAgent', { key: 'dueDate', label: 'Expected SLA Due Date' }],
+    outro: 'Our team will keep you informed about further progress.',
+    thanks: 'Thank you for your patience.',
+  }),
+  /** 10. Ticket Closed — to the requester. */
+  closed: (): TicketEmailContent => ({
+    intro: 'Your support ticket has been successfully closed.\nThank you for confirming the resolution or for allowing the ticket to be closed in accordance with our support policy.',
+    fields: ['number', 'subject', 'category', 'priority', 'status', 'assignedAgent', 'createdDate', 'closedDate'],
+    resolution: 'Final Resolution',
+    outro: 'If you experience the same issue again, please raise a new support ticket through the portal and refer to this ticket number where relevant.',
+    linkLabel: 'View Closed Ticket',
+    thanks: 'Thank you for using our Support Desk.',
+  }),
+  /** 5. Additional Information Requested — to the requester. */
+  infoRequested: (info: string): TicketEmailContent => ({
+    intro: 'Our support team is reviewing your request. However, we require some additional information to proceed with the investigation.',
+    fields: ['number', 'subject', 'priority', 'assignedAgent', { key: 'status', label: 'Current Status' }],
+    sections: [{ title: 'Additional Information Required', body: info }],
+    outro: 'Please provide the requested information or attach the necessary documents through the ticketing portal.\n' +
+      'Your response will help us resolve the issue more efficiently.',
+    linkLabel: 'Respond to Ticket',
+    linkQuery: '?tab=conversation',
+  }),
+  /** 6. Requestor Responded — to the assigned agent. */
+  requesterResponded: (response: string): TicketEmailContent => ({
+    intro: 'The requestor has provided an update to the following support ticket.',
+    fields: ['number', 'subject', 'requestedBy', 'client', 'department', 'priority', { key: 'status', label: 'Current Status' }],
+    sections: [{ title: 'Requestor Response', body: response }],
+    outro: "Please review the requestor's response and proceed with the necessary action.",
+    linkQuery: '?tab=conversation',
+  }),
+  /** 7. Ticket In Progress — to the requester. */
+  inProgress: (latestUpdate: string | null): TicketEmailContent => ({
+    intro: 'We would like to inform you that our support team has started working on your request.',
+    fields: ['number', 'subject', 'priority', 'status', 'assignedAgent', { key: 'assignedTeam', label: 'Support Team' }],
+    sections: [{ title: 'Latest Update', body: latestUpdate }],
+    outro: 'Our support team is actively investigating the issue and will keep you informed of further developments.',
+    linkLabel: 'Track Ticket',
+  }),
+  /** 11. SLA Breached — to the assigned agent, sent with the escalation. */
+  slaBreached: (breachedOn: string | null, delay: string, remarks: string | null, escalatedTo: string): TicketEmailContent => ({
+    intro: 'This is to notify you that the following support ticket assigned to you has breached its defined Service Level Agreement (SLA).\n' +
+      'Immediate attention is required to review the delay and ensure appropriate action is taken.',
+    fields: [
+      'number', 'subject', 'requestedBy', 'client', 'category', 'priority',
+      { key: 'status', label: 'Current Status' }, 'assignedAgent', { key: 'assignedTeam', label: 'Support Team' },
+      'dueDate', ['SLA Breach Date', breachedOn], ['Delay Duration', delay],
+    ],
+    sections: [{ title: 'Current Ticket Remarks', body: remarks ?? 'No update has been recorded on the ticket yet.' }],
+    outro: `Please review the ticket and take the necessary corrective action. The ticket has also been escalated to ${escalatedTo}.`,
+    linkLabel: 'View Breached Ticket',
+  }),
+  /** 12. Ticket Escalated (with 11. SLA Breached's timings) — to the project manager. */
+  escalated: (breachedOn: string | null, delay: string, remarks: string | null): TicketEmailContent => ({
+    intro: 'The following support ticket has been escalated to you and requires your attention.\n' +
+      'The escalation has been raised automatically because the ticket has breached its resolution SLA.',
+    fields: [
+      'number', 'subject', 'requestedBy', 'client', 'department', 'category', 'priority',
+      { key: 'status', label: 'Current Status' }, { key: 'assignedAgent', label: 'Current Assigned Agent' },
+      { key: 'assignedTeam', label: 'Support Team' }, ['Escalation Level', 'Level 1 — Project Manager'],
+      'dueDate', ['SLA Breach Date', breachedOn], ['Delay Duration', delay],
+    ],
+    sections: [
+      { title: 'Escalation Reason', body: 'The ticket was not resolved within its SLA resolution time.' },
+      { title: 'Escalation Remarks', body: remarks ?? 'No update has been recorded on the ticket by the support team.' },
+    ],
+    outro: 'Please review the ticket and provide the necessary direction to ensure timely resolution.',
+    linkLabel: 'View Escalated Ticket',
+  }),
+  /** Closed — the agents' copy (no template of its own; same rows the staff templates use). */
+  closedForAgents: (intro: string): TicketEmailContent => ({
+    intro,
+    fields: ['number', 'subject', 'requestedBy', 'client', 'priority', 'status', 'resolvedDate', 'closedDate'],
+  }),
+};
 const isAdmin = (viewer: TicketViewer) => viewer.roles.includes('Admin');
 // Customer side = a company's own admin + its employees.
 const isCustomerAdmin = (viewer: TicketViewer) => viewer.roles.includes('CustomerAdmin');
@@ -113,6 +248,7 @@ export class TicketsService {
     private products: ProductsService,
     private notifications: NotificationsService,
     private customerProducts: CustomerProductsService,
+    private notificationRules: NotificationRulesService,
   ) {}
 
   async create(dto: CreateTicketDto, clientId: string, actorId: string, viewer?: TicketViewer) {
@@ -224,6 +360,7 @@ export class TicketsService {
       if (!dtoProp) continue; // e.g. attachments — enforced client-side only for now
       if (isEmpty(dto[dtoProp])) missing.push(field.label);
     }
+    const hasIssueType = template.fields.some((f) => f.fieldKey === 'consultantType' && f.visibility === 'VISIBLE');
     if (missing.length > 0) {
       throw new BadRequestException(
         `Missing required field(s): ${missing.join(', ')}`,
@@ -269,7 +406,9 @@ export class TicketsService {
           approvalStatus: needsCustomerApproval ? 'PENDING_CUSTOMER' : needsApproval ? 'PENDING' : 'NONE',
           productId: dto.productId,
           moduleId: dto.moduleId,
-          consultantType: dto.consultantType,
+          // Stored only when the template carries Issue type and one was picked
+          // (client request); otherwise blank, and routing uses the default.
+          consultantType: hasIssueType ? dto.consultantType : undefined,
           requestorName: dto.requestorName ?? requestorDefaults.name,
           requestorEmail: dto.requestorEmail ?? requestorDefaults.email,
           requestorUserId: (dto as { requestorUserId?: string }).requestorUserId,
@@ -308,37 +447,25 @@ export class TicketsService {
       summary: 'Ticket created',
     });
 
-    // Whoever raised it — a client's employee or their company admin — gets a
-    // receipt by email straight away, whatever happens next (approval,
-    // auto-assignment, or waiting for an Admin to assign it).
-    if (isCustomerTicket && viewer) {
+    // A ticket held for approval is not live yet: its raiser is told it waits
+    // for approval (the approval flow, not one of the Email Configuration
+    // events), and 1. Created goes out on its last approval (`openHeldTicket`).
+    if (isCustomerTicket && viewer && needsApproval) {
       const me = await this.prisma.user.findUnique({ where: { id: viewer.id }, select: { username: true, name: true, email: true } });
       await this.mailEach(
         clientId,
+        ticket,
         [{ email: me?.email || ticket.requestorEmail, username: me?.username, name: me?.name }],
-        `[${ticket.ticketNumber}] Ticket created: ${ticket.subject}`,
-        'Ticket created',
-        `We've received your ticket <strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong>.<br/><br/>` +
-          (needsApproval
-            ? `It needs approval before work starts. You'll get an email at each step.`
-            : `You'll get another email as soon as an agent is assigned to it.`),
+        `${ticket.ticketNumber} - Created`,
+        {
+          ...MAIL.created('Your support request has been successfully registered in our service desk.'),
+          intro: 'Your support request has been successfully registered in our service desk.\n' +
+            'It needs approval before our support team can take action, and you will be informed at each step.',
+        },
         `the receipt for ${ticket.ticketNumber}`,
       );
+      await this.bellHeldReceipt(clientId, ticket, viewer.id, needsCustomerApproval);
     }
-
-    // The project manager hears of it once it is live work they can open — now,
-    // or on its last approval (`approve` / `customerApprove`). Before routing,
-    // so their "created" bell lands ahead of the "assigned" one.
-    if (!needsApproval) {
-      await this.bellProjectManager(clientId, ticket, 'CREATED', null, [actorId]);
-    }
-    // A Critical ticket is mailed to the organization's critical ticket admin —
-    // once it reaches us: an employee's waits for their company admin first.
-    if (!needsCustomerApproval) await this.alertCriticalTicket(clientId, ticket.id, 'raised');
-
-    // A held ticket is routed when it is approved, not now.
-    const assignedConsultantId =
-      isCustomerTicket && !needsApproval ? await this.autoRoute(clientId, ticket, actorId) : null;
 
     if (needsCustomerApproval) {
       await this.notifyCustomerApprovalRequested(clientId, ticket, template.name, actorId, needsProviderApproval);
@@ -346,19 +473,11 @@ export class TicketsService {
       await this.notifyApprovalRequested(clientId, ticket, template.name, actorId);
     }
 
-    // In-app notifications for a customer-created ticket: acknowledge the creator,
-    // alert every provider admin, and alert the assigned consultant. A held
-    // ticket's admins already got the approval request instead.
-    if (isCustomerTicket && viewer) {
-      await this.emitTicketNotifications({
-        clientId,
-        ticketId: ticket.id,
-        ticketNumber: ticket.ticketNumber,
-        subject: ticket.subject,
-        creatorUserId: viewer.id,
-        assignedConsultantId,
-        skipAdmins: needsApproval,
-        heldForCustomerAdmin: needsCustomerApproval,
+    // Live now: a client's ticket is routed, then Created and the assignment go out.
+    if (!needsApproval) {
+      await this.goLive(clientId, ticket, actorId, {
+        routes: isCustomerTicket,
+        lead: 'Your support request has been successfully registered in our service desk.',
       });
     }
 
@@ -366,118 +485,263 @@ export class TicketsService {
   }
 
   /**
-   * Auto-route a customer ticket to a consultant configured for it. The tiers
-   * are tried most-specific-first, and WITHIN each tier the ordered list is
-   * walked and the first consultant who is free — active and holding no open
-   * ticket — takes it. A tier is left only when every candidate in it is busy
-   * or inactive; when nobody anywhere is free the ticket stays unassigned for
-   * a manager to pick, with no fallback to the primary. Same for "Others"/no
-   * module, which names no consultant at all.
+   * Auto-route a customer ticket (client request). Three steps, in order:
+   * (1) the client's consultants for this product, (2) the client's default
+   * consultants, (3) the Products screen's consultants — each read per module
+   * or for the whole product, as the product's "Assign consultants" mode says.
+   * Within a step only the ticket's issue type is offered (`routingIssueType`:
+   * the one picked, else the organization's default), and the agent holding the
+   * fewest open tickets takes it — the primary on a tie — so long as they are
+   * active and below the organization's max (`agentPicker`). A step is left
+   * only when everyone in it is full; when every step is, the ticket stays
+   * unassigned for the project manager to assign.
    *
    * The whole block is gated on the client's own `autoAssignTickets` switch —
-   * off means every ticket they raise is assigned by hand. Building the
-   * availability test inside the guard keeps a manual-routing client at zero
-   * extra queries. Racy by design: two tickets created in the same instant can
-   * both see the same consultant as free.
+   * off means every ticket they raise is assigned by hand. Racy by design: two
+   * tickets created in the same instant can both see the same agent's load.
    *
-   * Runs at creation, or at approval for a ticket that was held.
+   * Runs at creation, or at approval for a ticket that was held. Notifies
+   * nobody itself — `goLive` announces what it found.
    */
   private async autoRoute(
     clientId: string,
-    ticket: { id: string; customerCompanyId: string | null; productId: string | null; moduleId: string | null; consultantType: string | null },
+    ticket: {
+      id: string; ticketNumber: string; subject: string;
+      customerCompanyId: string | null; productId: string | null; moduleId: string | null; consultantType: string | null;
+    },
     actorId: string,
-  ): Promise<string | null> {
-    if (!(await this.customerProducts.autoAssignEnabled(clientId, ticket.customerCompanyId))) return null;
-    const track = ticket.consultantType === 'TECHNICAL' ? 'TECHNICAL' : ticket.consultantType === 'FUNCTIONAL' ? 'FUNCTIONAL' : null;
-    const isEligible = await this.consultantAvailability(clientId);
-    // 1) & 2) The customer's own consultants — product-scoped first, then their
-    //    default set — override the product's routing.
-    let assignedConsultantId = await this.customerProducts.resolveCustomerConsultant(
-      clientId, ticket.customerCompanyId, ticket.productId, ticket.moduleId, track, isEligible,
+  ): Promise<{ agent: Agent | null; unassigned: string | null }> {
+    if (!(await this.customerProducts.autoAssignEnabled(clientId, ticket.customerCompanyId))) {
+      // Manual routing for this client: the project manager assigns it.
+      return { agent: null, unassigned: 'auto-assignment is off for this client' };
+    }
+    const [org, product] = await Promise.all([
+      this.prisma.client.findUnique({ where: { id: clientId }, select: { defaultIssueType: true } }),
+      ticket.productId
+        ? this.prisma.product.findFirst({
+            where: { id: ticket.productId, clientId },
+            select: { consultantMode: true, tracks: true, modules: { where: { id: ticket.moduleId ?? '__none__' }, select: { id: true, tracks: true } } },
+          })
+        : null,
+    ]);
+    const byModule = product?.consultantMode === 'MODULES';
+    const mod = byModule ? product?.modules[0] : undefined;
+    const track = routingIssueType(
+      ticket.consultantType,
+      org?.defaultIssueType ?? 'TECHNICAL',
+      offeredIssueTypes(mod ? mod.tracks : product?.tracks ?? []),
     );
-    // 3) Otherwise fall back to the consultants set on the Product screen —
-    //    the module's list first, then the product-level list for an unsplit
-    //    product.
-    if (!assignedConsultantId && ticket.productId) {
-      if (ticket.moduleId) {
-        assignedConsultantId = await this.products.resolveConsultant(clientId, ticket.moduleId, track, isEligible);
-      }
-      assignedConsultantId ??= await this.products.resolveProductConsultant(clientId, ticket.productId, track, isEligible);
+    const pick = await this.agentPicker(clientId);
+    // 1) & 2) The client's consultants for this product, then their defaults.
+    let assignedConsultantId = await this.customerProducts.resolveCustomerConsultant(
+      clientId, ticket.customerCompanyId, ticket.productId, byModule ? ticket.moduleId : null, track, pick,
+    );
+    // 3) The Products screen's consultants, in the product's own mode.
+    if (!assignedConsultantId && ticket.productId && product) {
+      assignedConsultantId = byModule
+        ? mod ? await this.products.resolveConsultant(clientId, mod.id, track, pick) : null
+        : await this.products.resolveProductConsultant(clientId, ticket.productId, track, pick);
     }
-    if (assignedConsultantId) {
-      await this.prisma.ticketTechnician.create({ data: { ticketId: ticket.id, userId: assignedConsultantId } });
-      const c = await this.prisma.user.findUnique({ where: { id: assignedConsultantId }, select: { username: true, name: true } });
-      await this.activity.log({
-        ticketId: ticket.id,
-        actorUserId: actorId,
-        type: 'ASSIGNED',
-        // Full name, not username — a username is often an employee id (client request).
-        summary: `Auto-assigned to ${c ? displayName(c) : 'consultant'}`,
-        meta: { userId: assignedConsultantId, auto: true },
-      });
-      await this.notifyAutoAssigned(clientId, ticket.id, assignedConsultantId);
-      const t = await this.prisma.ticket.findUnique({
-        where: { id: ticket.id },
-        select: { id: true, ticketNumber: true, subject: true, customerCompanyId: true, productId: true },
-      });
-      if (t) await this.bellProjectManager(clientId, t, 'ASSIGNED', `to ${c ? displayName(c) : 'a consultant'}`, [assignedConsultantId]);
+    if (!assignedConsultantId) {
+      // Everyone at every step is full: it waits for the project manager.
+      return { agent: null, unassigned: 'every consultant for it is busy' };
     }
-    return assignedConsultantId;
+    await this.prisma.ticketTechnician.create({ data: { ticketId: ticket.id, userId: assignedConsultantId } });
+    const c = await this.prisma.user.findUnique({
+      where: { id: assignedConsultantId },
+      select: { id: true, username: true, name: true, email: true },
+    });
+    await this.activity.log({
+      ticketId: ticket.id,
+      actorUserId: actorId,
+      type: 'ASSIGNED',
+      // Full name, not username — a username is often an employee id (client request).
+      summary: `Auto-assigned to ${c ? displayName(c) : 'consultant'}`,
+      meta: { userId: assignedConsultantId, auto: true },
+    });
+    return { agent: c, unassigned: null };
   }
 
   /**
-   * The client who raised the ticket and the agent it was routed to each get an
-   * email — the same pair a manual assignment emails, so auto-assignment on or
-   * off reads the same to both sides. Separate sends; never throws.
+   * A ticket becomes live work — on creation, or on its last approval. A
+   * client's ticket is routed first (`autoRoute`), then 1. Created goes out,
+   * then 2. Assigned / 4. Accepted for the agent it was routed to — or, when
+   * nobody could take it, the project manager's "needs an agent" alert, which
+   * replaces their Created notice (one bell, not two; client request).
    */
-  private async notifyAutoAssigned(clientId: string, ticketId: string, agentId: string) {
-    try {
-      const [t, agent] = await Promise.all([
-        this.prisma.ticket.findUnique({
-          where: { id: ticketId },
-          select: {
-            ticketNumber: true, subject: true, requestorUserId: true, requestorEmail: true, requestorName: true,
-            customerCompany: { select: { name: true } },
+  private async goLive(
+    clientId: string,
+    ticket: NotifyTicket & { moduleId: string | null; consultantType: string | null },
+    actorId: string,
+    opts: { routes: boolean; lead: string; ackBody?: string; skipRoles?: PersonRole[] },
+  ) {
+    const route = opts.routes ? await this.autoRoute(clientId, ticket, actorId) : null;
+    const n = ticket.ticketNumber;
+    const label = `${n} — ${ticket.subject}`;
+    const forStaff: EventMail = {
+      subject: `${n} - Created`,
+      content: {
+        intro: 'A new support ticket has been raised.',
+        fields: ['number', 'subject', 'requestedBy', 'client', 'department', 'category', 'priority', 'assignedTeam', 'dueDate'],
+        description: true,
+        linkLabel: 'View Ticket',
+      },
+    };
+    await this.fireEvent(clientId, 'TICKET_CREATED', {
+      ticket,
+      actorId,
+      skipRoles: [...(opts.skipRoles ?? []), ...(route?.unassigned ? (['PROJECT_MANAGER'] as const) : [])],
+      mail: {
+        client: { subject: `${n} - Created`, content: MAIL.created(opts.lead) },
+        agent: forStaff,
+        staff: forStaff,
+      },
+      bell: {
+        client: {
+          type: 'TICKET_ACK', title: 'Ticket received',
+          body: opts.ackBody ?? `We've received your ticket ${n} and will get back to you shortly.`,
+        },
+        PROJECT_MANAGER: { type: 'PM_TICKET_CREATED', title: 'New ticket on your project', body: label },
+        staff: { type: 'TICKET_CREATED', title: 'New ticket created', body: `New ticket ${label}` },
+        agent: { type: 'TICKET_CREATED', title: 'New ticket', body: label },
+      },
+    });
+    if (route?.agent) await this.announceAssignment(clientId, ticket, actorId, [], [route.agent]);
+    else if (route?.unassigned) await this.alertProjectManagerUnassigned(clientId, ticket, route.unassigned, [actorId]);
+  }
+
+  /** The raiser of a held ticket: "Sent for approval" (to their company admin) or "Ticket received". */
+  private async bellHeldReceipt(clientId: string, ticket: EmailTicket, userId: string, toCompanyAdmin: boolean) {
+    await this.notifications
+      .notify(
+        toCompanyAdmin
+          ? {
+              clientId, userId, type: 'TICKET_SENT_FOR_APPROVAL', ticketId: ticket.id,
+              title: 'Sent for approval',
+              body: `Your ticket ${ticket.ticketNumber} has been sent to your company admin for approval.`,
+            }
+          : {
+              clientId, userId, type: 'TICKET_ACK', ticketId: ticket.id,
+              title: 'Ticket received',
+              body: `We've received your ticket ${ticket.ticketNumber} and will get back to you shortly.`,
+            },
+      )
+      .catch((err) => this.logger.error('Failed to bell the raiser of a held ticket', err instanceof Error ? err.stack : String(err)));
+  }
+
+  /**
+   * A change of agent: a first agent is 2. Ticket Assigned (+ 4. Ticket
+   * Accepted for the client), anything else — a handover, or nobody — is
+   * 3. Ticket Reassigned. Who hears of it is the Email Configuration; this
+   * only says it, per audience. Shared by manual assignment and auto-routing.
+   */
+  private async announceAssignment(clientId: string, ticket: NotifyTicket, actorId: string, previous: Agent[], incoming: Agent[]) {
+    const n = ticket.ticketNumber;
+    const label = `${n} — ${ticket.subject}`;
+    // Full names, not usernames — a username is often an employee id (client request).
+    const to = incoming.map(displayName).join(', ');
+    const from = previous.map(displayName).join(', ');
+    const asPeople = (xs: Agent[]): NotifyPerson[] => xs.map((u) => ({ id: u.id, email: u.email, name: u.name, username: u.username }));
+    const toAgent: EventBell = { type: 'TICKET_ASSIGNED', title: 'Ticket assigned to you', body: `You've been assigned ${label}` };
+
+    if (!previous.length && incoming.length) {
+      await this.fireEvent(clientId, 'TICKET_ASSIGNED', {
+        ticket, actorId,
+        people: { ASSIGNED_AGENT: asPeople(incoming), NEW_ASSIGNED_AGENT: asPeople(incoming) },
+        mail: {
+          agent: { subject: `${n} Assigned`, content: MAIL.assigned() },
+          staff: {
+            subject: `[Ticket Assigned] - ${n} assigned to ${to}`,
+            content: {
+              intro: `The following support ticket has been assigned to ${to}.`,
+              fields: ['number', 'subject', 'requestedBy', 'client', 'priority', 'status', 'assignedAgent', 'assignedTeam', 'dueDate'],
+            },
           },
-        }),
-        this.prisma.user.findUnique({ where: { id: agentId }, select: { username: true, name: true, email: true } }),
-      ]);
-      if (!t || !agent) return;
-      const label = `<strong>${esc(t.ticketNumber)} · ${esc(t.subject)}</strong>`;
-      await this.mailEach(
-        clientId,
-        [await this.raiserContact(t)],
-        `[${t.ticketNumber}] An agent is looking into your ticket`,
-        'An agent has been assigned',
-        `${esc(displayName(agent))} has been assigned to your ticket ${label} and is looking into it. You can follow it and reply from the ticket.`,
-        `the assignment notice for ${t.ticketNumber}`,
-      );
-      await this.mailEach(
-        clientId,
-        [agent],
-        `[${t.ticketNumber}] Ticket assigned to you`,
-        'Ticket assigned to you',
-        `${label}${t.customerCompany ? ` from ${esc(t.customerCompany.name)}` : ''} has been assigned to you.`,
-        `the assignment notice for ${t.ticketNumber}`,
-      );
-    } catch (err) {
-      this.logger.error('Failed to email the auto-assignment', err instanceof Error ? err.stack : String(err));
+          client: { subject: `[Ticket Accepted] - ${n}`, content: MAIL.accepted() },
+        },
+        bell: {
+          agent: toAgent,
+          PROJECT_MANAGER: { type: 'PM_TICKET_ASSIGNED', title: 'Ticket assigned', body: `${label} · to ${to}` },
+          staff: { type: 'TICKET_ASSIGNED', title: 'Ticket assigned', body: `${label} has been assigned to ${to}.` },
+          client: { type: 'TICKET_ASSIGNED', title: 'Ticket assigned', body: `${label} has been assigned to ${to}.` },
+        },
+      });
+      await this.fireEvent(clientId, 'TICKET_ACCEPTED', {
+        ticket, actorId,
+        people: { ASSIGNED_AGENT: asPeople(incoming), NEW_ASSIGNED_AGENT: asPeople(incoming) },
+        mail: { client: { subject: `[Ticket Accepted] - ${n}`, content: MAIL.accepted() } },
+        bell: { client: { type: 'TICKET_ACCEPTED', title: 'Ticket accepted', body: `${label} has been assigned to ${to}.` } },
+        detail: `assigned to ${to}`,
+      });
+      return;
     }
-  }
 
-  /** Who raised a ticket, as an email recipient: their live address, else the one on the ticket. */
-  private async raiserContact(t: { requestorUserId: string | null; requestorEmail: string | null; requestorName: string | null }) {
-    const u = t.requestorUserId
-      ? await this.prisma.user.findUnique({ where: { id: t.requestorUserId }, select: { username: true, name: true, email: true } })
-      : null;
-    return { email: u?.email || t.requestorEmail, username: u?.username ?? null, name: u?.name ?? t.requestorName };
-  }
-
-  /** Active staff among `ids`, with what an email needs. */
-  private agentContacts(ids: string[]) {
-    return ids.length
-      ? this.prisma.user.findMany({ where: { id: { in: ids }, isActive: true }, select: { username: true, name: true, email: true } })
-      : Promise.resolve([] as { username: string; name: string | null; email: string | null }[]);
+    const handover = previous.length > 0 && incoming.length > 0;
+    const summary = incoming.length
+      ? `${label} has moved from ${from} to ${to}.`
+      : `${label} is no longer assigned to anyone.`;
+    const toNew: EventMail = { subject: `[Ticket Reassigned] – ${n} assigned to you`, content: MAIL.reassigned(from, to) };
+    await this.fireEvent(clientId, 'TICKET_REASSIGNED', {
+      ticket, actorId,
+      people: {
+        NEW_ASSIGNED_AGENT: asPeople(incoming),
+        ASSIGNED_AGENT: asPeople(incoming),
+        PREVIOUS_AGENT: asPeople(previous.filter((p) => !incoming.some((x) => x.id === p.id))),
+      },
+      mail: {
+        NEW_ASSIGNED_AGENT: toNew,
+        ASSIGNED_AGENT: toNew,
+        PREVIOUS_AGENT: {
+          subject: `[Ticket Reassigned] - ${n}`,
+          content: {
+            intro: incoming.length
+              ? `The following support ticket has been handed over from you to ${to}.`
+              : 'The following support ticket is no longer assigned to you.',
+            fields: ['number', 'subject', 'requestedBy', 'client', 'priority', 'status', 'assignedAgent'],
+          },
+        },
+        client: {
+          subject: `[Ticket Reassigned] - ${n}`,
+          content: incoming.length
+            ? {
+                ...MAIL.accepted(),
+                intro: `Your support ticket has been reassigned to ${to}, who will now take it forward.\n` +
+                  'All previous updates and comments remain on the ticket.',
+              }
+            : {
+                intro: 'Your support ticket is being reassigned within our support team.\nA new agent will be assigned to it shortly.',
+                fields: ['number', 'subject', 'priority', 'status'],
+                outro: 'Our team will keep you informed about further progress.',
+                thanks: 'Thank you for your patience.',
+              },
+        },
+        staff: {
+          subject: incoming.length ? `[Ticket Reassigned] - ${n} assigned to ${to}` : `[Ticket Unassigned] - ${n}`,
+          content: {
+            intro: incoming.length
+              ? `The following support ticket has been reassigned from ${from} to ${to}.`
+              : `The following support ticket is no longer assigned to anyone${from ? ` (previously ${from})` : ''} and needs an agent.`,
+            fields: [
+              'number', 'subject', 'requestedBy', 'client', 'priority', 'status',
+              ...(handover ? [['Previous Assigned Agent', from] as [string, string]] : []),
+              'assignedAgent', 'assignedTeam', 'dueDate',
+            ],
+            outro: incoming.length ? undefined : 'Please assign an agent to the ticket through the ticketing portal.',
+          },
+        },
+      },
+      bell: {
+        NEW_ASSIGNED_AGENT: toAgent,
+        ASSIGNED_AGENT: toAgent,
+        PREVIOUS_AGENT: {
+          type: 'TICKET_UNASSIGNED', title: 'Ticket reassigned',
+          body: incoming.length ? `${label} has been handed over to ${to}.` : `${label} is no longer assigned to you.`,
+        },
+        PROJECT_MANAGER: { type: 'PM_TICKET_ASSIGNED', title: 'Ticket assigned', body: `${label} · ${incoming.length ? `to ${to}` : 'now unassigned'}` },
+        client: { type: 'TICKET_REASSIGNED', title: incoming.length ? 'Ticket reassigned' : 'Ticket unassigned', body: summary },
+        staff: { type: 'TICKET_REASSIGNED', title: incoming.length ? 'Ticket reassigned' : 'Ticket unassigned', body: summary },
+      },
+    });
   }
 
   /**
@@ -515,11 +779,17 @@ export class TicketsService {
       });
       await this.mailEach(
         clientId,
+        ticket,
         admins,
-        `[${ticket.ticketNumber}] ${templateName} awaiting your approval`,
-        `${templateName} awaiting your approval`,
-        `${esc(who)} raised <strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong>${esc(forWhom)}.${esc(forwarded)}` +
-          `<br/><br/>Nobody can be assigned or work on it until you approve it. You'll find it under <strong>Awaiting approval</strong> on the ticket list.`,
+        `[Approval Required] - ${ticket.ticketNumber}`,
+        {
+          intro: `${who} has raised the following ${templateName}${forWhom}, which requires your approval.${forwarded}\n` +
+            'No agent can be assigned and no work can begin on it until it is approved.',
+          fields: ['number', 'subject', 'requestedBy', 'client', 'category', 'priority', 'status', 'createdDate'],
+          description: true,
+          outro: 'Please review the request under Awaiting approval on the ticket list and approve or reject it. The requester will be informed of your decision.',
+          linkLabel: 'Review Request',
+        },
         `the approval request for ${ticket.ticketNumber}`,
       );
     } catch (err) {
@@ -562,11 +832,17 @@ export class TicketsService {
       if (withEmail) {
         await this.mailEach(
           clientId,
+          ticket,
           companyAdmins,
-          `[${ticket.ticketNumber}] ${templateName} awaiting your approval`,
-          `${templateName} awaiting your approval`,
-          `${esc(who)} raised <strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong>.` +
-            `<br/><br/>It goes to your service provider only once you approve it. You'll find it under <strong>Awaiting approval</strong> on your ticket list.`,
+          `[Approval Required] - ${ticket.ticketNumber}`,
+          {
+            intro: `${who} has raised the following ${templateName}, which requires your approval.\n` +
+              'It will be sent to your service provider only once you approve it.',
+            fields: ['number', 'subject', 'requestedBy', 'department', 'category', 'priority', 'status', 'createdDate'],
+            description: true,
+            outro: `Please review the request under Awaiting approval on your ticket list and approve or reject it. ${who} will be informed of your decision.`,
+            linkLabel: 'Review Request',
+          },
           `the customer approval request for ${ticket.ticketNumber}`,
         );
       }
@@ -586,91 +862,55 @@ export class TicketsService {
    * Recipients, wording and the separate client/provider sends are unchanged.
    */
   private mailQueue: Promise<void> = Promise.resolve();
-  private queueMail(message: Parameters<MailerService['sendMail']>[0], clientId: string): Promise<void> {
+  /**
+   * The CC line of a ticket email, once per email event: a caller that mails
+   * one event to several people one-by-one passes these for the first send
+   * only. `helpdesk` (default on) CCs the organization's helpdesk email
+   * (`Client.helpdeskEmail`); `critical` CCs the critical ticket admin
+   * (`Client.criticalTicketEmail`, when `criticalTicketAlerts` is on) on an
+   * email about a Critical ticket — a copy of the ticket email, never a
+   * separate alert (team lead's request).
+   */
+  private queueMail(
+    message: Parameters<MailerService['sendMail']>[0],
+    clientId: string,
+    opts: { helpdesk?: boolean; critical?: boolean } = {},
+  ): Promise<void> {
     this.mailQueue = this.mailQueue
-      .then(() => this.mailer.sendMail(message, clientId))
+      .then(async () => {
+        const cc = await this.ccFor(clientId, message.to, !!opts.helpdesk, !!opts.critical);
+        return this.mailer.sendMail(cc ? { ...message, cc } : message, clientId);
+      })
       .then(
         () => undefined,
         (err) => this.logger.error(`Failed to send "${message.subject}"`, err instanceof Error ? err.stack : String(err)),
       );
     return Promise.resolve();
   }
-  /** Resolves once every queued email has been handed to the mail server (tests). */
-  flushMail() {
-    return this.mailQueue;
-  }
-
-  /** Whether a priority value means Critical — by the tenant's own label, so a renamed value still counts. */
-  private async isCriticalPriority(clientId: string, value?: string | null) {
-    if (!value) return false;
-    if (value.trim().toLowerCase() === 'critical') return true;
-    const opt = await this.prisma.picklistOption.findFirst({
-      where: { clientId, listKey: 'priority', value },
-      select: { label: true },
-    });
-    return (opt?.label ?? '').trim().toLowerCase() === 'critical';
-  }
-
-  /**
-   * Email the organization's critical ticket admin about a Critical ticket
-   * (Organization screen: `Client.criticalTicketEmail`, switched on by
-   * `criticalTicketAlerts`; client request). Called when a ticket reaches the
-   * provider — on creation, or on its company admin's approval for an employee's
-   * — and when one is raised to Critical. Queued like every ticket email, so it
-   * never holds up the save. Never throws.
-   */
-  private async alertCriticalTicket(clientId: string, ticketId: string, how: 'raised' | 'raised to Critical') {
+  /** The addresses to CC, minus any already a `To:` of this send; null when none. */
+  private async ccFor(clientId: string, to: string, helpdesk: boolean, critical: boolean): Promise<string | null> {
+    if (!helpdesk && !critical) return null;
     try {
       const org = await this.prisma.client.findUnique({
         where: { id: clientId },
-        select: { name: true, criticalTicketAlerts: true, criticalTicketEmail: true },
+        select: { helpdeskEmail: true, criticalTicketAlerts: true, criticalTicketEmail: true },
       });
-      const to = org?.criticalTicketEmail?.trim();
-      if (!org?.criticalTicketAlerts || !to || !EMAIL_RE.test(to)) return;
-      const t = await this.prisma.ticket.findUnique({
-        where: { id: ticketId },
-        select: {
-          ticketNumber: true, subject: true, priority: true, ticketStatus: true, createdBy: true,
-          customerName: true, productId: true, moduleId: true,
-          customerCompany: { select: { name: true } },
-        },
-      });
-      if (!t || !(await this.isCriticalPriority(clientId, t.priority))) return;
-      if (!(await this.mailer.isConfigured(clientId))) {
-        this.logger.warn(`SMTP not configured — critical ticket alert for ${t.ticketNumber} not sent`);
-        return;
-      }
-      const [raiser, product, module] = await Promise.all([
-        t.createdBy ? this.prisma.user.findUnique({ where: { id: t.createdBy }, select: { username: true, name: true } }) : null,
-        t.productId ? this.prisma.product.findUnique({ where: { id: t.productId }, select: { name: true } }) : null,
-        t.moduleId ? this.prisma.productModule.findUnique({ where: { id: t.moduleId }, select: { name: true } }) : null,
-      ]);
-      const forWhom = t.customerCompany?.name ?? t.customerName ?? `Internal Ticket / ${org.name}`;
-      const rows: [string, string | null][] = [
-        ['Ticket', `${t.ticketNumber} · ${t.subject}`],
-        ['Client', forWhom],
-        ['Raised by', raiser ? displayName(raiser) : null],
-        ['Product', [product?.name, module?.name].filter(Boolean).join(' · ') || null],
-        ['Status', await this.statusDisplay(clientId, t.ticketStatus)],
-      ];
-      const table = rows
-        .filter(([, v]) => v)
-        .map(([k, v]) => `<tr><td style="padding:4px 12px 4px 0;color:#6b7280">${esc(k)}</td><td style="padding:4px 0"><strong>${esc(v)}</strong></td></tr>`)
-        .join('');
-      const lead = how === 'raised' ? 'A Critical ticket has been raised.' : 'A ticket has been raised to Critical priority.';
-      const subject = `[${t.ticketNumber}] Critical ticket${how === 'raised' ? '' : ' (priority raised)'}: ${t.subject}`;
-      await this.queueMail(
-        {
-          to,
-          subject,
-          html: reassignmentHtml('Critical ticket', null, `${lead}<br/><br/><table>${table}</table>`),
-          text: [lead, '', ...rows.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`)].join('\n'),
-        },
-        clientId,
-      );
-    } catch (err) {
-      this.logger.error('Failed to send the critical ticket alert', err instanceof Error ? err.stack : String(err));
+      const already = new Set(to.split(',').map((a) => a.trim().toLowerCase()));
+      const cc = [
+        helpdesk ? org?.helpdeskEmail : null,
+        critical && org?.criticalTicketAlerts ? org.criticalTicketEmail : null,
+      ]
+        .map((a) => a?.trim().toLowerCase())
+        .filter((a): a is string => !!a && EMAIL_RE.test(a) && !already.has(a));
+      return [...new Set(cc)].join(', ') || null;
+    } catch {
+      return null; // a CC lookup must never cost the email itself
     }
+  }
+
+  /** Resolves once every queued email has been handed to the mail server (tests). */
+  flushMail() {
+    return this.mailQueue;
   }
 
   /** Whether a customer company has an active admin to approve its employees' tickets. */
@@ -697,10 +937,10 @@ export class TicketsService {
    */
   private async mailEach(
     clientId: string,
+    ticket: EmailTicket,
     recipients: { email: string | null; username?: string | null; name?: string | null }[],
     subject: string,
-    heading: string,
-    bodyHtml: string,
+    content: TicketEmailContent,
     context: string,
   ) {
     try {
@@ -716,13 +956,12 @@ export class TicketsService {
         this.logger.warn(`SMTP not configured — ${context} not emailed`);
         return;
       }
-      const text = `${subject}\n\n${htmlToText(bodyHtml)}`;
-      for (const r of list) {
+      // One lookup per email event: every recipient reads the same facts.
+      const facts = await this.ticketEmailFacts(clientId, ticket);
+      for (const [i, r] of list.entries()) {
+        const { html, text } = renderTicketEmail(facts, content, displayName(r) || null);
         await this
-          .queueMail(
-            { to: r.email!.trim(), subject, html: reassignmentHtml(heading, esc(displayName(r)) || 'there', bodyHtml), text },
-            clientId,
-          )
+          .queueMail({ to: r.email!.trim(), subject, html, text }, clientId, { critical: i === 0 && !!facts.isCritical })
           .catch((err) => this.logger.error(`Failed to email ${context}`, err instanceof Error ? err.stack : String(err)));
       }
     } catch (err) {
@@ -730,55 +969,200 @@ export class TicketsService {
     }
   }
 
-  private async emitTicketNotifications(p: {
-    clientId: string;
-    ticketId: string;
-    ticketNumber: string;
-    subject: string;
-    creatorUserId: string;
-    assignedConsultantId: string | null;
-    skipAdmins?: boolean;
-    /** Waiting on the raiser's own company admin (PENDING_CUSTOMER). */
-    heldForCustomerAdmin?: boolean;
-  }) {
-    const label = `${p.ticketNumber} — ${p.subject}`;
+  /**
+   * One of the twelve ticket events (Email Configuration). Who hears of it, and
+   * whether by email, bell or both, is the tenant's `NotificationRule` rows for
+   * that event — nothing here names a recipient. The call site supplies the
+   * wording per role or audience (`client` / `agent` / `staff`); a recipient an
+   * admin added for whom no wording was written gets a plain notice instead.
+   * Bells first, then one email per address, client sends first; the helpdesk
+   * address (when a row names it) is CC'd on the first, or emailed on its own
+   * when nobody else is. Returns the users reached. Never throws.
+   */
+  private async fireEvent(clientId: string, event: NotificationEvent, ctx: EventContext): Promise<Set<string>> {
+    const reached = new Set<string>();
+    const t = ctx.ticket;
     try {
-      // Acknowledge the customer who raised it. An employee's ticket is not
-      // "received" yet — it waits for their company admin (client request), and
-      // the "received" bell comes on that approval (`customerApprove`).
-      await this.notifications.notify(
-        p.heldForCustomerAdmin
-          ? {
-              clientId: p.clientId, userId: p.creatorUserId, type: 'TICKET_SENT_FOR_APPROVAL', ticketId: p.ticketId,
-              title: 'Sent for approval',
-              body: `Your ticket ${p.ticketNumber} has been sent to your company admin for approval.`,
-            }
-          : {
-              clientId: p.clientId, userId: p.creatorUserId, type: 'TICKET_ACK', ticketId: p.ticketId,
-              title: 'Ticket received',
-              body: `We've received your ticket ${p.ticketNumber} and will get back to you shortly.`,
-            },
-      );
-      // Alert every provider admin.
-      if (!p.skipAdmins) {
-        const admins = await this.prisma.user.findMany({
-          where: { clientId: p.clientId, isActive: true, userRoles: { some: { role: { name: 'Admin' } } } },
-          select: { id: true },
-        });
-        await this.notifications.notifyMany(admins.map((a) => a.id), {
-          clientId: p.clientId, type: 'TICKET_CREATED', ticketId: p.ticketId,
-          title: 'New ticket created', body: `New ticket ${label}`,
-        });
+      const rows = await this.notificationRules.forEvent(clientId, event);
+      if (!rows.length) return reached;
+      const people: Partial<Record<PersonRole, NotifyPerson[]>> = {};
+      for (const role of rolesNamed(rows)) {
+        if (ctx.skipRoles?.includes(role)) continue;
+        people[role] = ctx.people?.[role] ?? (await this.peopleFor(clientId, role, event, t));
       }
-      // Alert the assigned consultant.
-      if (p.assignedConsultantId) {
-        await this.notifications.notify({
-          clientId: p.clientId, userId: p.assignedConsultantId, type: 'TICKET_ASSIGNED', ticketId: p.ticketId,
-          title: 'Ticket assigned to you', body: `You've been assigned ${label}`,
-        });
+      const skip = new Set((ctx.skipUserIds ?? []).filter((x): x is string => !!x));
+      if (ctx.actorId) {
+        const staff = await this.prisma.user.findFirst({ where: { id: ctx.actorId, customerCompanyId: null }, select: { id: true } });
+        if (staff) skip.add(ctx.actorId);
+      }
+      const { deliveries, helpdesk } = planDelivery(rows, people, (p) => !!p.id && skip.has(p.id));
+      const pick = <T>(map: Partial<Record<PersonRole | Audience, T>> | undefined, d: Delivery) => map?.[d.role] ?? map?.[d.audience];
+
+      for (const d of deliveries) {
+        if (!d.bell || !d.person.id) continue;
+        const b = pick(ctx.bell, d) ?? fallbackBell(event, `${t.ticketNumber} — ${t.subject}`, ctx.detail);
+        try {
+          await this.notifications.notify({ clientId, userId: d.person.id, ticketId: t.id, ...b });
+          reached.add(d.person.id);
+        } catch (err) {
+          this.logger.error(`Failed to bell ${event} for ${t.ticketNumber}`, err instanceof Error ? err.stack : String(err));
+        }
+      }
+      if (ctx.emailOff) return reached;
+
+      const mails = deliveries.filter((d) => d.email && !!d.person.email && EMAIL_RE.test(d.person.email.trim()));
+      const helpdeskTo = helpdesk ? await this.helpdeskAddress(clientId) : null;
+      if (!mails.length && !helpdeskTo) return reached;
+      if (!(await this.mailer.isConfigured(clientId))) {
+        this.logger.warn(`SMTP not configured — ${event} for ${t.ticketNumber} not emailed`);
+        return reached;
+      }
+      // One lookup per event: every recipient reads the ticket as it now stands.
+      const facts = await this.ticketEmailFacts(clientId, t);
+      const seen = new Set<string>();
+      let first = true;
+      for (const d of mails) {
+        const to = d.person.email!.trim();
+        if (seen.has(to.toLowerCase())) continue;
+        seen.add(to.toLowerCase());
+        const m = pick(ctx.mail, d) ?? fallbackMail(event, d.audience, t.ticketNumber);
+        const { html, text } = renderTicketEmail(facts, m.content, displayName(d.person) || null);
+        await this.queueMail(
+          { to, subject: m.subject, html, text }, clientId,
+          { helpdesk: first && !!helpdeskTo, critical: first && !!facts.isCritical },
+        );
+        first = false;
+        if (d.person.id) reached.add(d.person.id);
+      }
+      if (first && helpdeskTo) {
+        const m = ctx.mail?.client ?? ctx.mail?.staff ?? ctx.mail?.agent ?? fallbackMail(event, 'staff', t.ticketNumber);
+        const { html, text } = renderTicketEmail(facts, m.content, null);
+        await this.queueMail({ to: helpdeskTo, subject: m.subject, html, text }, clientId, { critical: !!facts.isCritical });
       }
     } catch (err) {
-      this.logger.error('Failed to emit ticket notifications', err instanceof Error ? err.stack : String(err));
+      this.logger.error(`Failed to send ${event} for ${t.ticketNumber}`, err instanceof Error ? err.stack : String(err));
+    }
+    return reached;
+  }
+
+  /** The people one recipient role names on this ticket. */
+  private async peopleFor(clientId: string, role: PersonRole, event: NotificationEvent, t: NotifyTicket): Promise<NotifyPerson[]> {
+    const pick = { id: true, username: true, name: true, email: true } as const;
+    switch (role) {
+      case 'REQUESTOR': {
+        const u = t.requestorUserId
+          ? await this.prisma.user.findUnique({ where: { id: t.requestorUserId }, select: { ...pick, isActive: true } })
+          : null;
+        if (u?.isActive) return [{ id: u.id, email: u.email || t.requestorEmail, name: u.name ?? t.requestorName, username: u.username }];
+        const email = t.requestorEmail || u?.email || null;
+        return email ? [{ id: null, email, name: t.requestorName }] : [];
+      }
+      case 'CLIENT_ADMIN':
+        return t.customerCompanyId
+          ? this.prisma.user.findMany({
+              where: { clientId, customerCompanyId: t.customerCompanyId, isActive: true, userRoles: { some: { role: { name: 'CustomerAdmin' } } } },
+              select: pick,
+            })
+          : [];
+      case 'ASSIGNED_AGENT':
+      case 'NEW_ASSIGNED_AGENT': {
+        const holders = await this.prisma.ticketTechnician.findMany({ where: { ticketId: t.id }, select: { userId: true } });
+        const ids = new Set(holders.map((h) => h.userId));
+        // Once it has been resolved, whoever resolved it worked it too.
+        if ((event === 'TICKET_REOPENED' || event === 'TICKET_CLOSED') && t.resolvedById) ids.add(t.resolvedById);
+        return ids.size
+          ? this.prisma.user.findMany({ where: { id: { in: [...ids] }, isActive: true, customerCompanyId: null }, select: pick })
+          : [];
+      }
+      case 'PREVIOUS_AGENT':
+        return []; // only a reassignment knows, and it passes them in
+      case 'PROJECT_MANAGER':
+      case 'SUPPORT_MANAGER': {
+        const pmId = await this.reopenApproverFor(clientId, t);
+        const pm = pmId ? await this.prisma.user.findUnique({ where: { id: pmId }, select: pick }) : null;
+        if (pm) return [pm];
+        // The support manager is the client product's project manager, else the Admins.
+        return role === 'SUPPORT_MANAGER' ? this.tenantAdmins(clientId) : [];
+      }
+      case 'TENANT_ADMINS':
+        return this.tenantAdmins(clientId);
+    }
+  }
+
+  /** The Organization screen's helpdesk address, when it is a usable one. */
+  private async helpdeskAddress(clientId: string): Promise<string | null> {
+    const org = await this.prisma.client.findUnique({ where: { id: clientId }, select: { helpdeskEmail: true } });
+    const a = org?.helpdeskEmail?.trim().toLowerCase();
+    return a && EMAIL_RE.test(a) ? a : null;
+  }
+
+  /**
+   * The facts the client email format shows for a ticket (`ticket-email.ts`):
+   * picklist *labels* rather than raw values, the tenant's date format, the
+   * agent by full name. Read when the email is written, so it shows the ticket
+   * as it stands after the event. Never throws — a failed lookup still sends
+   * the email, with just the number and subject.
+   */
+  private async ticketEmailFacts(clientId: string, t: EmailTicket): Promise<TicketEmailFacts> {
+    const base: TicketEmailFacts = {
+      ticketId: t.id, ticketNumber: t.ticketNumber, subject: t.subject,
+      portalUrl: process.env.FRONTEND_URL ?? null,
+    };
+    try {
+      const [row, org] = await Promise.all([
+        this.prisma.ticket.findUnique({
+          where: { id: t.id },
+          select: {
+            ticketNumber: true, subject: true, description: true, priority: true, ticketStatus: true,
+            ticketCategory: true, subCategory: true, department: true, requestorName: true, customerName: true,
+            createdAt: true, productId: true, moduleId: true, consultantType: true,
+            dueDate: true, resolvedAt: true, closedDate: true, resolution: true,
+            customerCompany: { select: { name: true } },
+            technicians: { select: { user: { select: { username: true, name: true } } } },
+          },
+        }),
+        this.prisma.client.findUnique({ where: { id: clientId }, select: { name: true, dateFormat: true } }),
+      ]);
+      base.orgName = org?.name ?? null;
+      if (!row) return base;
+      const keys = ['priority', 'ticketStatus', 'ticketCategory', 'subCategory', 'department'];
+      const [options, product, module] = await Promise.all([
+        this.prisma.picklistOption.findMany({ where: { clientId, listKey: { in: keys } }, select: { listKey: true, value: true, label: true } }),
+        row.productId ? this.prisma.product.findUnique({ where: { id: row.productId }, select: { name: true } }) : null,
+        row.moduleId ? this.prisma.productModule.findUnique({ where: { id: row.moduleId }, select: { name: true } }) : null,
+      ]);
+      const label = (listKey: string, value: string | null | undefined) =>
+        value ? (options.find((o) => o.listKey === listKey && o.value === value)?.label ?? value) : null;
+      const agents = row.technicians.map((x) => displayName(x.user)).filter(Boolean).join(', ');
+      const track = issueTypeLabel(row.consultantType);
+      const priority = label('priority', row.priority);
+      const date = (d: Date | null | undefined) => formatTenantDate(d, org?.dateFormat);
+      return {
+        ...base,
+        ticketNumber: row.ticketNumber,
+        subject: row.subject,
+        description: row.description,
+        resolution: row.resolution,
+        priority,
+        isCritical: [row.priority, priority].some((v) => v?.trim().toLowerCase() === 'critical'),
+        status: label('ticketStatus', row.ticketStatus),
+        category: label('ticketCategory', row.ticketCategory),
+        subCategory: label('subCategory', row.subCategory),
+        department: label('department', row.department),
+        client: row.customerCompany?.name ?? row.customerName ?? (org?.name ? `Internal Ticket / ${org.name}` : null),
+        product: [product?.name, module?.name].filter(Boolean).join(' · ') || null,
+        // The consultant group it is routed through — this platform's "support team".
+        assignedTeam: [product?.name, module?.name, track].filter(Boolean).join(' · ') || null,
+        createdDate: date(row.createdAt),
+        dueDate: date(row.dueDate),
+        resolvedDate: date(row.resolvedAt),
+        closedDate: date(row.closedDate),
+        requestedBy: row.requestorName,
+        assignedAgent: agents || null,
+      };
+    } catch (err) {
+      this.logger.warn(`Could not load the email details of ${t.ticketNumber}: ${err instanceof Error ? err.message : String(err)}`);
+      return base;
     }
   }
 
@@ -790,7 +1174,7 @@ export class TicketsService {
    */
   private async visibleTicketWhere(clientId: string, viewer: TicketViewer): Promise<Prisma.TicketWhereInput> {
     // A project manager also sees every ticket on the client products they
-    // manage — they are belled about each one (see `bellProjectManager`).
+    // manage — they are notified of them (the PROJECT_MANAGER recipient of the Email Configuration).
     const managed = !isCustomerSide(viewer) && !isAdmin(viewer) ? await this.managedProducts(clientId, viewer.id) : [];
     return {
       clientId,
@@ -831,7 +1215,7 @@ export class TicketsService {
   }
 
   async findAll(clientId: string, viewer: TicketViewer) {
-    return this.prisma.ticket.findMany({
+    const tickets = await this.prisma.ticket.findMany({
       // Non-admins see tickets assigned to them, plus any they've been asked to approve.
       where: await this.visibleTicketWhere(clientId, viewer),
       orderBy: { createdAt: 'desc' },
@@ -843,6 +1227,14 @@ export class TicketsService {
         customerCompany: { select: { id: true, name: true } },
       },
     });
+    // `managedByMe`: the viewer is the project manager of this ticket's client
+    // product — the list then offers them its assign menu, as it does an Admin.
+    const managed = !isCustomerSide(viewer) && !isAdmin(viewer) ? await this.managedProducts(clientId, viewer.id) : [];
+    const keys = new Set(managed.map((m) => `${m.customerCompanyId}|${m.productId}`));
+    return tickets.map((t) => ({
+      ...t,
+      managedByMe: !!t.customerCompanyId && !!t.productId && keys.has(`${t.customerCompanyId}|${t.productId}`),
+    }));
   }
 
   /**
@@ -941,7 +1333,7 @@ export class TicketsService {
       customerCompanyName: t.customerCompany?.name ?? t.customerName ?? (providerName ? `Internal Ticket / ${providerName}` : 'Internal Ticket'),
       productName: t.productId ? productNames.get(t.productId) ?? '' : '',
       moduleName: t.moduleId ? moduleNames.get(t.moduleId) ?? '' : '',
-      consultantType: t.consultantType,
+      consultantType: issueTypeLabel(t.consultantType),
       // A ticket holds at most one agent; joined anyway so a legacy row that
       // still carries two is reported rather than half-shown.
       assignedTo: t.technicians.map((x) => displayName(x.user)).join('; ') || 'Unassigned',
@@ -1161,9 +1553,17 @@ export class TicketsService {
     // rather than quoting the tenant's raw picklist codes at the reader.
     let fromLabel = ticket.ticketStatus;
     let toLabel = dto.ticketStatus ?? ticket.ticketStatus;
+    // The new status's meaning, for the status emails after the write.
+    let movedTo: string | null = null;
     if (dto.ticketStatus && dto.ticketStatus !== ticket.ticketStatus) {
       await this.assertNotClosed(ticket, clientId, viewer);
       const label = await this.statusLabel(clientId, dto.ticketStatus);
+      movedTo = label;
+      // Asking a client for more information says what is needed — it is
+      // emailed to them and posted into the ticket's chat.
+      if (label === AWAITING_CLIENT_STATUS && ticket.customerCompanyId && !dto.requestedInformation?.trim()) {
+        throw new BadRequestException('Say what information you need from the client — it is emailed to them');
+      }
       statusChangedAt = new Date();
       [fromLabel, toLabel] = await Promise.all([
         this.statusDisplay(clientId, ticket.ticketStatus),
@@ -1208,10 +1608,19 @@ export class TicketsService {
       });
       if (sla) {
         slaHours = sla.resolutionHours;
+        // Time already spent paused (waiting on the client) does not count.
         slaDue = new Date(
-          new Date(ticket.createdAt).getTime() + sla.resolutionHours * 3600 * 1000,
+          new Date(ticket.createdAt).getTime() + sla.resolutionHours * 3600 * 1000 + ticket.slaPausedSeconds * 1000,
         );
       }
+    }
+    // The SLA clock pauses while the ticket waits on the client and resumes —
+    // due date pushed back by the wait — when it moves on.
+    let slaPause: Prisma.TicketUpdateInput = {};
+    if (movedTo === AWAITING_CLIENT_STATUS && !ticket.slaPausedAt && (slaDue ?? ticket.dueDate)) {
+      slaPause = { slaPausedAt: new Date() };
+    } else if (movedTo && movedTo !== AWAITING_CLIENT_STATUS && ticket.slaPausedAt) {
+      slaPause = this.slaResume({ ...ticket, dueDate: slaDue ?? ticket.dueDate });
     }
 
     const updated = await this.prisma.ticket.update({
@@ -1230,6 +1639,7 @@ export class TicketsService {
         closedDate,
         resolvedAt,
         resolvedById,
+        ...slaPause,
         ...(mergedCustomFields !== undefined && {
           customFields: mergedCustomFields as Prisma.InputJsonValue,
         }),
@@ -1253,7 +1663,13 @@ export class TicketsService {
       });
       if (closedDate && !ticket.closedDate) {
         await this.activity.log({ ticketId: id, actorUserId: actorId, type: 'CLOSED', summary: 'Ticket closed' });
-        await this.bellProjectManager(clientId, updated, 'CLOSED', null, [actorId]);
+        await this.notifyClosed(clientId, { ...ticket, ...updated }, actorId, 'STAFF');
+      }
+      if (movedTo === IN_PROGRESS_STATUS) {
+        await this.notifyInProgress(clientId, ticket, actorId);
+      }
+      if (movedTo === AWAITING_CLIENT_STATUS && ticket.customerCompanyId) {
+        await this.requestClientInformation(clientId, ticket, dto.requestedInformation!.trim(), actorId);
       }
     }
     if (dto.priority && dto.priority !== ticket.priority) {
@@ -1264,22 +1680,303 @@ export class TicketsService {
         summary: `Priority changed to ${dto.priority}`,
         meta: { from: ticket.priority, to: dto.priority },
       });
-      // Raised *to* Critical: the critical ticket admin hears of it as of a new one.
-      if (
-        ticket.approvalStatus !== 'PENDING_CUSTOMER'
-        && !(await this.isCriticalPriority(clientId, ticket.priority))
-      ) {
-        await this.alertCriticalTicket(clientId, id, 'raised to Critical');
-      }
     }
     // Only on the transition into Resolved — re-saving a resolved ticket must
     // not notify the client twice.
     if (nowResolved) {
       await this.activity.log({ ticketId: id, actorUserId: actorId, type: 'RESOLVED', summary: 'Ticket resolved' });
-      await this.notifyResolved(updated, clientId);
-      await this.bellProjectManager(clientId, updated, 'RESOLVED', null, [actorId]);
+      await this.notifyResolved(updated, clientId, actorId);
     }
     return updated;
+  }
+
+  /**
+   * 5. Additional Information Requested. A client ticket moved to "Awaiting
+   * End-user Response" carries what is needed: it goes into the ticket's chat
+   * (so the client sees it in the portal and can answer there), into History,
+   * to the requester's bell, and to them by email. Never throws.
+   */
+  private async requestClientInformation(
+    clientId: string,
+    ticket: NotifyTicket,
+    info: string,
+    actorId: string,
+  ) {
+    try {
+      const actor = await this.prisma.user.findUnique({ where: { id: actorId }, select: { username: true, name: true } });
+      await this.prisma.ticketMessage.create({
+        data: {
+          ticketId: ticket.id, channel: 'INTERNAL', direction: 'OUTBOUND', isInternal: true,
+          authorUserId: actorId, authorName: actor ? displayName(actor) : null,
+          body: `Additional information required:\n${info}`,
+        },
+      });
+      await this.activity.log({
+        ticketId: ticket.id, actorUserId: actorId, type: 'INFO_REQUESTED',
+        summary: `Information requested from the client: ${info}`,
+      });
+      await this.fireEvent(clientId, 'INFO_REQUESTED', {
+        ticket, actorId,
+        mail: {
+          client: {
+            subject: `[Action Required] Additional Information Required - ${ticket.ticketNumber}`,
+            content: MAIL.infoRequested(info),
+          },
+        },
+        bell: {
+          client: {
+            type: 'TICKET_INFO_REQUESTED', link: `/tickets/${ticket.id}?tab=conversation`,
+            title: `Information needed · ${ticket.ticketNumber}`,
+            body: info.length > 140 ? `${info.slice(0, 140)}…` : info,
+          },
+        },
+        detail: 'waiting on the requester',
+      });
+    } catch (err) {
+      this.logger.error(`Failed to request information on ${ticket.ticketNumber}`, err instanceof Error ? err.stack : String(err));
+    }
+  }
+
+  /**
+   * 6. Requestor Responded. Called by the chat, an emailed reply and the
+   * comments thread whenever the client writes on their ticket. It acts only
+   * while the ticket is "Awaiting End-user Response": the ticket goes back to
+   * In Progress (so SLA escalation watches it again), and — when `email` — the
+   * assigned agent gets the client's response. Returns whether it acted, so a
+   * caller can skip its own email to the agent. Never throws.
+   */
+  async requesterResponded(
+    ticketId: string,
+    clientId: string,
+    response: string,
+    opts: { email: boolean; actorUserId?: string | null },
+  ): Promise<boolean> {
+    try {
+      const t = await this.prisma.ticket.findFirst({
+        where: { id: ticketId, clientId },
+        select: {
+          id: true, ticketNumber: true, subject: true, ticketStatus: true, customerCompanyId: true, productId: true,
+          requestorUserId: true, requestorEmail: true, requestorName: true,
+          dueDate: true, expectedResolutionDate: true, slaPausedAt: true, slaPausedSeconds: true, slaEscalatedFor: true,
+        },
+      });
+      if (!t?.customerCompanyId) return false;
+      if ((await this.statusLabel(clientId, t.ticketStatus)) !== AWAITING_CLIENT_STATUS) return false;
+      const inProgress = await this.prisma.picklistOption.findFirst({
+        where: { clientId, listKey: 'ticketStatus', isActive: true, label: { equals: 'In Progress', mode: 'insensitive' } },
+        select: { value: true },
+      });
+      if (inProgress) {
+        const from = await this.statusDisplay(clientId, t.ticketStatus);
+        await this.prisma.ticket.update({
+          where: { id: t.id },
+          // Back to work: the SLA clock paused while waiting resumes.
+          data: { ticketStatus: inProgress.value, statusChangedAt: new Date(), ...this.slaResume(t) },
+        });
+        await this.activity.log({
+          ticketId: t.id, actorUserId: opts.actorUserId ?? null, type: 'STATUS_CHANGED',
+          summary: `Status changed from ${from} to ${await this.statusDisplay(clientId, inProgress.value)} — the client responded`,
+          meta: { from: t.ticketStatus, to: inProgress.value, auto: true },
+        });
+      }
+      // When the client replied by email, that reply has already reached the agent.
+      const excerpt = response.trim();
+      await this.fireEvent(clientId, 'REQUESTER_RESPONDED', {
+        ticket: t, actorId: opts.actorUserId, emailOff: !opts.email,
+        mail: {
+          agent: {
+            subject: `[Client Response] – Requestor responded for ${t.ticketNumber}`,
+            content: MAIL.requesterResponded(excerpt),
+          },
+        },
+        bell: {
+          agent: {
+            type: 'TICKET_REQUESTER_RESPONDED', title: `Client responded · ${t.ticketNumber}`,
+            body: excerpt.length > 140 ? `${excerpt.slice(0, 140)}…` : excerpt,
+          },
+        },
+      });
+      return true;
+    } catch (err) {
+      this.logger.error(`Failed to handle a client response on ${ticketId}`, err instanceof Error ? err.stack : String(err));
+      return false;
+    }
+  }
+
+  /**
+   * The writes that end an SLA pause (a ticket leaving "Awaiting End-user
+   * Response"): the due date — and an expected resolution date that tracks it —
+   * move later by the time spent waiting, which is added to the running total.
+   * A ticket already escalated stays escalated: `slaEscalatedFor` follows the
+   * shifted date, so the move alone never reads as a new breach. Empty when the
+   * clock is not paused.
+   */
+  private slaResume(
+    t: {
+      slaPausedAt: Date | null; slaPausedSeconds: number; dueDate: Date | null;
+      expectedResolutionDate: Date | null; slaEscalatedFor: Date | null;
+    },
+    now = new Date(),
+  ): Prisma.TicketUpdateInput {
+    if (!t.slaPausedAt) return {};
+    const ms = Math.max(0, now.getTime() - t.slaPausedAt.getTime());
+    const shift = (d: Date) => new Date(d.getTime() + ms);
+    const due = t.dueDate;
+    const same = (d: Date | null) => !!d && !!due && d.getTime() === due.getTime();
+    return {
+      slaPausedAt: null,
+      slaPausedSeconds: t.slaPausedSeconds + Math.round(ms / 1000),
+      ...(due && { dueDate: shift(due) }),
+      ...(due && same(t.expectedResolutionDate) && { expectedResolutionDate: shift(due) }),
+      ...(due && same(t.slaEscalatedFor) && { slaEscalatedFor: shift(due) }),
+    };
+  }
+
+  /** 7. Ticket In Progress — staff moved the ticket to In Progress. Never throws. */
+  private async notifyInProgress(clientId: string, ticket: NotifyTicket, actorId: string) {
+    try {
+      await this.fireEvent(clientId, 'TICKET_IN_PROGRESS', {
+        ticket, actorId,
+        mail: {
+          client: {
+            subject: `[In Progress] Your Ticket is Being Worked On - ${ticket.ticketNumber}`,
+            content: MAIL.inProgress(await this.latestStaffUpdate(ticket.id)),
+          },
+        },
+        bell: {
+          client: { type: 'TICKET_IN_PROGRESS', title: 'Ticket in progress', body: `${ticket.ticketNumber} — ${ticket.subject} is being worked on.` },
+        },
+      });
+    } catch (err) {
+      this.logger.error(`Failed to send the in-progress notice for ${ticket.ticketNumber}`, err instanceof Error ? err.stack : String(err));
+    }
+  }
+
+  /** The newest chat message a member of staff wrote on the ticket — its "latest update". */
+  private async latestStaffUpdate(ticketId: string): Promise<string | null> {
+    const recent = await this.prisma.ticketMessage.findMany({
+      where: { ticketId, authorUserId: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      select: { authorUserId: true, body: true },
+    });
+    if (!recent.length) return null;
+    const staff = await this.prisma.user.findMany({
+      where: { id: { in: [...new Set(recent.map((m) => m.authorUserId!))] }, customerCompanyId: null },
+      select: { id: true },
+    });
+    const ids = new Set(staff.map((s) => s.id));
+    return recent.find((m) => ids.has(m.authorUserId!))?.body.trim() || null;
+  }
+
+  /**
+   * 11/12. SLA breach → escalation (hourly, `TicketSlaEscalationService`). An
+   * open, live ticket past its `dueDate` is escalated once — a bell and an email
+   * to the client product's project manager, else the tenant Admins.
+   * `slaEscalatedFor` records the due date that was escalated, so a new due
+   * date (a priority change) arms it again without any writer resetting it.
+   * Skipped: tickets waiting on the client or on hold, a reopened ticket whose
+   * due date had already passed when it was reopened (reopen keeps the old
+   * one), and tickets whose SLA policy has "Escalation enabled" off. The
+   * backlog that was already overdue when this shipped was marked as escalated
+   * by `manual/ticket_sla_escalation.sql`.
+   */
+  async escalateBreachedSla(): Promise<{ escalated: number }> {
+    const now = new Date();
+    let escalated = 0;
+    const clients = await this.prisma.client.findMany({ select: { id: true } });
+    for (const { id: clientId } of clients) {
+      const settled = await this.settledStatusValues(clientId);
+      const overdue = await this.prisma.ticket.findMany({
+        where: {
+          clientId,
+          dueDate: { lt: now },
+          ticketStatus: { notIn: settled },
+          approvalStatus: { in: ['NONE', 'APPROVED'] },
+        },
+        select: {
+          id: true, ticketNumber: true, subject: true, ticketStatus: true, priority: true,
+          dueDate: true, slaEscalatedFor: true, reopenedAt: true, customerCompanyId: true, productId: true,
+          requestorUserId: true, requestorEmail: true, requestorName: true,
+        },
+      });
+      for (const t of overdue) {
+        const due = t.dueDate!;
+        if (t.slaEscalatedFor && t.slaEscalatedFor.getTime() === due.getTime()) continue;
+        if (t.reopenedAt && due <= t.reopenedAt) continue;
+        const label = await this.statusLabel(clientId, t.ticketStatus);
+        if (label === AWAITING_CLIENT_STATUS || label === ON_HOLD_STATUS) continue;
+        if (t.priority) {
+          const policy = await this.prisma.slaPolicy.findFirst({
+            where: { clientId, priority: t.priority, isActive: true },
+            select: { escalationEnabled: true },
+          });
+          if (policy && !policy.escalationEnabled) continue;
+        }
+        // Marked first: a failing email must not repeat the escalation hourly.
+        await this.prisma.ticket.update({ where: { id: t.id }, data: { slaEscalatedFor: due } });
+        await this.escalate(clientId, t, now);
+        escalated++;
+      }
+    }
+    return { escalated };
+  }
+
+  /**
+   * One escalation: History, then 12. Ticket Escalated (to the support manager,
+   * by default) and 11. SLA Breached (to the agent, by default) at the same
+   * moment — whoever the first reached is left out of the second. Who hears of
+   * each is the Email Configuration. Never throws.
+   */
+  private async escalate(
+    clientId: string,
+    t: NotifyTicket & { dueDate: Date | null },
+    now: Date,
+  ) {
+    try {
+      const pmId = await this.reopenApproverFor(clientId, t);
+      const pm = pmId ? await this.prisma.user.findUnique({ where: { id: pmId }, select: { username: true, name: true } }) : null;
+      const escalatedTo = pm ? displayName(pm) : 'the admins';
+      const late = Math.max(0, now.getTime() - (t.dueDate?.getTime() ?? now.getTime()));
+      const days = Math.floor(late / DAY_MS);
+      const hours = Math.floor((late % DAY_MS) / 3_600_000);
+      const delay = days ? `${days} day${days === 1 ? '' : 's'} ${hours} hour${hours === 1 ? '' : 's'}` : `${Math.max(hours, 1)} hour${hours > 1 ? 's' : ''}`;
+      const org = await this.prisma.client.findUnique({ where: { id: clientId }, select: { dateFormat: true } });
+      await this.activity.log({
+        ticketId: t.id, type: 'SLA_ESCALATED',
+        summary: `SLA breached — escalated to ${pm ? `${escalatedTo} (project manager)` : 'the admins'}`,
+      });
+      const breachedOn = formatTenantDate(t.dueDate, org?.dateFormat);
+      const remarks = await this.latestStaffUpdate(t.id);
+      const label = `${t.ticketNumber} — ${t.subject}`;
+      const reached = await this.fireEvent(clientId, 'TICKET_ESCALATED', {
+        ticket: t,
+        mail: { staff: { subject: `[Ticket Escalated] - ${t.ticketNumber} SLA breached`, content: MAIL.escalated(breachedOn, delay, remarks) } },
+        bell: {
+          staff: {
+            type: 'TICKET_SLA_ESCALATED', title: `SLA breached · ${t.ticketNumber}`,
+            body: `${label} is ${delay} past its SLA and has been escalated to you.`,
+          },
+        },
+        detail: `${delay} past its SLA`,
+      });
+      await this.fireEvent(clientId, 'SLA_BREACHED', {
+        ticket: t,
+        skipUserIds: [...reached],
+        mail: {
+          agent: { subject: `[SLA Breached] - ${t.ticketNumber}`, content: MAIL.slaBreached(breachedOn, delay, remarks, escalatedTo) },
+        },
+        bell: {
+          agent: {
+            type: 'TICKET_SLA_BREACHED', title: `SLA breached · ${t.ticketNumber}`,
+            body: `${label} is ${delay} past its SLA and has been escalated to ${escalatedTo}.`,
+          },
+        },
+        detail: `${delay} past its SLA`,
+      });
+    } catch (err) {
+      this.logger.error(`Failed to escalate ${t.ticketNumber}`, err instanceof Error ? err.stack : String(err));
+    }
   }
 
   async assignTechnicians(
@@ -1307,17 +2004,19 @@ export class TicketsService {
         'One or more users do not belong to your organization',
       );
     }
-    // Only an agent of this ticket's product/module, or one of the client's own
-    // consultants, may take it (client request) — the same list the Assigned
-    // agent field offers, so the screen and the rule cannot disagree. Clearing
-    // the agent is always allowed.
+    // Only someone on the Assigned agent field's list may take it (client
+    // request) — for a client's ticket that is the client's consultants for the
+    // product, its default consultants and the product's project manager — so
+    // the screen and the rule cannot disagree. Clearing the agent is always allowed.
     if (userIds.length) {
       const allowed = new Set((await this.assignableFor(ticket, clientId)).map((u) => u.id));
       const outside = userIds.filter((uid) => !allowed.has(uid));
       if (outside.length) {
         const who = await this.prisma.user.findMany({ where: { id: { in: outside } }, select: { username: true, name: true } });
         throw new BadRequestException(
-          `${who.map(displayName).join(', ') || 'That agent'} is not set up for this ticket's product/module — add them on the product screen or as one of the client's consultants first.`,
+          ticket.customerCompanyId
+            ? `${who.map(displayName).join(', ') || 'That agent'} is not one of this client's consultants for the product, a default consultant or its project manager — add them on the client's screen first.`
+            : `${who.map(displayName).join(', ') || 'That agent'} is not set up for this ticket's product/module — add them on the product screen first.`,
         );
       }
     }
@@ -1363,12 +2062,7 @@ export class TicketsService {
       previous.length !== incoming.length ||
       previous.some((p) => !incoming.some((n) => n.id === p.id));
     if (changed) {
-      await this.notifyReassignment(ticket, clientId, actorId, previous, incoming);
-      await this.bellProjectManager(
-        clientId, ticket, 'ASSIGNED',
-        incoming.length ? `to ${incoming.map(displayName).join(', ')}` : 'now unassigned',
-        [actorId, ...incoming.map((u) => u.id)],
-      );
+      await this.announceAssignment(clientId, ticket, actorId, previous, incoming);
     }
 
     return this.findOne(id, clientId);
@@ -1413,15 +2107,18 @@ export class TicketsService {
   }
 
   /**
-   * Who the Assigned agent field offers for this ticket (client request): the
-   * agents set for the ticket's module on the product screen — every track,
-   * since a Functional MM agent may take a Technical MM ticket — or, for a
-   * product without modules / a ticket naming no module, the product's own
-   * agents; plus the client's own consultants for that product (this module or
-   * the whole product) and their default consultants. A ticket with no product
-   * offers all staff, as before. Whoever holds the ticket now is always listed,
-   * so the field never shows blank. Active internal staff only, A–Z by name.
-   * `assignTechnicians` refuses anyone outside this list (client request).
+   * Who the Assigned agent field offers for this ticket (client request), in
+   * priority order — never re-sorted A–Z:
+   *   1. the client's own consultants for this product (this module's rows
+   *      first, then the whole-product rows), primary first;
+   *   2. the client's default consultants (contract-level rows), primary first;
+   *   3. the client product's project manager.
+   * The agents on the Products screen are deliberately **not** offered for a
+   * client's ticket. An internal ticket (no client) has none of those, so it
+   * still offers the product/module's own agents; a ticket with no product
+   * offers all staff. Whoever holds the ticket now is always listed (last, if
+   * not already in a tier), so the field never shows blank. Active internal
+   * staff only. `assignTechnicians` refuses anyone outside this list.
    */
   async assignableAgents(id: string, clientId: string, viewer: TicketViewer) {
     return this.assignableFor(await this.findOne(id, clientId, viewer), clientId);
@@ -1434,42 +2131,61 @@ export class TicketsService {
   ) {
     const select = { id: true, username: true, name: true } as const;
     const holders = t.technicians.map((x) => x.user.id);
-    let users: { id: string; username: string; name: string | null }[];
+    const byName = (a: { username: string; name: string | null }, b: { username: string; name: string | null }) =>
+      displayName(a).localeCompare(displayName(b), undefined, { sensitivity: 'base', numeric: true });
     if (!t.productId) {
-      users = await this.prisma.user.findMany({ where: { clientId, isActive: true, customerCompanyId: null }, select });
-    } else {
-      const [catalogue, client] = await Promise.all([
-        t.moduleId
-          ? this.prisma.moduleConsultant.findMany({ where: { moduleId: t.moduleId }, select: { userId: true } })
-          : this.prisma.productConsultant.findMany({ where: { productId: t.productId }, select: { userId: true } }),
-        t.customerCompanyId
-          ? this.prisma.customerConsultant.findMany({
-              where: {
-                clientId,
-                customerCompanyId: t.customerCompanyId,
-                OR: [
-                  { productId: t.productId, moduleId: null },
-                  ...(t.moduleId ? [{ productId: t.productId, moduleId: t.moduleId }] : []),
-                  { productId: null, moduleId: null }, // the client's default consultants
-                ],
-              },
-              select: { userId: true },
-            })
-          : Promise.resolve([] as { userId: string }[]),
-      ]);
-      const ids = [...new Set([...catalogue, ...client].map((r) => r.userId))];
-      users = await this.prisma.user.findMany({
-        where: {
-          clientId,
-          customerCompanyId: null,
-          OR: [{ id: { in: ids }, isActive: true }, { id: { in: holders } }],
-        },
-        select,
-      });
+      const users = await this.prisma.user.findMany({ where: { clientId, isActive: true, customerCompanyId: null }, select });
+      return users.sort(byName);
     }
-    return users.sort((a, b) =>
-      displayName(a).localeCompare(displayName(b), undefined, { sensitivity: 'base', numeric: true }),
-    );
+
+    // Candidate ids in priority order; the first appearance of a person wins.
+    let ordered: string[];
+    if (t.customerCompanyId) {
+      const [rows, cp] = await Promise.all([
+        this.prisma.customerConsultant.findMany({
+          where: {
+            clientId,
+            customerCompanyId: t.customerCompanyId,
+            OR: [
+              { productId: t.productId, moduleId: null },
+              ...(t.moduleId ? [{ productId: t.productId, moduleId: t.moduleId }] : []),
+              { productId: null, moduleId: null }, // the client's default consultants
+            ],
+          },
+          select: { userId: true, productId: true, moduleId: true, isPrimary: true },
+          orderBy: { createdAt: 'asc' },
+        }),
+        this.prisma.customerCompanyProduct.findFirst({
+          where: { customerCompanyId: t.customerCompanyId, productId: t.productId },
+          select: { productManagerId: true },
+        }),
+      ]);
+      const tier = (r: { productId: string | null; moduleId: string | null }) =>
+        !r.productId ? 2 : r.moduleId ? 0 : 1; // module rows · product rows · defaults
+      const sorted = [...rows].sort(
+        (a, b) => tier(a) - tier(b) || Number(b.isPrimary) - Number(a.isPrimary),
+      ); // stable, so createdAt order holds within a tier
+      ordered = [...sorted.map((r) => r.userId), ...(cp?.productManagerId ? [cp.productManagerId] : [])];
+    } else {
+      // Internal ticket: no client, so no client consultants or project manager.
+      const catalogue = t.moduleId
+        ? await this.prisma.moduleConsultant.findMany({ where: { moduleId: t.moduleId }, select: { userId: true }, orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }] })
+        : await this.prisma.productConsultant.findMany({ where: { productId: t.productId }, select: { userId: true }, orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }] });
+      ordered = catalogue.map((r) => r.userId);
+    }
+    ordered = [...new Set(ordered)];
+
+    const users = await this.prisma.user.findMany({
+      where: {
+        clientId,
+        customerCompanyId: null,
+        OR: [{ id: { in: ordered }, isActive: true }, { id: { in: holders } }],
+      },
+      select,
+    });
+    const rank = new Map(ordered.map((id, i) => [id, i]));
+    // Listed people in priority order; a current holder outside every tier last.
+    return users.sort((a, b) => (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity) || byName(a, b));
   }
 
   // ---- Resolution ----------------------------------------------------------
@@ -1508,6 +2224,8 @@ export class TicketsService {
         resolvedById: ticket.resolvedById ?? actorId,
         ticketStatus: resolvedStatus,
         ...(resolvedStatus !== ticket.ticketStatus && { statusChangedAt: new Date() }),
+        // Resolved straight from waiting on the client: the paused clock resumes.
+        ...this.slaResume(ticket),
         updatedBy: actorId,
       },
     });
@@ -1518,8 +2236,7 @@ export class TicketsService {
       summary: wasResolved ? 'Resolution updated' : 'Ticket resolved',
     });
     if (!wasResolved) {
-      await this.notifyResolved(updated, clientId);
-      await this.bellProjectManager(clientId, updated, 'RESOLVED', null, [actorId]);
+      await this.notifyResolved(updated, clientId, actorId);
     }
     return updated;
   }
@@ -1569,8 +2286,7 @@ export class TicketsService {
       type: 'CLOSED',
       summary: 'Ticket closed on client acknowledgement',
     });
-    await this.notifyAcknowledged(updated, clientId);
-    await this.bellProjectManager(clientId, updated, 'CLOSED', 'acknowledged by the client', [actorId]);
+    await this.notifyClosed(clientId, updated, actorId, 'ACKNOWLEDGED');
     return updated;
   }
 
@@ -1638,8 +2354,7 @@ export class TicketsService {
             type: 'CLOSED',
             summary: `Ticket closed automatically — the resolution went unacknowledged for ${days} day(s)`,
           });
-          await this.notifyAutoClosed(ticket, client.id, days);
-          await this.bellProjectManager(client.id, ticket, 'CLOSED', 'closed automatically, unacknowledged');
+          await this.notifyClosed(client.id, ticket, null, 'AUTO', days);
           closed += 1;
         } catch (err) {
           this.logger.error(
@@ -1653,97 +2368,61 @@ export class TicketsService {
   }
 
   /**
-   * Tell both sides a ticket closed itself: the client (requestor + their admins),
-   * so the close is never a surprise, and the agents who worked it. Best-effort —
-   * a notification failure must not undo the close.
+   * 10. Ticket Closed — by the client's acknowledgement, by the auto-close
+   * sweep (`days` = its window), or by staff closing an internal ticket. Who
+   * hears of it is the Email Configuration; this says it per audience.
    */
-  private async notifyAutoClosed(
-    ticket: {
-      id: string;
-      ticketNumber: string;
-      subject: string;
-      requestorUserId: string | null;
-      requestorEmail: string | null;
-      requestorName: string | null;
-      customerCompanyId: string | null;
-      resolvedById: string | null;
-    },
+  private async notifyClosed(
     clientId: string,
-    days: number,
+    ticket: NotifyTicket,
+    actorId: string | null,
+    how: 'ACKNOWLEDGED' | 'AUTO' | 'STAFF',
+    days = 0,
   ) {
-    const label = `${ticket.ticketNumber} — ${ticket.subject}`;
-    try {
-      const [companyAdmins, technicians] = await Promise.all([
-        ticket.customerCompanyId
-          ? this.prisma.user.findMany({
-              where: {
-                clientId,
-                customerCompanyId: ticket.customerCompanyId,
-                isActive: true,
-                userRoles: { some: { role: { name: 'CustomerAdmin' } } },
-              },
-              select: { id: true },
-            })
-          : Promise.resolve([]),
-        this.prisma.ticketTechnician.findMany({
-          where: { ticketId: ticket.id },
-          select: { userId: true },
-        }),
-      ]);
-      const recipients = new Set<string>([
-        ...companyAdmins.map((a) => a.id),
-        ...technicians.map((t) => t.userId),
-      ]);
-      if (ticket.requestorUserId) recipients.add(ticket.requestorUserId);
-      if (ticket.resolvedById) recipients.add(ticket.resolvedById);
-      await this.notifications.notifyMany([...recipients], {
-        clientId,
-        type: 'TICKET_CLOSED',
-        ticketId: ticket.id,
-        title: 'Ticket closed automatically',
-        body: `${label} was resolved more than ${days} day(s) ago and had no acknowledgement, so it has been closed.`,
-      });
-      const agentIds = new Set(technicians.map((t) => t.userId));
-      if (ticket.resolvedById) agentIds.add(ticket.resolvedById);
-      await this.mailEach(
-        clientId,
-        await this.agentContacts([...agentIds]),
-        `[${ticket.ticketNumber}] Ticket closed automatically`,
-        'Ticket closed automatically',
-        `<strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong> was resolved more than ${days} day(s) ago and the client never acknowledged it, so it has been closed.`,
-        `the auto-close notice to agents for ${ticket.ticketNumber}`,
-      );
-    } catch (err) {
-      this.logger.error(
-        `Failed to emit auto-close notification for ${ticket.ticketNumber}`,
-        err instanceof Error ? err.stack : String(err),
-      );
-    }
-    try {
-      if (!ticket.requestorEmail) return;
-      if (!(await this.mailer.isConfigured(clientId))) return;
-      const text = `Your ticket ${ticket.ticketNumber} ("${ticket.subject}") was marked resolved more than ${days} day(s) ago. As we didn't hear back, it has now been closed.`;
-      const html = `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 480px; margin: 0 auto;">
-          <div style="background:#334155; padding:24px; border-radius:12px 12px 0 0; text-align:center;">
-            <h1 style="color:#fff; margin:0; font-size:18px;">Your ticket has been closed</h1>
-          </div>
-          <div style="background:#fff; padding:28px; border:1px solid #e5e7eb; border-top:none; border-radius:0 0 12px 12px;">
-            <p style="color:#374151; font-size:14px;">Hi ${ticket.requestorName ?? 'there'},</p>
-            <p style="color:#374151; font-size:14px;">Your ticket <strong>${ticket.ticketNumber}</strong> — “${ticket.subject}” — was marked <strong>resolved</strong> more than ${days} day(s) ago. As we didn't hear back, it has now been closed.</p>
-            <p style="color:#6b7280; font-size:12px; margin-top:20px;">If the issue is still there, sign in and reopen the ticket — or raise a new one.</p>
-          </div>
-        </div>`;
-      await this.queueMail(
-        { to: ticket.requestorEmail, subject: `Your ticket ${ticket.ticketNumber} has been closed`, html, text },
-        clientId,
-      );
-    } catch (err) {
-      this.logger.error(
-        `Failed to email the auto-close of ${ticket.ticketNumber}`,
-        err instanceof Error ? err.stack : String(err),
-      );
-    }
+    const n = ticket.ticketNumber;
+    const label = `${n} — ${ticket.subject}`;
+    const auto: EventBell = {
+      type: 'TICKET_CLOSED', title: 'Ticket closed automatically',
+      body: `${label} was resolved more than ${days} day(s) ago and had no acknowledgement, so it has been closed.`,
+    };
+    const agentMail: EventMail =
+      how === 'AUTO'
+        ? {
+            subject: `[Ticket Closed] - ${n} closed automatically`,
+            content: MAIL.closedForAgents(
+              `The following ticket was resolved more than ${days} day(s) ago and the client did not acknowledge the resolution.\n` +
+                'It has therefore been closed automatically in accordance with the support policy.',
+            ),
+          }
+        : {
+            subject: `[Ticket Closed] - ${n}`,
+            content: MAIL.closedForAgents(
+              how === 'ACKNOWLEDGED'
+                ? 'The client has acknowledged the resolution of the following ticket, and it has now been closed.\nThank you for your work on it.'
+                : 'The following ticket has been closed.',
+            ),
+          };
+    await this.fireEvent(clientId, 'TICKET_CLOSED', {
+      ticket, actorId,
+      mail: {
+        client: { subject: `Ticket – ${n} Closed`, content: MAIL.closed() },
+        agent: agentMail,
+        staff: agentMail,
+      },
+      bell: {
+        agent:
+          how === 'ACKNOWLEDGED'
+            ? { type: 'TICKET_ACKNOWLEDGED', title: 'Resolution acknowledged', body: `The client acknowledged ${label}. The ticket is now closed.` }
+            : how === 'AUTO' ? auto : { type: 'TICKET_CLOSED', title: 'Ticket closed', body: label },
+        client: how === 'AUTO' ? auto : { type: 'TICKET_CLOSED', title: 'Ticket closed', body: `${label} has been closed.` },
+        PROJECT_MANAGER: {
+          type: 'PM_TICKET_CLOSED', title: 'Ticket closed',
+          body: how === 'ACKNOWLEDGED' ? `${label} · acknowledged by the client`
+            : how === 'AUTO' ? `${label} · closed automatically, unacknowledged` : label,
+        },
+        staff: how === 'AUTO' ? auto : { type: 'TICKET_CLOSED', title: 'Ticket closed', body: label },
+      },
+    });
   }
 
   /**
@@ -1896,28 +2575,39 @@ export class TicketsService {
   }
 
   /**
-   * Who may receive an auto-routed ticket right now: an active user of this
-   * tenant who holds ZERO open tickets. Two queries serve the whole routing pass
-   * — the resolvers only test membership, so walking five tiers never issues a
-   * per-candidate count.
+   * The routing pass's chooser (built once, three queries, never a count per
+   * candidate): given one step's candidates in priority order, the active user
+   * of this tenant holding the fewest open tickets below the organization's
+   * `ticketMaxOpenPerAgent` (null = no limit), the earlier one on a tie. A
+   * ticket counts towards its agent unless its status is one of
+   * `FREE_STATUS_LABELS` (On Hold, the Awaiting ones, Approval Pending,
+   * Resolved, Closed, Rejected), matched on the tenant's picklist label.
    *
    * The active check is `clientId + isActive` alone. Narrowing it with
    * `customerCompanyId: null` looks tighter but would silently make a mis-seeded
    * staff row permanently unassignable, with no error to explain it.
    */
-  private async consultantAvailability(clientId: string): Promise<(userId: string) => boolean> {
-    const settled = await this.settledStatusValues(clientId);
-    const [active, busy] = await Promise.all([
+  private async agentPicker(clientId: string): Promise<AgentPicker> {
+    const [org, statusOpts] = await Promise.all([
+      this.prisma.client.findUnique({ where: { id: clientId }, select: { ticketMaxOpenPerAgent: true } }),
+      this.prisma.picklistOption.findMany({ where: { clientId, listKey: 'ticketStatus' }, select: { value: true, label: true } }),
+    ]);
+    const isFree = (s: string) => FREE_STATUS_LABELS.includes(s.trim().toLowerCase());
+    // Picklist values whose label means free, plus 'Rejected', which `reject()`
+    // writes directly whether or not an option carries it.
+    const free = [...new Set([...statusOpts.filter((o) => isFree(o.label ?? o.value)).map((o) => o.value), 'Rejected'])];
+    const [active, held] = await Promise.all([
       this.prisma.user.findMany({ where: { clientId, isActive: true }, select: { id: true } }),
-      this.prisma.ticketTechnician.findMany({
-        where: { ticket: { clientId, ticketStatus: { notIn: settled } } },
-        select: { userId: true },
-        distinct: ['userId'],
+      this.prisma.ticketTechnician.groupBy({
+        by: ['userId'],
+        where: { ticket: { clientId, ticketStatus: { notIn: free } } },
+        _count: { _all: true },
       }),
     ]);
     const activeIds = new Set(active.map((u) => u.id));
-    const busyIds = new Set(busy.map((b) => b.userId));
-    return (userId: string) => activeIds.has(userId) && !busyIds.has(userId);
+    const load = new Map(held.map((h) => [h.userId, h._count._all]));
+    const max = org?.ticketMaxOpenPerAgent ?? null;
+    return (candidates) => pickLeastLoaded(candidates, (id) => load.get(id) ?? 0, (id) => activeIds.has(id), max);
   }
 
   /**
@@ -2033,7 +2723,7 @@ export class TicketsService {
    * ticket); `actorId` is who made it happen (and gets no notification).
    */
   private async applyReopen(
-    ticket: { id: string; ticketNumber: string; subject: string; resolvedById: string | null; customerCompanyId: string | null; productId: string | null },
+    ticket: NotifyTicket & { ticketStatus: string },
     clientId: string,
     reason: string,
     reopenedById: string,
@@ -2041,13 +2731,7 @@ export class TicketsService {
     extra: Prisma.TicketUpdateInput = {},
   ) {
     const id = ticket.id;
-    const reopenStatus =
-      (
-        await this.prisma.picklistOption.findFirst({
-          where: { clientId, listKey: 'ticketStatus', isActive: true },
-          orderBy: { sortOrder: 'asc' },
-        })
-      )?.value ?? 'Open';
+    const reopenStatus = await this.reopenedStatus(clientId);
     const updated = await this.prisma.ticket.update({
       where: { id },
       data: {
@@ -2075,55 +2759,104 @@ export class TicketsService {
       summary: `Ticket reopened: ${reason}`,
     });
     // The people who worked it need to know it's back, and why.
-    await this.notifyReopened(ticket, clientId, reason, actorId);
-    await this.bellProjectManager(clientId, ticket, 'REOPENED', reason, [actorId]);
+    await this.notifyReopened(clientId, ticket, reason, reopenedById, actorId);
     return updated;
   }
 
   /**
-   * Push a reopen to the people who have to act on it: every assigned agent, whoever
-   * resolved it, and the tenant's admins. Best-effort — a notification failure must
-   * never undo a reopen the client already made.
+   * The status a reopened ticket lands in (client request): the tenant's
+   * `Reopened` value, so reopened work can be filtered and counted on its own.
+   * Added to the Ticket Status list on first use if the tenant lacks it (placed
+   * just after the first status, never before it, since creation takes the
+   * first). An admin who deactivated it gets the old behaviour — the first
+   * active status. Keyed on the value, so renaming its label is fine.
+   */
+  private async reopenedStatus(clientId: string) {
+    const where = { clientId, listKey: 'ticketStatus' };
+    const existing = await this.prisma.picklistOption.findFirst({ where: { ...where, value: REOPENED_STATUS } });
+    const first = () =>
+      this.prisma.picklistOption.findFirst({ where: { ...where, isActive: true }, orderBy: { sortOrder: 'asc' } });
+    if (existing) return existing.isActive ? REOPENED_STATUS : ((await first())?.value ?? 'Open');
+    const head = await first();
+    try {
+      await this.prisma.picklistOption.create({
+        data: { ...where, value: REOPENED_STATUS, label: REOPENED_STATUS, sortOrder: (head?.sortOrder ?? 0) + 1 },
+      });
+    } catch (e) {
+      // Two reopens racing to add it: the other one won, which is all we need.
+      if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002')) throw e;
+    }
+    return REOPENED_STATUS;
+  }
+
+  /**
+   * 9. Ticket Reopened — by an Admin directly (internal tickets), or on an
+   * approved reopen request (`reopenedById` = who asked). Who hears of it is
+   * the Email Configuration; this says it per audience. Never throws.
    */
   private async notifyReopened(
-    ticket: { id: string; ticketNumber: string; subject: string; resolvedById: string | null },
     clientId: string,
+    ticket: NotifyTicket & { ticketStatus: string },
     reason: string,
+    reopenedById: string,
     actorId: string,
   ) {
     try {
-      const [technicians, admins] = await Promise.all([
-        this.prisma.ticketTechnician.findMany({
-          where: { ticketId: ticket.id },
-          select: { userId: true },
-        }),
-        this.prisma.user.findMany({
-          where: {
-            clientId,
-            isActive: true,
-            userRoles: { some: { role: { name: 'Admin' } } },
+      const n = ticket.ticketNumber;
+      const label = `${n} — ${ticket.subject}`;
+      const [actor, asker] = await Promise.all([
+        this.prisma.user.findUnique({ where: { id: actorId }, select: { username: true, name: true } }),
+        reopenedById !== actorId
+          ? this.prisma.user.findUnique({ where: { id: reopenedById }, select: { username: true, name: true, customerCompanyId: true } })
+          : null,
+      ]);
+      const by = actor ? displayName(actor) : 'an admin';
+      const how = asker
+        ? `at ${asker.customerCompanyId ? "the client's" : `${displayName(asker)}'s`} request (approved by ${by})`
+        : `by ${by}`;
+      const byClient = !!asker?.customerCompanyId;
+      const toAgents: EventMail = {
+        subject: `[Ticket Reopened] - ${n} reopened`,
+        content: {
+          intro: `The following ticket has been reopened ${how} and requires further attention.`,
+          fields: [
+            'number', 'subject', 'requestedBy', 'client', 'priority',
+            ['Previous Status', await this.statusDisplay(clientId, ticket.ticketStatus)],
+            { key: 'status', label: 'Current Status' }, 'assignedTeam',
+          ],
+          sections: [{ title: 'Reason for Reopening', body: reason }],
+          outro: 'Please review the previous resolution and the latest comments before proceeding.',
+          linkLabel: 'View Reopened Ticket',
+        },
+      };
+      const bell: EventBell = {
+        type: 'TICKET_REOPENED', title: byClient ? 'Ticket reopened by the client' : 'Ticket reopened',
+        body: `${label}. Reason: ${reason}`,
+      };
+      await this.fireEvent(clientId, 'TICKET_REOPENED', {
+        ticket, actorId,
+        mail: {
+          agent: toAgents,
+          staff: toAgents,
+          client: {
+            subject: `[Ticket Reopened] - ${n}`,
+            content: {
+              intro: 'Your support ticket has been reopened, and our support team will continue working on it.',
+              fields: ['number', 'subject', 'priority', 'status', 'assignedAgent'],
+              sections: [{ title: 'Reason for Reopening', body: reason }],
+              outro: 'Our team will keep you informed about further progress.',
+            },
           },
-          select: { id: true },
-        }),
-      ]);
-      const recipients = new Set([
-        ...technicians.map((t) => t.userId),
-        ...admins.map((a) => a.id),
-      ]);
-      if (ticket.resolvedById) recipients.add(ticket.resolvedById);
-      recipients.delete(actorId); // the client who reopened it needs no ping
-      await this.notifications.notifyMany([...recipients], {
-        clientId,
-        type: 'TICKET_REOPENED',
-        ticketId: ticket.id,
-        title: 'Ticket reopened by the client',
-        body: `${ticket.ticketNumber} — ${ticket.subject}. Reason: ${reason}`,
+        },
+        bell: {
+          agent: bell,
+          staff: bell,
+          client: { type: 'TICKET_REOPENED', title: 'Ticket reopened', body: `${label} is open again.` },
+          PROJECT_MANAGER: { type: 'PM_TICKET_REOPENED', title: 'Ticket reopened', body: `${label} · ${reason}` },
+        },
       });
     } catch (err) {
-      this.logger.error(
-        `Failed to emit reopen notification for ${ticket.ticketNumber}`,
-        err instanceof Error ? err.stack : String(err),
-      );
+      this.logger.error(`Failed to announce the reopen of ${ticket.ticketNumber}`, err instanceof Error ? err.stack : String(err));
     }
   }
 
@@ -2148,36 +2881,52 @@ export class TicketsService {
   }
 
   /**
-   * The client product's project manager follows its tickets by bell (client
-   * request): created, assigned, resolved, closed and reopened. Bell only — no
-   * email. Skipped when there is no project manager (internal tickets, products
-   * without one), and for anyone in `skip`: the person who did it, and whoever
-   * the same event already bells directly (e.g. the agent just assigned).
-   * Never throws.
+   * A customer ticket went live with no agent — auto-assignment is off for the
+   * client, or every consultant was busy. The client product's project manager
+   * assigns it, so they get a bell **and an email** (client request; the
+   * project manager's other ticket events stay bell-only). The Admins keep their
+   * ordinary "New ticket created" bell. Skipped with no project manager, or when
+   * they are in `skip` (the actor). Never throws.
    */
-  private async bellProjectManager(
+  private async alertProjectManagerUnassigned(
     clientId: string,
     t: { id: string; ticketNumber: string; subject: string; customerCompanyId: string | null; productId: string | null },
-    kind: 'CREATED' | 'ASSIGNED' | 'RESOLVED' | 'CLOSED' | 'REOPENED',
-    detail?: string | null,
+    reason: string,
     skip: (string | null | undefined)[] = [],
   ) {
     try {
       const pmId = await this.reopenApproverFor(clientId, t);
       if (!pmId || skip.includes(pmId)) return;
-      const title = {
-        CREATED: 'New ticket on your project',
-        ASSIGNED: 'Ticket assigned',
-        RESOLVED: 'Ticket resolved',
-        CLOSED: 'Ticket closed',
-        REOPENED: 'Ticket reopened',
-      }[kind];
+      const [pm, company] = await Promise.all([
+        this.prisma.user.findUnique({ where: { id: pmId }, select: { username: true, name: true, email: true } }),
+        t.customerCompanyId
+          ? this.prisma.customerCompany.findUnique({ where: { id: t.customerCompanyId }, select: { name: true } })
+          : null,
+      ]);
       await this.notifications.notify({
-        clientId, userId: pmId, type: `PM_TICKET_${kind}`, ticketId: t.id,
-        title, body: `${t.ticketNumber} — ${t.subject}${detail ? ` · ${detail}` : ''}`,
+        clientId, userId: pmId, type: 'PM_TICKET_UNASSIGNED', ticketId: t.id,
+        title: 'Ticket needs an agent',
+        body: `${t.ticketNumber} — ${t.subject} · unassigned: ${reason}`,
       });
+      if (pm) {
+        await this.mailEach(
+          clientId,
+          t,
+          [pm],
+          `[Assignment Required] - ${t.ticketNumber}`,
+          {
+            intro: `The following support ticket${company?.name ? ` from ${company.name}` : ''} has no agent assigned, as ${reason}.\n` +
+              'As the project manager for this client\'s product, please assign an agent so that work can begin within the defined SLA.',
+            fields: ['number', 'subject', 'requestedBy', 'client', 'product', 'category', 'priority', 'status', 'createdDate', 'dueDate'],
+            description: true,
+            outro: 'Please open the ticket, select an agent in the Assigned agent field and save. The requester will be informed once an agent is assigned.',
+            linkLabel: 'Assign Ticket',
+          },
+          `the unassigned alert for ${t.ticketNumber}`,
+        );
+      }
     } catch (err) {
-      this.logger.error(`Failed to bell the project manager of ${t.ticketNumber}`, err instanceof Error ? err.stack : String(err));
+      this.logger.error(`Failed to alert the project manager of unassigned ${t.ticketNumber}`, err instanceof Error ? err.stack : String(err));
     }
   }
 
@@ -2274,12 +3023,17 @@ export class TicketsService {
       });
       await this.mailEach(
         clientId,
+        ticket,
         deciders,
-        `[${ticket.ticketNumber}] Reopen request awaiting your approval`,
-        'Reopen request awaiting your approval',
-        `${esc(who)} asked to reopen <strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong>.` +
-          `<br/><br/><strong>Reason:</strong> ${esc(reason)}` +
-          `<br/><br/>The ticket stays closed until you approve it. You'll find it under <strong>Awaiting approval</strong> on the ticket list.`,
+        `[Reopen Request] - ${ticket.ticketNumber}`,
+        {
+          intro: `${who} has requested to reopen the following ticket.\nThe ticket remains closed until the request is approved.`,
+          fields: ['number', 'subject', 'requestedBy', 'client', 'priority', { key: 'status', label: 'Current Status' }, 'assignedAgent', 'resolvedDate'],
+          resolution: 'Previous Resolution',
+          sections: [{ title: 'Reason for Reopening', body: reason }],
+          outro: 'Please review the previous resolution and the reason given, then approve or reject the request under Awaiting approval on the ticket list.',
+          linkLabel: 'Review Request',
+        },
         `the reopen request for ${ticket.ticketNumber}`,
       );
     } catch (err) {
@@ -2377,7 +3131,7 @@ export class TicketsService {
     ticket: {
       id: string; ticketNumber: string; subject: string; reopenRequestedById: string | null;
       reopenRequestReason: string | null; technicians: { user: { id: string } }[];
-      customerCompanyId: string | null;
+      customerCompanyId: string | null; ticketStatus: string;
     },
     decision: 'APPROVED' | 'REJECTED',
     actorId: string,
@@ -2392,7 +3146,6 @@ export class TicketsService {
         this.prisma.user.findUnique({ where: { id: actorId }, select: { username: true, name: true } }),
       ]);
       const by = decider ? displayName(decider) : 'your provider';
-      const label = `<strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong>`;
       if (requester) {
         await this.notifications
           .notify({
@@ -2403,32 +3156,27 @@ export class TicketsService {
           .catch((err) => this.logger.error('Failed to bell the reopen decision', err instanceof Error ? err.stack : String(err)));
         await this.mailEach(
           clientId,
+          ticket,
           [requester],
           approved
-            ? `[${ticket.ticketNumber}] Your reopen request was approved`
-            : `[${ticket.ticketNumber}] Your reopen request was not approved`,
-          approved ? 'Reopen request approved' : 'Reopen request not approved',
+            ? `[Reopen Approved] - ${ticket.ticketNumber}`
+            : `[Reopen Not Approved] - ${ticket.ticketNumber}`,
           approved
-            ? `${esc(by)} approved your request to reopen ${label}. The ticket is open again and the support team is back on it.`
-            : `${esc(by)} did not approve your request to reopen ${label}. The ticket stays closed.<br/><br/><strong>Reason:</strong> ${esc(note)}<br/><br/>If the issue still needs work, you can raise a new ticket.`,
+            ? {
+                intro: `Your request to reopen the following ticket has been approved by ${by}.\n` +
+                  'The ticket is open again and our support team will continue working on it.',
+                fields: ['number', 'subject', 'priority', 'status', 'assignedAgent', 'assignedTeam'],
+                outro: 'Our team will keep you informed about further progress.',
+                thanks: 'Thank you for your patience.',
+              }
+            : {
+                intro: `Your request to reopen the following ticket has been reviewed by ${by} and was not approved.\n` +
+                  'The ticket therefore remains closed.',
+                fields: ['number', 'subject', 'priority', 'status', 'assignedAgent', 'closedDate'],
+                sections: [{ title: 'Remarks', body: note ?? '' }],
+                outro: 'If the issue still needs attention, please raise a new support ticket through the portal and refer to this ticket number where relevant.',
+              },
           `the reopen decision for ${ticket.ticketNumber}`,
-        );
-      }
-      // The agent who will pick it back up — a separate email, so the client's
-      // address never shares a To: with the provider's.
-      if (approved && ticket.technicians.length) {
-        const agents = await this.prisma.user.findMany({
-          where: { id: { in: ticket.technicians.map((t) => t.user.id) }, isActive: true, NOT: { id: actorId } },
-          select: { username: true, name: true, email: true },
-        });
-        await this.mailEach(
-          clientId,
-          agents,
-          `[${ticket.ticketNumber}] Ticket reopened`,
-          'Ticket reopened',
-          `${label} has been reopened at ${ticket.customerCompanyId ? "the client's" : `${esc(requester ? displayName(requester) : 'a colleague')}'s`} request, approved by ${esc(by)}.` +
-            `<br/><br/><strong>Reason:</strong> ${esc(ticket.reopenRequestReason)}`,
-          `the reopen notice for ${ticket.ticketNumber}`,
         );
       }
     } catch (err) {
@@ -2443,7 +3191,12 @@ export class TicketsService {
     if (ticket.approvalStatus !== 'PENDING') {
       throw new BadRequestException('Only tickets awaiting approval can be approved');
     }
-    const updated = await this.openHeldTicket(ticket, clientId, actorId, 'Ticket approved');
+    // The raiser and the requester hear of the approval from `notifyDecision`,
+    // so 1. Created leaves the requester out rather than tell them twice.
+    const updated = await this.openHeldTicket(ticket, clientId, actorId, 'Ticket approved', {
+      lead: 'Your support request has been approved and registered in our service desk.',
+      skipRoles: ['REQUESTOR'],
+    });
     await this.notifyDecision(clientId, { ...updated, templateName: ticket.template?.name ?? 'Ticket' }, 'APPROVED');
     return updated;
   }
@@ -2460,6 +3213,7 @@ export class TicketsService {
     clientId: string,
     actorId: string,
     summary: string,
+    live: { lead: string; ackBody?: string; skipRoles?: PersonRole[] },
   ) {
     const id = ticket.id;
     const initial =
@@ -2493,23 +3247,14 @@ export class TicketsService {
       type: 'APPROVED',
       summary,
     });
-    await this.bellProjectManager(clientId, updated, 'CREATED', null, [actorId]);
     // A customer's ticket is routed now, exactly as it would have been on
     // creation had it not needed approval. Staff-raised tickets never are.
     const raiser = ticket.createdBy
       ? await this.prisma.user.findUnique({ where: { id: ticket.createdBy }, select: { customerCompanyId: true } })
       : null;
-    if (raiser?.customerCompanyId && ticket.technicians.length === 0) {
-      const consultantId = await this.autoRoute(clientId, ticket, actorId);
-      if (consultantId) {
-        await this.notifications
-          .notify({
-            clientId, userId: consultantId, type: 'TICKET_ASSIGNED', ticketId: id,
-            title: 'Ticket assigned to you', body: `You've been assigned ${ticket.ticketNumber} — ${ticket.subject}`,
-          })
-          .catch((err) => this.logger.error('Failed to notify auto-assigned consultant', err instanceof Error ? err.stack : String(err)));
-      }
-    }
+    const routes = !!raiser?.customerCompanyId && ticket.technicians.length === 0;
+    // Live now: routed if it is a client's, then 1. Created and the assignment.
+    await this.goLive(clientId, { ...ticket, ...updated }, actorId, { routes, ...live });
     return updated;
   }
 
@@ -2583,44 +3328,36 @@ export class TicketsService {
         });
       }
 
-      if (!(await this.mailer.isConfigured(clientId))) {
-        this.logger.warn(`SMTP not configured — ${decision.toLowerCase()} email for ${ticket.ticketNumber} not sent`);
-        return;
-      }
       const company = ticket.customerCompanyId
         ? await this.prisma.customerCompany.findUnique({ where: { id: ticket.customerCompanyId }, select: { name: true } })
         : null;
-      const recipients = new Map<string, string | null>();
-      if (raiser?.email && EMAIL_RE.test(raiser.email)) recipients.set(raiser.email.toLowerCase(), displayName(raiser));
-      if (ticket.requestorEmail && EMAIL_RE.test(ticket.requestorEmail) && !recipients.has(ticket.requestorEmail.toLowerCase())) {
-        recipients.set(ticket.requestorEmail.toLowerCase(), ticket.requestorName);
-      }
-      const what = `Your ${esc(ticket.templateName)} <strong>${esc(label)}</strong>${company ? ` for ${esc(company.name)}` : ''}`;
-      const body = approved
-        ? `${what} has been approved. It is now an open ticket${ticket.slaHours ? `, and its SLA started on approval: it is due to be resolved within ${ticket.slaHours} hours` : ''}.`
-        : `${what} was not approved.<br/><br/><strong>Reason:</strong> ${esc(ticket.rejectionReason)}<br/><br/>No work will be done on this ticket. You can raise a new request at any time.`;
-      const subject = approved
-        ? `[${ticket.ticketNumber}] Your ${ticket.templateName} has been approved`
-        : `[${ticket.ticketNumber}] Your ${ticket.templateName} was not approved`;
-      // One failed address must not cost the other theirs, so each send is
-      // caught on its own.
-      for (const [to, name] of recipients) {
-        await this
-          .queueMail(
-            {
-              to,
-              subject,
-              html: reassignmentHtml(approved ? 'Request approved' : 'Request not approved', esc(name) || 'there', body),
-              text: `${subject}\n\n${body.replace(/<br\/>/g, '\n').replace(/<[^>]+>/g, '')
-                .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&')}`,
+      const what = `Your ${ticket.templateName}${company ? ` for ${company.name}` : ''}`;
+      // The raiser and, when someone else, the requester — one send each.
+      await this.mailEach(
+        clientId,
+        ticket,
+        [
+          ...(raiser ? [{ email: raiser.email, name: displayName(raiser) }] : []),
+          { email: ticket.requestorEmail, name: ticket.requestorName },
+        ],
+        approved
+          ? `[Ticket Accepted] - ${ticket.ticketNumber}`
+          : `[Ticket Not Approved] - ${ticket.ticketNumber}`,
+        approved
+          ? {
+              // 4. Ticket Accepted — its SLA clock starts on this approval.
+              ...MAIL.accepted(),
+              intro: `${what} has been reviewed and accepted by our support team.\n` +
+                'The ticket is now open and will be handled by the responsible support personnel; its SLA started on approval.',
+            }
+          : {
+              intro: `${what} has been reviewed and was not approved.\nNo work will be carried out on this ticket.`,
+              fields: ['number', 'subject', 'category', 'priority', 'status'],
+              sections: [{ title: 'Reason', body: ticket.rejectionReason ?? '' }],
+              outro: 'You may raise a new request with the required changes through the ticketing portal at any time.',
             },
-            clientId,
-          )
-          .catch((err) => this.logger.error(
-            `Failed to email the ${decision.toLowerCase()} notice for ${ticket.ticketNumber}`,
-            err instanceof Error ? err.stack : String(err),
-          ));
-      }
+        `the ${decision.toLowerCase()} notice for ${ticket.ticketNumber}`,
+      );
     } catch (err) {
       this.logger.error(
         `Failed to send the ${decision.toLowerCase()} notice for ${ticket.ticketNumber}`,
@@ -2657,7 +3394,6 @@ export class TicketsService {
       // Now it is the provider's call: their Admins hear about it the way they
       // would have had the request been raised straight to them.
       await this.notifyApprovalRequested(clientId, ticket, templateName, ticket.createdBy, approverName);
-      await this.alertCriticalTicket(clientId, id, 'raised');
     } else {
       await this.activity.log({
         ticketId: id,
@@ -2665,51 +3401,38 @@ export class TicketsService {
         type: 'CUSTOMER_APPROVED',
         summary: 'Approved by company admin',
       });
-      updated = await this.openHeldTicket(ticket, clientId, actorId, 'Ticket opened on company admin approval');
-      await this.alertCriticalTicket(clientId, id, 'raised');
-      // The provider's Admins hear of it now, as they would of any client ticket.
-      const admins = await this.tenantAdmins(clientId);
-      await this.notifications
-        .notifyMany(admins.map((a) => a.id), {
-          clientId, type: 'TICKET_CREATED', ticketId: id,
-          title: 'New ticket created', body: `New ticket ${ticket.ticketNumber} — ${ticket.subject}`,
-        })
-        .catch((err) => this.logger.error('Failed to bell admins of an approved ticket', err instanceof Error ? err.stack : String(err)));
+      // Only now is it a ticket the provider has: 1. Created goes out — the
+      // "received" bell and email the raiser did not get on raising it.
+      updated = await this.openHeldTicket(ticket, clientId, actorId, 'Ticket opened on company admin approval', {
+        lead: `${approverName ?? 'Your company admin'} has approved your request, and it has been successfully registered in our service desk.`,
+        ackBody: `${approverName ?? 'Your company admin'} approved it. We've received your ticket ${ticket.ticketNumber} and will get back to you shortly.`,
+      });
     }
-    // …and the employee who raised it learns it has moved on.
-    if (ticket.createdBy && ticket.createdBy !== actorId) {
+    // A change request goes on to the provider: the employee learns it has moved on.
+    if (toProvider && ticket.createdBy && ticket.createdBy !== actorId) {
       const raiser = await this.prisma.user.findUnique({
         where: { id: ticket.createdBy }, select: { id: true, username: true, name: true, email: true },
       });
       if (raiser) {
         await this.notifications
-          .notify(
-            toProvider
-              ? {
-                  clientId, userId: raiser.id, type: 'TICKET_CUSTOMER_APPROVED', ticketId: id,
-                  title: `${ticket.ticketNumber} sent to your provider`,
-                  body: `${approverName ?? 'Your company admin'} approved your ${templateName}. It now waits for your provider's approval.`,
-                }
-              : {
-                  // Only now is it a ticket the provider has: the "received" bell
-                  // the raiser did not get on creation (client request).
-                  clientId, userId: raiser.id, type: 'TICKET_ACK', ticketId: id,
-                  title: 'Ticket received',
-                  body: `${approverName ?? 'Your company admin'} approved it. We've received your ticket ${ticket.ticketNumber} and will get back to you shortly.`,
-                },
-          )
+          .notify({
+            clientId, userId: raiser.id, type: 'TICKET_CUSTOMER_APPROVED', ticketId: id,
+            title: `${ticket.ticketNumber} sent to your provider`,
+            body: `${approverName ?? 'Your company admin'} approved your ${templateName}. It now waits for your provider's approval.`,
+          })
           .catch((err) => this.logger.error('Failed to bell the customer approval', err instanceof Error ? err.stack : String(err)));
         await this.mailEach(
           clientId,
+          ticket,
           [raiser],
-          toProvider
-            ? `[${ticket.ticketNumber}] Your ${templateName} was sent to your provider`
-            : `[${ticket.ticketNumber}] Your ticket was approved`,
-          toProvider ? 'Sent to your provider' : 'Ticket approved',
-          `${esc(approverName ?? 'Your company admin')} approved your ${esc(templateName)} <strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong>.` +
-            (toProvider
-              ? `<br/><br/>It now waits for your service provider's approval. You'll hear as soon as it is decided.`
-              : `<br/><br/>It has gone to your service provider. You'll get another email as soon as an agent is assigned to it.`),
+          `[Sent for Approval] - ${ticket.ticketNumber}`,
+          {
+            intro: `${approverName ?? 'Your company admin'} has approved your ${templateName}, and it has been sent to your service provider for approval.\n` +
+              'You will be informed as soon as it is decided.',
+            fields: ['number', 'subject', 'category', 'priority', 'status', 'createdDate'],
+            outro: 'You can track the status of your request through the ticketing portal.',
+            thanks: 'Thank you for your patience.',
+          },
           `the customer approval notice for ${ticket.ticketNumber}`,
         );
       }
@@ -2764,344 +3487,58 @@ export class TicketsService {
     return updated;
   }
 
-  /**
-   * Tell the client their ticket is resolved: an in-app notification for the
-   * requestor plus their company's admins — exactly the people allowed to
-   * acknowledge it — and a best-effort email to the requestor.
-   *
-   * Never throws: a notification failure must not undo the resolution.
-   */
-  private async notifyResolved(
-    ticket: {
-      id: string;
-      ticketNumber: string;
-      subject: string;
-      requestorUserId: string | null;
-      requestorEmail: string | null;
-      requestorName: string | null;
-      customerCompanyId: string | null;
-      resolution: string | null;
-    },
-    clientId: string,
-  ) {
-    const label = `${ticket.ticketNumber} — ${ticket.subject}`;
-    try {
-      const recipients = new Set<string>();
-      if (ticket.requestorUserId) recipients.add(ticket.requestorUserId);
-      if (ticket.customerCompanyId) {
-        const companyAdmins = await this.prisma.user.findMany({
-          where: {
-            clientId,
-            customerCompanyId: ticket.customerCompanyId,
-            isActive: true,
-            userRoles: { some: { role: { name: 'CustomerAdmin' } } },
+  /** 8. Ticket Resolved. Who hears of it is the Email Configuration; this says it per audience. */
+  private async notifyResolved(ticket: NotifyTicket, clientId: string, actorId: string) {
+    const n = ticket.ticketNumber;
+    const label = `${n} — ${ticket.subject}`;
+    await this.fireEvent(clientId, 'TICKET_RESOLVED', {
+      ticket, actorId,
+      mail: {
+        client: {
+          subject: `Your Ticket – ${n} Resolved`,
+          content: {
+            intro: 'We are pleased to inform you that your support request has been resolved.\n' +
+              'Please review the resolution details below and confirm whether the issue has been addressed satisfactorily.',
+            fields: ['number', 'subject', 'priority', 'status', 'assignedAgent', 'resolvedDate'],
+            resolution: 'Resolution Details',
+            outro: 'If the issue persists, you may request to reopen the ticket through the ticketing portal within the permitted reopening period.\n' +
+              'If no further action is required, the ticket will be closed as per the system closure policy.',
+            linkLabel: 'Review Ticket',
+            thanks: 'Thank you for your cooperation.',
           },
-          select: { id: true },
-        });
-        for (const a of companyAdmins) recipients.add(a.id);
-      }
-      await this.notifications.notifyMany([...recipients], {
-        clientId,
-        type: 'TICKET_RESOLVED',
-        ticketId: ticket.id,
-        title: 'Ticket resolved',
-        body: `${label} has been resolved. Please review and acknowledge it to close the ticket.`,
-      });
-    } catch (err) {
-      this.logger.error(
-        `Failed to emit resolution notification for ${ticket.ticketNumber}`,
-        err instanceof Error ? err.stack : String(err),
-      );
-    }
-    try {
-      if (!ticket.requestorEmail) return;
-      if (!(await this.mailer.isConfigured(clientId))) {
-        this.logger.warn(`SMTP not configured — resolution email for ${ticket.ticketNumber} not sent`);
-        return;
-      }
-      const html = `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 480px; margin: 0 auto;">
-          <div style="background:#047857; padding:24px; border-radius:12px 12px 0 0; text-align:center;">
-            <h1 style="color:#fff; margin:0; font-size:18px;">Your ticket has been resolved</h1>
-          </div>
-          <div style="background:#fff; padding:28px; border:1px solid #e5e7eb; border-top:none; border-radius:0 0 12px 12px;">
-            <p style="color:#374151; font-size:14px;">Hi ${ticket.requestorName ?? 'there'},</p>
-            <p style="color:#374151; font-size:14px;">Your ticket <strong>${ticket.ticketNumber}</strong> — “${ticket.subject}” — has been marked <strong>resolved</strong>.</p>
-            ${
-              ticket.resolution?.trim()
-                ? `<p style="color:#374151; font-size:14px;"><strong>Resolution:</strong></p>
-            <div style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:12px; color:#374151; font-size:14px; white-space:pre-wrap;">${ticket.resolution}</div>`
-                : ''
-            }
-            <p style="color:#6b7280; font-size:12px; margin-top:20px;">Please sign in and acknowledge the resolution to close the ticket, or reopen it if the issue persists.</p>
-          </div>
-        </div>`;
-      await this.queueMail(
-        {
-          to: ticket.requestorEmail,
-          subject: `Your ticket ${ticket.ticketNumber} has been resolved`,
-          html,
-          text: `Your ticket ${ticket.ticketNumber} ("${ticket.subject}") has been resolved.${ticket.resolution?.trim() ? `
-
-Resolution: ${ticket.resolution}` : ''}
-
-Please acknowledge the resolution to close the ticket, or reopen it if the issue persists.`,
         },
-        clientId,
-      );
-    } catch (err) {
-      this.logger.error(
-        `Failed to send resolution email for ${ticket.ticketNumber}`,
-        err instanceof Error ? err.stack : String(err),
-      );
-    }
-  }
-
-  /**
-   * Announce a change of assigned agent. Never throws — a mail failure must not
-   * undo the assignment.
-   *
-   * Five audiences, because a handover matters to everyone waiting on the ticket:
-   * the incoming agent (they now own it), the outgoing one (it left their queue),
-   * the requestor, the client's own admins, and the tenant admins running the
-   * engagement. The person who performed the change is dropped — they know.
-   *
-   * The email goes out as **two** sends, so a customer's address and the
-   * provider's staff addresses are never in one `To:` header.
-   */
-  private async notifyReassignment(
-    ticket: {
-      id: string;
-      ticketNumber: string;
-      subject: string;
-      requestorUserId: string | null;
-      requestorEmail: string | null;
-      requestorName: string | null;
-      customerCompanyId: string | null;
-    },
-    clientId: string,
-    actorId: string,
-    previous: Agent[],
-    incoming: Agent[],
-  ) {
-    const label = `${ticket.ticketNumber} — ${ticket.subject}`;
-    // Full names, not usernames — a username is often an employee id (client request).
-    const to = incoming.map(displayName).join(', ');
-    const from = previous.map(displayName).join(', ');
-    // A first assignment is not a reassignment, and handing a ticket to nobody is
-    // an unassignment. Each reads differently to the client.
-    const handover = previous.length > 0 && incoming.length > 0;
-    const summary = incoming.length
-      ? handover
-        ? `${label} has moved from ${from} to ${to}.`
-        : `${label} has been assigned to ${to}.`
-      : `${label} is no longer assigned to anyone.`;
-
-    const [companyAdmins, tenantAdmins] = await Promise.all([
-      ticket.customerCompanyId
-        ? this.prisma.user.findMany({
-            where: {
-              clientId,
-              customerCompanyId: ticket.customerCompanyId,
-              isActive: true,
-              userRoles: { some: { role: { name: 'CustomerAdmin' } } },
-            },
-            select: { id: true, email: true },
-          })
-        : Promise.resolve([] as { id: string; email: string | null }[]),
-      this.prisma.user.findMany({
-        where: { clientId, isActive: true, userRoles: { some: { role: { name: 'Admin' } } } },
-        select: { id: true, email: true },
-      }),
-    ]);
-
-    try {
-      // The incoming agent gets the actionable one; everyone else is being kept
-      // informed, so they are told separately rather than "assigned to you".
-      for (const agent of incoming) {
-        if (agent.id === actorId) continue; // an admin taking it themselves needs no ping
-        await this.notifications.notify({
-          clientId, userId: agent.id, type: 'TICKET_ASSIGNED', ticketId: ticket.id,
-          title: 'Ticket assigned to you',
-          body: `You've been assigned ${label}`,
-        });
-      }
-      for (const agent of previous) {
-        if (agent.id === actorId) continue;
-        if (incoming.some((n) => n.id === agent.id)) continue;
-        await this.notifications.notify({
-          clientId, userId: agent.id, type: 'TICKET_UNASSIGNED', ticketId: ticket.id,
-          title: 'Ticket reassigned',
-          body: incoming.length
-            ? `${label} has been handed over to ${to}.`
-            : `${label} is no longer assigned to you.`,
-        });
-      }
-
-      const watchers = new Set<string>([
-        ...companyAdmins.map((a) => a.id),
-        ...tenantAdmins.map((a) => a.id),
-      ]);
-      if (ticket.requestorUserId) watchers.add(ticket.requestorUserId);
-      for (const agent of [...previous, ...incoming]) watchers.delete(agent.id);
-      watchers.delete(actorId);
-      await this.notifications.notifyMany([...watchers], {
-        clientId, type: 'TICKET_REASSIGNED', ticketId: ticket.id,
-        title: incoming.length ? 'Ticket reassigned' : 'Ticket unassigned',
-        body: summary,
-      });
-    } catch (err) {
-      this.logger.error(
-        `Failed to emit reassignment notification for ${ticket.ticketNumber}`,
-        err instanceof Error ? err.stack : String(err),
-      );
-    }
-
-    try {
-      if (!(await this.mailer.isConfigured(clientId))) {
-        this.logger.warn(
-          `SMTP not configured — reassignment email for ${ticket.ticketNumber} not sent`,
-        );
-        return;
-      }
-
-      // Customer-facing: the requestor and their own company's admins. They care
-      // who is handling it now, not the mechanics of the handover.
-      const customerTo = joinEmails([ticket.requestorEmail, ...companyAdmins.map((a) => a.email)]);
-      if (customerTo) {
-        // A ticket that had no agent yet is being *assigned*, not handed over —
-        // worded like the auto-assignment email, so the customer reads the same
-        // message whoever picked the agent. "New agent" is kept for a real change.
-        const firstAgent = previous.length === 0 && incoming.length > 0;
-        const line = firstAgent
-          ? `<strong>${to}</strong> has been assigned to your ticket <strong>${ticket.ticketNumber}</strong> — “${ticket.subject}” — and is looking into it.`
-          : incoming.length
-            ? `Your ticket <strong>${ticket.ticketNumber}</strong> — “${ticket.subject}” — is now being handled by <strong>${to}</strong>.`
-            : `Your ticket <strong>${ticket.ticketNumber}</strong> — “${ticket.subject}” — is being reassigned, and a new agent will pick it up shortly.`;
-        await this.queueMail(
-          {
-            to: customerTo,
-            subject: firstAgent
-              ? `[${ticket.ticketNumber}] An agent is looking into your ticket`
-              : `Your ticket ${ticket.ticketNumber} has a new agent`,
-            html: reassignmentHtml(firstAgent ? 'An agent has been assigned' : 'Your ticket has a new agent', ticket.requestorName, line),
-            text: firstAgent
-              ? `${to} has been assigned to your ticket ${ticket.ticketNumber} ("${ticket.subject}") and is looking into it.`
-              : incoming.length
-                ? `Your ticket ${ticket.ticketNumber} ("${ticket.subject}") is now being handled by ${to}.`
-                : `Your ticket ${ticket.ticketNumber} ("${ticket.subject}") is being reassigned, and a new agent will pick it up shortly.`,
-          },
-          clientId,
-        );
-      }
-
-      // Internal: the tenant admins running the engagement, plus the agent who now
-      // owns it. Sent apart from the note above so the two audiences never see
-      // each other's addresses.
-      const staffTo = joinEmails([...tenantAdmins.map((a) => a.email), ...incoming.map((u) => u.email)]);
-      if (staffTo) {
-        await this.queueMail(
-          {
-            to: staffTo,
-            subject: `${ticket.ticketNumber} ${incoming.length ? `assigned to ${to}` : 'unassigned'}`,
-            html: reassignmentHtml('Ticket reassigned', null, summary),
-            text: summary,
-          },
-          clientId,
-        );
-      }
-    } catch (err) {
-      this.logger.error(
-        `Failed to send reassignment email for ${ticket.ticketNumber}`,
-        err instanceof Error ? err.stack : String(err),
-      );
-    }
-  }
-
-  /**
-   * Tell the agents who worked the ticket that the client signed it off (bell and
-   * email), and confirm the close to the client who raised it. Never throws.
-   */
-  private async notifyAcknowledged(
-    ticket: {
-      id: string; ticketNumber: string; subject: string; resolvedById: string | null;
-      requestorUserId: string | null; requestorEmail: string | null; requestorName: string | null;
-    },
-    clientId: string,
-  ) {
-    try {
-      const technicians = await this.prisma.ticketTechnician.findMany({
-        where: { ticketId: ticket.id },
-        select: { userId: true },
-      });
-      const recipients = new Set(technicians.map((t) => t.userId));
-      if (ticket.resolvedById) recipients.add(ticket.resolvedById);
-      await this.notifications.notifyMany([...recipients], {
-        clientId,
-        type: 'TICKET_ACKNOWLEDGED',
-        ticketId: ticket.id,
-        title: 'Resolution acknowledged',
-        body: `The client acknowledged ${ticket.ticketNumber} — ${ticket.subject}. The ticket is now closed.`,
-      });
-      const label = `<strong>${esc(ticket.ticketNumber)} · ${esc(ticket.subject)}</strong>`;
-      await this.mailEach(
-        clientId,
-        await this.agentContacts([...recipients]),
-        `[${ticket.ticketNumber}] Resolution acknowledged — ticket closed`,
-        'Ticket closed',
-        `The client acknowledged the resolution of ${label}. The ticket is now closed.`,
-        `the acknowledgement notice for ${ticket.ticketNumber}`,
-      );
-      await this.mailEach(
-        clientId,
-        [await this.raiserContact(ticket)],
-        `[${ticket.ticketNumber}] Your ticket has been closed`,
-        'Ticket closed',
-        `The resolution of your ticket ${label} has been acknowledged, so the ticket is now closed.<br/><br/>If the issue comes back, you can ask to reopen it from the ticket.`,
-        `the close confirmation for ${ticket.ticketNumber}`,
-      );
-    } catch (err) {
-      this.logger.error(
-        `Failed to emit acknowledgement notification for ${ticket.ticketNumber}`,
-        err instanceof Error ? err.stack : String(err),
-      );
-    }
+      },
+      bell: {
+        client: {
+          type: 'TICKET_RESOLVED', title: 'Ticket resolved',
+          body: `${label} has been resolved. Please review and acknowledge it to close the ticket.`,
+        },
+        PROJECT_MANAGER: { type: 'PM_TICKET_RESOLVED', title: 'Ticket resolved', body: label },
+        staff: { type: 'TICKET_RESOLVED', title: 'Ticket resolved', body: label },
+        agent: { type: 'TICKET_RESOLVED', title: 'Ticket resolved', body: label },
+      },
+    });
   }
 
   /** Best-effort email to the requestor with the rejection reason. Never throws. */
   private async notifyRejection(
-    ticket: { ticketNumber: string; subject: string; requestorEmail: string | null; requestorName: string | null; rejectionReason: string | null },
+    ticket: { id: string; ticketNumber: string; subject: string; requestorEmail: string | null; requestorName: string | null; rejectionReason: string | null },
     clientId: string,
   ) {
     try {
       if (!ticket.requestorEmail) return;
-      if (!(await this.mailer.isConfigured(clientId))) {
-        this.logger.warn(
-          `SMTP not configured — rejection email for ${ticket.ticketNumber} not sent`,
-        );
-        return;
-      }
-      const html = `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 480px; margin: 0 auto;">
-          <div style="background:#b91c1c; padding:24px; border-radius:12px 12px 0 0; text-align:center;">
-            <h1 style="color:#fff; margin:0; font-size:18px;">Ticket request not approved</h1>
-          </div>
-          <div style="background:#fff; padding:28px; border:1px solid #e5e7eb; border-top:none; border-radius:0 0 12px 12px;">
-            <p style="color:#374151; font-size:14px;">Hi ${ticket.requestorName ?? 'there'},</p>
-            <p style="color:#374151; font-size:14px;">Your ticket <strong>${ticket.ticketNumber}</strong> — “${ticket.subject}” — was reviewed and <strong>not approved</strong>.</p>
-            <p style="color:#374151; font-size:14px;"><strong>Reason:</strong></p>
-            <div style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:12px; color:#374151; font-size:14px; white-space:pre-wrap;">${ticket.rejectionReason ?? ''}</div>
-            <p style="color:#6b7280; font-size:12px; margin-top:20px;">You can raise a new ticket with the requested changes.</p>
-          </div>
-        </div>`;
-      await this.queueMail(
-        {
-          to: ticket.requestorEmail,
-          subject: `Your ticket ${ticket.ticketNumber} was not approved`,
-          html,
-          text: `Your ticket ${ticket.ticketNumber} ("${ticket.subject}") was not approved.\n\nReason: ${ticket.rejectionReason ?? ''}`,
-        },
+      await this.mailEach(
         clientId,
+        ticket,
+        [{ email: ticket.requestorEmail, name: ticket.requestorName }],
+        `[Ticket Not Approved] - ${ticket.ticketNumber}`,
+        {
+          intro: 'Your support request has been reviewed by your company admin and was not approved.\nNo work will be carried out on this ticket.',
+          fields: ['number', 'subject', 'category', 'priority', 'status', 'createdDate'],
+          sections: [{ title: 'Reason', body: ticket.rejectionReason ?? '' }],
+          outro: 'You may raise a new request with the required changes through the ticketing portal at any time.',
+        },
+        `the rejection email for ${ticket.ticketNumber}`,
       );
     } catch (err) {
       this.logger.error(

@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import {
   Circle, Flag, UserPlus, CheckCircle2, RefreshCw, ListTodo, Stamp, Mail, Paperclip,
-  Play, Ban, MessageSquare, Pencil,
+  Play, Ban, MessageSquare, Pencil, AlarmClock,
 } from 'lucide-react';
 import api from '../../../lib/api';
 import { useDateFormat } from '@/lib/dateFormat';
@@ -47,6 +47,8 @@ const ICON: Record<string, typeof Circle> = {
   CUSTOMER_APPROVED: Stamp,
   APPROVED: Stamp,
   REJECTED: Ban,
+  SLA_ESCALATED: AlarmClock,
+  INFO_REQUESTED: MessageSquare,
 };
 
 /**

@@ -73,7 +73,7 @@ export const TICKET_COLUMNS: SheetColumn<TicketSheetRow>[] = [
   { header: 'Department', value: text('department'), width: 18 },
   { header: 'Product', value: text('productName'), width: 22 },
   { header: 'Module', value: text('moduleName'), width: 22 },
-  { header: 'Consultant type', value: text('consultantType'), width: 16 },
+  { header: 'Issue type', value: text('consultantType'), width: 16 },
   { header: 'Assigned agent', value: text('assignedTo'), width: 20 },
   { header: 'Approval', value: text('approvalStatus'), width: 18 },
   { header: 'Time spent (h)', value: (r) => hours(r.hoursSpent), width: 14 },

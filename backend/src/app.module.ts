@@ -10,6 +10,7 @@ import { FormsModule } from './forms/forms.module';
 import { PermissionsModule } from './permissions/permissions.module';
 import { ClientsModule } from './clients/clients.module';
 import { SmtpModule } from './smtp/smtp.module';
+import { NotificationRulesModule } from './notification-rules/notification-rules.module';
 import { MyClientModule } from './my-client/my-client.module';
 import { TemplatesModule } from './templates/templates.module';
 import { PicklistsModule } from './picklists/picklists.module';
@@ -49,6 +50,7 @@ import { GalleryModule } from './gallery/gallery.module';
     PermissionsModule,
     ClientsModule,
     SmtpModule,
+    NotificationRulesModule,
     MyClientModule,
     TemplatesModule,
     PicklistsModule,

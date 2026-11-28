@@ -51,11 +51,16 @@ export default function ResolutionTab({
   closed = false,
   draft = EMPTY_RESOLVE,
   onDraft = () => {},
+  onResolve = async () => {},
+  resolving = false,
 }: {
   ticket: ResolutionTicket;
-  /** The staged resolution — see `ResolveDraft`. */
+  /** The resolution being typed — see `ResolveDraft`. */
   draft?: ResolveDraft;
   onDraft?: (d: ResolveDraft) => void;
+  /** Resolves at once: books `log` (when given) then resolves with `resolution`. */
+  onResolve?: (resolution: string, log?: { hours: number; note: string }) => Promise<unknown>;
+  resolving?: boolean;
   /** The live status reads Closed — entries are read-only then. */
   closed?: boolean;
   readOnly?: boolean;
@@ -140,6 +145,8 @@ export default function ResolutionTab({
       onViewTasks={onViewTasks}
       draft={draft}
       onDraft={onDraft}
+      onResolve={onResolve}
+      resolving={resolving}
     />
   );
 }
@@ -149,15 +156,15 @@ export default function ResolutionTab({
  *
  * **The resolution notes live inside the time box**, and a round holds **one**
  * such entry: notes + hours, booked as a worklog with no `taskId` (the server
- * refuses a second). The box's **Resolve** button checks the gates and only
- * *stages* the resolution; nothing is written until the header's **Save**, which
- * books the entry and resolves (client request — no auto-save on the ticket
- * screen). An unresolved ticket whose round already has its entry (a reopen, or
- * a resolve refused after booking) stages on that entry with a bare Resolve.
+ * refuses a second). The box's **Resolve** button checks the gates, books the
+ * entry and resolves the ticket in one click — no header Save needed (client
+ * request). An unresolved ticket whose round already has its entry (a reopen, or
+ * a resolve refused after booking) resolves on that entry with a bare Resolve.
  * The server keeps every gate: notes, time > 0, no open tasks.
  */
 function ResolutionEditor({
   ticketId, resolved, closed, notice, reopenedAt, loggedHours, openTasks, onViewTasks, draft, onDraft,
+  onResolve, resolving,
 }: {
   ticketId: string;
   resolved: boolean;
@@ -171,6 +178,8 @@ function ResolutionEditor({
   onViewTasks?: () => void;
   draft: ResolveDraft;
   onDraft: (d: ResolveDraft) => void;
+  onResolve: (resolution: string, log?: { hours: number; note: string }) => Promise<unknown>;
+  resolving: boolean;
 }) {
   const { fmtDate } = useDateFormat();
   const { data: worklogs = [] } = useWorklogs(ticketId);
@@ -213,33 +222,26 @@ function ResolutionEditor({
     return true;
   };
 
-  /** The box's button: checks the gates and stages notes + hours — Save does the rest. */
-  const stage = () => {
-    if (draft.staged) return onDraft({ ...draft, staged: null }); // Undo
+  /** The box's button: checks the gates, books notes + hours and resolves in one click. */
+  const submit = async () => {
+    if (resolving) return;
     if (tasksBlock()) return;
+    const text = notes.trim();
     const h = Number(hours);
-    if (!notes.trim()) { toast.error('Write the resolution notes'); return; }
+    if (!text) { toast.error('Write the resolution notes'); return; }
     if (hours.trim() === '') { toast.error('Enter the hours spent before resolving'); return; }
     if (!(h > 0)) { toast.error('Enter hours greater than 0'); return; }
-    onDraft({ ...draft, staged: 'new' });
-    toast.info('Set to resolve — click Save to resolve the ticket');
+    try { await onResolve(text, { hours: h, note: text }); } catch { /* toast already shown */ }
   };
 
-  /** This round's entry already exists (e.g. a reopen): stage a resolve on it, no second log. */
-  const stageWithEntry = () => {
-    if (draft.staged) return onDraft({ ...draft, staged: null }); // Undo
+  /** This round's entry already exists (e.g. a reopen): resolve on it, no second log. */
+  const resolveWithEntry = async () => {
+    if (resolving) return;
     if (tasksBlock()) return;
     const text = (entry?.note ?? '').trim();
     if (!text) { toast.error('The entry has no resolution notes'); return; }
-    onDraft({ ...draft, staged: 'entry', entryNote: text });
-    toast.info('Set to resolve — click Save to resolve the ticket');
+    try { await onResolve(text); } catch { /* toast already shown */ }
   };
-
-  const stagedNote = draft.staged && (
-    <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
-      Set to resolve — not saved yet. Click Save at the top to resolve the ticket.
-    </p>
-  );
 
 
   return (
@@ -265,13 +267,12 @@ function ResolutionEditor({
                 type="number" min={0} step="0.25" inputMode="decimal"
                 className="h-8 w-28" value={hours}
                 onChange={(e) => setHours(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') stage(); }} />
+                onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
             </div>
-            <Button className="ml-auto" variant={draft.staged ? 'outline' : 'default'} onClick={stage}>
-              {draft.staged ? 'Undo resolve' : 'Resolve'}
+            <Button className="ml-auto" disabled={resolving} onClick={submit}>
+              {resolving ? 'Resolving…' : 'Resolve'}
             </Button>
           </div>
-          {stagedNote}
         </div>
       ) : (
         // Logged but not resolved — a reopened ticket, or a resolve that was
@@ -280,10 +281,9 @@ function ResolutionEditor({
           <span className="text-sm text-muted-foreground">
             Time for this round is logged below.
           </span>
-          <Button className="ml-auto" variant={draft.staged ? 'outline' : 'default'} onClick={stageWithEntry}>
-            {draft.staged ? 'Undo resolve' : 'Resolve'}
+          <Button className="ml-auto" disabled={resolving} onClick={resolveWithEntry}>
+            {resolving ? 'Resolving…' : 'Resolve'}
           </Button>
-          <div className="basis-full">{stagedNote}</div>
         </div>
       )}
 

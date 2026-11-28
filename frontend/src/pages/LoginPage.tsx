@@ -179,7 +179,7 @@ export default function LoginPage() {
               <FormItem>
                 <FormLabel>Username or Email</FormLabel>
                 <FormControl>
-                  <Input placeholder="Enter username or email" autoComplete="username" {...field} />
+                  <Input placeholder="Enter username or email" autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} {...field} />
                 </FormControl>
                 <FormMessage />
               </FormItem>

@@ -3,7 +3,10 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
+import { MailerService } from '../mail/mailer.service';
+import { buildWelcomeEmail } from './welcome-email';
 import * as bcrypt from 'bcryptjs';
 import { unlink } from 'fs/promises';
 import { join } from 'path';
@@ -31,7 +34,12 @@ export { CUSTOMER_ADMIN_ROLE };
 
 @Injectable()
 export class CustomerCompaniesService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(CustomerCompaniesService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private mailer: MailerService,
+  ) {}
 
   /** Find-or-create the tenant's "Customer" role (contact users are assigned to it). */
   private async customerRoleId(clientId: string) {
@@ -421,7 +429,7 @@ export class CustomerCompaniesService {
     return this.prisma.product.findMany({
       where: { clientId, isActive: true },
       orderBy: [{ sortOrder: 'asc' }],
-      select: { id: true, name: true, code: true, autoAssign: true, modules: { select: { id: true, name: true, tracks: true }, orderBy: [{ sortOrder: 'asc' }] } },
+      select: { id: true, name: true, code: true, autoAssign: true, consultantMode: true, tracks: true, modules: { select: { id: true, name: true, tracks: true }, orderBy: [{ sortOrder: 'asc' }] } },
     });
   }
 
@@ -433,7 +441,7 @@ export class CustomerCompaniesService {
     const products = await this.prisma.product.findMany({
       where: { clientId, isActive: true, id: { in: links.map((l) => l.productId) } },
       orderBy: [{ sortOrder: 'asc' }],
-      select: { id: true, name: true, code: true, autoAssign: true, modules: { select: { id: true, name: true, tracks: true }, orderBy: [{ sortOrder: 'asc' }] } },
+      select: { id: true, name: true, code: true, autoAssign: true, consultantMode: true, tracks: true, modules: { select: { id: true, name: true, tracks: true }, orderBy: [{ sortOrder: 'asc' }] } },
     });
     // Modules switched off for this client on their product screen drop out,
     // and a product with every module switched off drops out with them.
@@ -504,19 +512,22 @@ export class CustomerCompaniesService {
 
   /**
    * Validates an admin hand-off without writing anything: either an existing
-   * user to link (`userId`) or a new login to create (username + email +
-   * password), never both. Returns null when nothing was asked for.
+   * user to link (`userId` + a temporary password) or a new login to create
+   * (username + email + password), never both. Returns null when nothing was
+   * asked for. Both carry a password: a linked user's is reset to the one typed,
+   * because the welcome email always gives the admin a temporary password.
    */
   private async resolveAdminInput(input: CustomerAdminDto, clientId: string) {
-    const wantsNew = !!(input.username || input.email || input.password);
+    const wantsNew = !!(input.username || input.email);
     if (input.userId && wantsNew) {
       throw new BadRequestException('Either link an existing customer admin or create a new one — not both');
     }
     if (input.userId) {
+      if (!input.password) throw new BadRequestException('Enter a temporary password for the linked customer admin');
       await this.linkableAdmin(input.userId, clientId);
-      return { userId: input.userId } as const;
+      return { userId: input.userId, password: input.password } as const;
     }
-    if (!wantsNew) return null;
+    if (!wantsNew && !input.password) return null;
     if (!(input.username && input.email && input.password)) {
       throw new BadRequestException('Provide username, email and password for the customer admin');
     }
@@ -557,15 +568,21 @@ export class CustomerCompaniesService {
     actorId: string,
   ) {
     if ('userId' in admin) {
-      await this.prisma.user.update({
+      const linked = await this.prisma.user.update({
         where: { id: admin.userId },
-        data: { customerCompanyId: companyId, updatedBy: actorId },
+        data: {
+          customerCompanyId: companyId,
+          passwordHash: await bcrypt.hash(admin.password, 12),
+          updatedBy: actorId,
+        },
+        select: { id: true },
       });
+      this.sendWelcome(companyId, linked.id, clientId, admin.password, true);
       return;
     }
     const roleId = await this.customerAdminRoleId(clientId);
     const passwordHash = await bcrypt.hash(admin.password, 12);
-    await this.prisma.user.create({
+    const created = await this.prisma.user.create({
       data: {
         username: admin.username,
         email: admin.email,
@@ -576,7 +593,42 @@ export class CustomerCompaniesService {
         updatedBy: actorId,
         userRoles: { create: [{ roleId, createdBy: actorId }] },
       },
+      select: { id: true },
     });
+    this.sendWelcome(companyId, created.id, clientId, admin.password, false);
+  }
+
+  /**
+   * Welcomes a client's new customer admin by email. Not awaited — like ticket
+   * emails, it never holds up the screen, and a send that fails is logged rather
+   * than undoing the client that was just created. `temporaryPassword` is the
+   * one typed on the form — a new login's, or the one a linked login was reset
+   * to — held only for this send, never logged.
+   */
+  private sendWelcome(companyId: string, userId: string, clientId: string, temporaryPassword: string, existingLogin: boolean) {
+    void (async () => {
+      const [user, company, provider] = await Promise.all([
+        this.prisma.user.findUnique({ where: { id: userId }, select: { username: true, name: true, email: true } }),
+        this.prisma.customerCompany.findUnique({ where: { id: companyId }, select: { name: true } }),
+        this.prisma.client.findUnique({ where: { id: clientId }, select: { name: true } }),
+      ]);
+      if (!user?.email || !company || !provider) return;
+      if (!(await this.mailer.isConfigured(clientId))) {
+        this.logger.warn(`Welcome email to ${company.name}'s admin skipped: SMTP is not configured`);
+        return;
+      }
+      const mail = buildWelcomeEmail({
+        providerName: provider.name,
+        companyName: company.name,
+        recipientName: user.name,
+        username: user.username,
+        email: user.email,
+        portalUrl: process.env.FRONTEND_URL ?? null,
+        existingLogin,
+        temporaryPassword,
+      });
+      await this.mailer.sendMail({ to: user.email, ...mail }, clientId);
+    })().catch((e) => this.logger.error(`Welcome email for client ${companyId} failed: ${e?.message ?? e}`));
   }
 
   /** The tenant's customer admins not yet linked to any client — the Link picker's options. */

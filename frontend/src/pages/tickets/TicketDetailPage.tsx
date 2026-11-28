@@ -58,6 +58,8 @@ interface TicketDetail {
   notifyEmails: string[];
   dueDate?: string | null;
   expectedResolutionDate?: string | null;
+  /** Set while the SLA clock is paused (the ticket waits on the client). */
+  slaPausedAt?: string | null;
   slaHours?: number | null;
   firstResponseAt?: string | null;
   closedDate?: string | null;
@@ -129,6 +131,8 @@ interface UserOption { id: string; username: string; name?: string | null; }
 
 const OMIT_FROM_TEMPLATE_FIELDS = new Set([
   'subject', 'description', 'attachments', 'templateName', 'createdDate', 'closedDate', 'ticketStatus', 'sla',
+  // Shown beside Product and Module instead.
+  'consultantType',
 ]);
 
 /** Two decimals at most, trailing zeros trimmed — every figure in the header bar. */
@@ -224,9 +228,9 @@ export default function TicketDetailPage() {
     queryKey: ['picklist-options', 'priority'],
     queryFn: async () => (await api.get('/api/picklist-options', { params: { listKey: 'priority' } })).data,
   });
-  // The Assigned agent field's options: the agents set for this ticket's module
-  // (all tracks) plus the client's own consultants; all staff when the ticket
-  // names no product (client request). Already A–Z by name.
+  // The Assigned agent field's options, in the server's priority order (client
+  // request): the client's consultants for this product, its default
+  // consultants, then the product's project manager. Don't re-sort.
   const { data: assignable = [] } = useQuery<UserOption[]>({
     queryKey: ['ticket-assignable', id],
     queryFn: async () => (await api.get(`/api/tickets/${id}/assignable-agents`)).data,
@@ -276,11 +280,16 @@ export default function TicketDetailPage() {
   // Save; a key is only present while it differs from what is stored.
   const [draft, setDraft] = useState<TicketDraft>({});
   // Another ticket opened in place (e.g. from search) starts with a clean draft.
-  // The resolution typed on the Resolution tab, and whether Resolve staged it —
-  // part of the same draft, so only Save resolves (client request).
+  // The resolution typed on the Resolution tab — kept here so switching tabs
+  // keeps it. Its Resolve button acts at once (client request), not via Save.
   const [resolveDraft, setResolveDraft] = useState<ResolveDraft>(EMPTY_RESOLVE);
+  // What a client ticket moved to "Awaiting End-user Response" asks the client
+  // for — typed in the box under Status, sent with Save, required by the server.
+  const [infoRequest, setInfoRequest] = useState('');
+  const isAwaitingClient = (v?: string) =>
+    !!v && (statusOptions.find((o) => o.value === v)?.label ?? v).trim().toLowerCase() === 'awaiting end-user response';
   const [draftFor, setDraftFor] = useState(id);
-  if (draftFor !== id) { setDraftFor(id); setDraft({}); setResolveDraft(EMPTY_RESOLVE); }
+  if (draftFor !== id) { setDraftFor(id); setDraft({}); setResolveDraft(EMPTY_RESOLVE); setInfoRequest(''); }
   const invalidateWorklogs = useWorklogInvalidate(id ?? '');
   const savedValues = (t: TicketDetail): Required<TicketDraft> => ({
     ticketStatus: t.ticketStatus,
@@ -291,9 +300,9 @@ export default function TicketDetailPage() {
   const changes = ticket
     ? (Object.keys(draft) as (keyof TicketDraft)[]).filter((k) => draft[k] !== savedValues(ticket)[k])
     : [];
-  const changeCount = changes.length + (resolveDraft.staged ? 1 : 0);
+  const changeCount = changes.length;
   const dirty = changeCount > 0;
-  const discardAll = () => { setDraft({}); setResolveDraft(EMPTY_RESOLVE); };
+  const discardAll = () => { setDraft({}); setResolveDraft(EMPTY_RESOLVE); setInfoRequest(''); };
   const setField = <K extends keyof TicketDraft>(k: K, v: TicketDraft[K]) =>
     setDraft((d) => {
       const next = { ...d, [k]: v };
@@ -338,12 +347,10 @@ export default function TicketDetailPage() {
       const t = ticket!;
       const saved = savedValues(t);
       const has = (k: keyof TicketDraft) => k in draft && draft[k] !== saved[k];
-      const r = resolveDraft;
-      // A staged resolve is checked before anything is written.
-      const notes = r.notes.trim();
-      const hours = Number(r.hours);
-      if (r.staged === 'new' && (!notes || !(hours > 0))) {
-        throw new Error('Resolution notes and hours greater than 0 are needed to resolve');
+      // Checked before anything is written, so a refused save changes nothing.
+      const askingClient = has('ticketStatus') && !!t.customerCompany && isAwaitingClient(draft.ticketStatus);
+      if (askingClient && !infoRequest.trim()) {
+        throw new Error('Say what information you need from the client — it is emailed to them');
       }
       if (has('agentId')) {
         await api.put(`/api/tickets/${id}/technicians`, { userIds: draft.agentId === 'none' ? [] : [draft.agentId] });
@@ -354,22 +361,9 @@ export default function TicketDetailPage() {
       }
       const body: Record<string, unknown> = {};
       if (has('priority')) body.priority = draft.priority;
-      // A staged resolve replaces any status pick: resolving is its own door.
-      if (has('ticketStatus') && !r.staged) body.ticketStatus = draft.ticketStatus;
+      if (has('ticketStatus')) body.ticketStatus = draft.ticketStatus;
+      if (askingClient) body.requestedInformation = infoRequest.trim();
       if (Object.keys(body).length) await api.put(`/api/tickets/${id}`, body);
-      if (r.staged) {
-        let resolution = r.entryNote ?? notes;
-        if (r.staged === 'new') {
-          // Booked first, so these hours are what satisfy the resolve gate.
-          await api.post(`/api/tickets/${id}/worklogs`, { hours, note: notes });
-          // Booked now: should the resolve below be refused, a retry resolves
-          // on this entry instead of booking the hours twice.
-          setResolveDraft((d) => ({ ...d, staged: 'entry', entryNote: notes }));
-          resolution = notes;
-        }
-        await api.put(`/api/tickets/${id}/resolution`, { resolution });
-        return 'resolved' as const;
-      }
       return body.ticketStatus && statusMeaningOf(body.ticketStatus as string) === 'resolved' ? 'resolved' as const : undefined;
     },
     onSuccess: (outcome) => {
@@ -386,6 +380,24 @@ export default function TicketDetailPage() {
     // A step that failed leaves the earlier ones saved: the refetch below drops
     // those from the draft (they now equal the stored values) and keeps the rest.
     onError: (e: any) => toast.error(e.response?.data?.message || e.message || 'Error saving ticket'),
+    onSettled: () => { invalidateTicket(); invalidateWorklogs(); },
+  });
+
+  // The Resolution tab's Resolve: books the round's entry (when given) and
+  // resolves in the same click — no header Save (client request).
+  const resolveMutation = useMutation({
+    mutationFn: async ({ resolution, log }: { resolution: string; log?: { hours: number; note: string } }) => {
+      // Booked first, so these hours are what satisfy the resolve gate. Should
+      // the resolve be refused, the box gives way to a bare Resolve on this entry.
+      if (log) await api.post(`/api/tickets/${id}/worklogs`, log);
+      await api.put(`/api/tickets/${id}/resolution`, { resolution });
+    },
+    onSuccess: () => {
+      setResolveDraft(EMPTY_RESOLVE);
+      setTab('resolution');
+      toast.success('Ticket resolved');
+    },
+    onError: (e: any) => toast.error(e.response?.data?.message || e.message || 'Error resolving ticket'),
     onSettled: () => { invalidateTicket(); invalidateWorklogs(); },
   });
 
@@ -471,14 +483,13 @@ export default function TicketDetailPage() {
   }
 
   const priority = getPriorityMeta(ticket.priority);
-  const countdown = formatCountdown(ticket.dueDate, ticket.slaHours);
+  const countdown = formatCountdown(ticket.dueDate, ticket.slaHours, ticket.slaPausedAt);
   const slaPanel = SLA_PANEL_CLASS[countdown.tone];
   // Statuses are tenant-configurable, so read the meaning off the picklist label —
   // the same rule the backend uses to decide what may be acknowledged.
   const statusMeaningOf = (value: string) =>
     (statusOptions.find((o) => o.value === value)?.label ?? value).trim().toLowerCase();
   const statusMeaning = statusMeaningOf(ticket.ticketStatus);
-  const resolvedStatusValue = statusOptions.find((o) => statusMeaningOf(o.value) === 'resolved')?.value;
   const canAcknowledge =
     isCustomerSide && statusMeaning === 'resolved' && !ticket.acknowledgedAt && !ticket.closedDate;
   // The SLA countdown only means something while the ticket is still being
@@ -944,12 +955,18 @@ export default function TicketDetailPage() {
                           <div className="mb-1 text-xs text-muted-foreground">Module</div>
                           <div className="text-sm text-foreground">{ticket.moduleName ?? '—'}</div>
                         </div>
-                        <div>
-                          <div className="mb-1 text-xs text-muted-foreground">Type</div>
-                          <div className="text-sm text-foreground">
-                            {ticket.consultantType ? ticket.consultantType.charAt(0) + ticket.consultantType.slice(1).toLowerCase() : '—'}
+                        {/* Stored only when the template carries Issue type and one
+                            was picked; otherwise the field is left out, not blank. */}
+                        {ticket.consultantType && (
+                          <div>
+                            <div className="mb-1 text-xs text-muted-foreground">Issue type</div>
+                            <div className="text-sm text-foreground">
+                              {ticket.consultantType === 'OTHERS'
+                                ? 'Other'
+                                : ticket.consultantType.charAt(0) + ticket.consultantType.slice(1).toLowerCase()}
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </>
                     )}
 
@@ -1051,6 +1068,8 @@ export default function TicketDetailPage() {
                 closed={statusMeaning === 'closed'}
                 draft={resolveDraft}
                 onDraft={setResolveDraft}
+                onResolve={(resolution, log) => resolveMutation.mutateAsync({ resolution, log })}
+                resolving={resolveMutation.isPending}
               />
             </TabsContent>
             <TabsContent value="tasks">
@@ -1142,15 +1161,9 @@ export default function TicketDetailPage() {
                       only a reopen brings it back, which moves the status itself. */}
                   {isStaff && statusMeaning !== 'closed' ? (
                     <Select
-                      value={resolveDraft.staged && resolvedStatusValue ? resolvedStatusValue : draft.ticketStatus ?? ticket.ticketStatus}
+                      value={draft.ticketStatus ?? ticket.ticketStatus}
                       onValueChange={(v) => {
                         if (!v) return; // Radix's empty re-emit, never a real pick
-                        // A Resolve staged on the Resolution tab shows here as
-                        // Resolved; picking anything else takes it back.
-                        if (resolveDraft.staged) {
-                          if (v === resolvedStatusValue) return;
-                          setResolveDraft((d) => ({ ...d, staged: null }));
-                        }
                         // Mirrors of the backend rules, so the agent lands on the tab
                         // that fixes it instead of bouncing off a 400. Outstanding work
                         // is checked first — it is the one that needs doing, not just
@@ -1197,6 +1210,26 @@ export default function TicketDetailPage() {
                   ) : (
                     <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-foreground">
                       {statusOptions.find((o) => o.value === ticket.ticketStatus)?.label ?? ticket.ticketStatus}
+                    </div>
+                  )}
+                  {/* Picking "Awaiting End-user Response" on a client ticket asks
+                      what is needed, right here under the dropdown; it goes out
+                      with Save. */}
+                  {isStaff && ticket.customerCompany && draft.ticketStatus !== undefined && isAwaitingClient(draft.ticketStatus) && (
+                    <div className="mt-2 space-y-1">
+                      <label htmlFor="info-request" className="text-xs font-medium text-foreground">
+                        Information required from the client
+                      </label>
+                      <Textarea
+                        id="info-request"
+                        rows={3}
+                        value={infoRequest}
+                        onChange={(e) => setInfoRequest(e.target.value)}
+                        placeholder="e.g. Please share a screenshot of the error and when it occurred"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Emailed to the client and posted in the chat on Save. The SLA clock pauses until they respond.
+                      </p>
                     </div>
                   )}
                   {isStaff && statusMeaning === 'closed' && (

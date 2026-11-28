@@ -34,17 +34,19 @@ export class AuthService {
   private otpChallenges = new Map<string, { userId: string; expiresAt: number }>();
 
   async login(dto: LoginDto) {
-    const login = dto.username.toLowerCase();
-    const user = await this.prisma.user.findFirst({
-      where: {
-        OR: [
-          { username: { equals: login, mode: 'insensitive' } },
-          { email: { equals: login, mode: 'insensitive' } },
-        ],
-        isActive: true,
-      },
-      include: { userRoles: { include: { role: true } } },
-    });
+    // A username must be typed exactly as saved — capitals count. Creating a user
+    // already treats `vinoth` and `Vinoth` as different accounts, and a
+    // case-insensitive login matched both and checked the password against
+    // whichever came first, so the newer one could never sign in. An email is
+    // still matched ignoring case: a mailbox address is not case-sensitive.
+    const login = dto.username;
+    const include = { userRoles: { include: { role: true } } } as const;
+    const user =
+      (await this.prisma.user.findFirst({ where: { username: login, isActive: true }, include })) ??
+      (await this.prisma.user.findFirst({
+        where: { email: { equals: login, mode: 'insensitive' }, isActive: true },
+        include,
+      }));
 
     if (!user || !(await bcrypt.compare(dto.password, user.passwordHash))) {
       throw new UnauthorizedException('Invalid credentials');
@@ -299,7 +301,7 @@ export class AuthService {
     });
   }
 
-  async getMyClient(clientId: string | null) {
+  async getMyClient(clientId: string | null, customerCompanyId?: string | null) {
     if (!clientId) return null;
     const client = await this.prisma.client.findUnique({
       where: { id: clientId },
@@ -310,7 +312,18 @@ export class AuthService {
       // customer screen quoting money uses the tenant's currency.
       select: { name: true, logoUrl: true, dateFormat: true, timeFormat: true, currency: true },
     });
-    return client;
+    if (!client) return null;
+    // A customer contact's header shows their own company, not the provider.
+    // Kept as a separate field: `name` stays the provider's, which other
+    // screens quote ("Internal Ticket / <provider>"), and the formats above
+    // always follow the tenant.
+    const customerCompany = customerCompanyId
+      ? await this.prisma.customerCompany.findFirst({
+          where: { id: customerCompanyId, clientId },
+          select: { name: true, logoUrl: true },
+        })
+      : null;
+    return { ...client, customerCompany };
   }
 
   async getMyPermissions(userId: string) {

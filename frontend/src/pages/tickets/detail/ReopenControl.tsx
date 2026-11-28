@@ -143,7 +143,7 @@ export default function ReopenControl({
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
             <Button onClick={submit} disabled={!reason.trim() || reopening}>
-              {requestMode ? (reopening ? 'Sending…' : 'Send for approval') : (reopening ? 'Reopening…' : 'Reopen ticket')}
+              {requestMode ? (reopening ? 'Sending…' : 'Send') : (reopening ? 'Reopening…' : 'Reopen ticket')}
             </Button>
           </DialogFooter>
         </DialogContent>

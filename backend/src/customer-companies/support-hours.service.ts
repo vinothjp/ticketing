@@ -3,6 +3,7 @@ import { Prisma, CustomerCompany } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailerService } from '../mail/mailer.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { portalLink, renderLetter } from '../lib/letter-email';
 
 export type SupportUsage =
   | { hasPool: false }
@@ -126,21 +127,29 @@ export class SupportHoursService {
 
     // Email: the company's contact address (best-effort — never block on SMTP).
     if (company.contactEmail && (await this.mailer.isConfigured(company.clientId))) {
-      const html = `
-        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:520px;margin:0 auto;">
-          <div style="background:#f59e0b;padding:24px;border-radius:12px 12px 0 0;text-align:center;">
-            <h1 style="color:#fff;margin:0;font-size:18px;">Support hours running low</h1>
-          </div>
-          <div style="background:#fff;padding:28px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
-            <p style="color:#374151;font-size:14px;">Hi ${company.name},</p>
-            <p style="color:#374151;font-size:14px;">${summary}</p>
-            <p style="color:#374151;font-size:14px;">You have <strong>${usage.remainingHours}</strong> hours remaining in the current support period. Please reach out to your provider if you expect to need more.</p>
-            <p style="color:#6b7280;font-size:12px;">This is an automated notification sent when usage crosses ${usage.thresholdPct}% of the agreed hours.</p>
-          </div>
-        </div>`;
+      const org = await this.prisma.client.findUnique({ where: { id: company.clientId }, select: { name: true } }).catch(() => null);
+      const { html, text } = renderLetter({
+        greetName: company.name,
+        intro: `This is to inform you that ${usage.pct}% of your agreed support hours for the current support period have been used.\n` +
+          'Please plan your upcoming support requests accordingly.',
+        table: {
+          heading: 'Support Hours Details',
+          rows: [
+            ['Agreed Hours', String(usage.agreedHours)],
+            ['Hours Used', String(usage.usedHours)],
+            ['Hours Remaining', String(usage.remainingHours)],
+            ['Usage', `${usage.pct}%`],
+          ],
+        },
+        outro: `This notification is sent when usage crosses ${usage.thresholdPct}% of the agreed hours. ` +
+          'If you expect to need more support hours, please contact us to extend your service.',
+        link: { label: 'View My Products', url: portalLink('/my-products') },
+        thanks: 'Thank you for choosing our support services.',
+        orgName: org?.name,
+      });
       try {
         await this.mailer.sendMail(
-          { to: company.contactEmail, subject: `Support hours alert — ${usage.pct}% used`, html, text: summary },
+          { to: company.contactEmail, subject: `[Support Hours Alert] - ${usage.pct}% used`, html, text },
           company.clientId,
         );
       } catch {

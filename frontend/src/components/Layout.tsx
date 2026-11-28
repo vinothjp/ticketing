@@ -35,6 +35,7 @@ import {
   ChevronRight,
   Gauge,
   ChartPie,
+  MailCheck,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { usePrefs } from '../context/PreferencesContext';
@@ -80,7 +81,12 @@ interface NavGroup {
   color: string;
   items: NavItem[];
 }
-interface MyClient { name: string; logoUrl: string | null; }
+interface MyClient {
+  name: string;
+  logoUrl: string | null;
+  /** Set for a customer contact — their own company, shown in the header instead of the provider. */
+  customerCompany?: { name: string; logoUrl: string | null } | null;
+}
 
 const tenantNavGroups: NavGroup[] = [
   {
@@ -285,6 +291,7 @@ export default function Layout({ children }: { children: ReactNode }) {
                   ...group.items,
                   { to: '/organization', label: 'Organization', icon: Building2 },
                   { to: '/admin/smtp-config', label: 'Email Settings', icon: Mail },
+                  { to: '/admin/email-configuration', label: 'Email Configuration', icon: MailCheck },
                 ],
               };
             }
@@ -346,6 +353,7 @@ export default function Layout({ children }: { children: ReactNode }) {
     queryFn: async () => (await api.get('/api/auth/me/client')).data,
     enabled: !isSuperAdmin,
   });
+  const brand = myClient?.customerCompany ?? myClient;
 
   const handleLogout = () => {
     logout();
@@ -366,6 +374,21 @@ export default function Layout({ children }: { children: ReactNode }) {
               <span className="truncate text-sm font-bold tracking-wide text-sidebar-foreground">Ticket Management System</span>
             )}
           </div>
+
+          {/* Customers only: the service provider (the tenant), above the nav — their
+              header shows their own company, so this is where they see who serves them. */}
+          {!collapsed && isCustomer && myClient?.name && (
+            <div className="-mt-2 mb-6 flex items-center gap-3 px-2" title={myClient.name}>
+              {myClient.logoUrl ? (
+                <img src={assetUrl(myClient.logoUrl)!} alt="" className="size-10 shrink-0 rounded-lg border border-sidebar-border bg-white object-contain" />
+              ) : (
+                <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-sidebar-foreground/10">
+                  <Building2 className="size-5 text-sidebar-foreground/70" />
+                </div>
+              )}
+              <span className="truncate text-base font-semibold text-sidebar-foreground">{myClient.name}</span>
+            </div>
+          )}
 
           <nav className="flex flex-1 flex-col gap-4">
             {navGroups.map((group) => (
@@ -422,15 +445,15 @@ export default function Layout({ children }: { children: ReactNode }) {
               <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                 <ShieldCheck className="size-4" />
               </div>
-            ) : myClient?.logoUrl ? (
-              <img src={assetUrl(myClient.logoUrl)!} alt={myClient.name} className="size-8 shrink-0 rounded-lg border object-cover" />
+            ) : brand?.logoUrl ? (
+              <img src={assetUrl(brand.logoUrl)!} alt={brand.name} className="size-8 shrink-0 rounded-lg border object-cover" />
             ) : (
               <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                 <Building2 className="size-4" />
               </div>
             )}
             <span className="max-w-[160px] truncate text-sm font-semibold text-foreground">
-              {isSuperAdmin ? 'Platform Admin' : (myClient?.name ?? 'Ticket Management System')}
+              {isSuperAdmin ? 'Platform Admin' : (brand?.name ?? 'Ticket Management System')}
             </span>
           </div>
 
